@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+
+research_lake/
+duckdb/
+artifacts/
+cache/
+exports/
+
+divergences.db

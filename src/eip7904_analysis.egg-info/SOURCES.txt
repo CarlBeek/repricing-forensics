@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+setup.py
+src/eip7904_analysis/__init__.py
+src/eip7904_analysis/config.py
+src/eip7904_analysis/duckdb_utils.py
+src/eip7904_analysis/labels.py
+src/eip7904_analysis/parsers.py
+src/eip7904_analysis/pipeline.py
+src/eip7904_analysis/sourcify.py
+src/eip7904_analysis/sql.py
+src/eip7904_analysis.egg-info/PKG-INFO
+src/eip7904_analysis.egg-info/SOURCES.txt
+src/eip7904_analysis.egg-info/dependency_links.txt
+src/eip7904_analysis.egg-info/top_level.txt

@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: eip7904-analysis
+Version: 0.1.0
+Summary: Analysis workflow for Ethereum EIP-7904 repricing divergence data
+Requires-Python: >=3.9
