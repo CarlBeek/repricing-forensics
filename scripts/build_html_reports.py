@@ -43,6 +43,15 @@ DUCKDB_PATH = PROJECT_ROOT / "duckdb" / "eip7904.duckdb"
 TABLES_DIR = PROJECT_ROOT / "artifacts" / "tables"
 REPORTS_DIR = PROJECT_ROOT / "artifacts" / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+LABELS_CSV = PROJECT_ROOT / "cache" / "contract_labels.csv"
+
+# ── Load comprehensive labels ─────────────────────────────────────────
+
+CONTRACT_LABELS: dict[str, str] = {}
+if LABELS_CSV.exists():
+    _labels_df = pd.read_csv(LABELS_CSV)
+    for _, row in _labels_df.iterrows():
+        CONTRACT_LABELS[str(row["address"]).lower()] = row["name"]
 
 # ── DuckDB connection ─────────────────────────────────────────────────
 
@@ -99,7 +108,8 @@ def label_address(addr: str) -> str:
     if addr is None:
         return "unknown"
     norm = addr.lower()
-    return ADDRESS_PROJECT_LABELS.get(norm, norm)
+    # Check comprehensive labels first, then fall back to hardcoded
+    return CONTRACT_LABELS.get(norm, ADDRESS_PROJECT_LABELS.get(norm, norm))
 
 
 # ── CSS ───────────────────────────────────────────────────────────────
