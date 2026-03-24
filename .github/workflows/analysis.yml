@@ -16,6 +16,7 @@ jobs:
       RETH_DIR: ~/reth
       DIVERGENCE_DB_PATH: ~/reth/divergences.db
       RESEARCH_LAKE_PATH: ~/reth/research_lake
+      ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
