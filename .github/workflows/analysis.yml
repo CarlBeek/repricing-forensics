@@ -36,7 +36,7 @@ jobs:
       - name: Build DuckDB and normalize forensics
         run: |
           . .venv/bin/activate
-          python scripts/build_duckdb.py --schedule-name 7904-prelim --include-call-frames
+          python scripts/build_duckdb.py --schedule-name 7904-prelim
 
       - name: Enrich contracts (Sourcify)
         run: |
