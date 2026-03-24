@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from eip7904_analysis.config import default_paths, ensure_workspace_dirs
-from eip7904_analysis.pipeline import write_query_output
+from repricing_forensics.config import default_paths, ensure_workspace_dirs
+from repricing_forensics.pipeline import write_query_output
 
 
 def main() -> None:

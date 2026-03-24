@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from eip7904_analysis.config import default_paths
+from repricing_forensics.config import default_paths
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:

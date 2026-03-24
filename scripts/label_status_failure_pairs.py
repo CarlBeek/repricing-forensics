@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import csv
 
-from eip7904_analysis.config import default_paths
-from eip7904_analysis.duckdb_utils import connect
-from eip7904_analysis.labels import infer_project_label
+from repricing_forensics.config import default_paths
+from repricing_forensics.duckdb_utils import connect
+from repricing_forensics.labels import infer_project_label
 
 
 def main() -> None:

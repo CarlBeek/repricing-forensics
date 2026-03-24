@@ -5,9 +5,9 @@ import argparse
 import csv
 from requests import RequestException
 
-from eip7904_analysis.config import default_paths, ensure_workspace_dirs
-from eip7904_analysis.duckdb_utils import connect
-from eip7904_analysis.sourcify import classify_contract, fetch_contract, source_hint
+from repricing_forensics.config import default_paths, ensure_workspace_dirs
+from repricing_forensics.duckdb_utils import connect
+from repricing_forensics.sourcify import classify_contract, fetch_contract, source_hint
 
 
 def main() -> None:

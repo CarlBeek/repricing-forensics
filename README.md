@@ -13,7 +13,7 @@ This repo contains the Python analysis workflow for evaluating the impact of the
 
 ## Layout
 
-- `src/eip7904_analysis/`: reusable analysis code
+- `src/repricing_forensics/`: reusable analysis code
 - `scripts/`: CLI entrypoints for export, normalization, enrichment, and reports
 - `notebooks/`: exploratory and presentation notebooks
 - `artifacts/`: generated charts and presentation outputs

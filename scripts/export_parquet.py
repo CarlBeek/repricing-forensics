@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from eip7904_analysis.config import default_paths, ensure_workspace_dirs
+from repricing_forensics.config import default_paths, ensure_workspace_dirs
 
 
 def main() -> None:

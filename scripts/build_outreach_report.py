@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 
-from eip7904_analysis.config import default_paths
+from repricing_forensics.config import default_paths
 
 
 OWNER_WEIGHT = {

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eip7904-analysis"
+name = "repricing-forensics"
 version = "0.1.0"
 description = "Analysis workflow for Ethereum EIP-7904 repricing divergence data"
 requires-python = ">=3.9"

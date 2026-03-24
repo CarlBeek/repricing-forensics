@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import argparse
 
-from eip7904_analysis.config import default_paths
-from eip7904_analysis.pipeline import build_status_change_call_frame_table
+from repricing_forensics.config import default_paths
+from repricing_forensics.pipeline import build_status_change_call_frame_table
 
 
 def main() -> None:

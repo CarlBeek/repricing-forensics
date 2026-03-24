@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from eip7904_analysis.config import default_paths
-from eip7904_analysis.duckdb_utils import connect
-from eip7904_analysis.labels import infer_project_label
-from eip7904_analysis.parsers import parse_call_frames
+from repricing_forensics.config import default_paths
+from repricing_forensics.duckdb_utils import connect
+from repricing_forensics.labels import infer_project_label
+from repricing_forensics.parsers import parse_call_frames
 
 
 def load_classification(cache_path: Path) -> dict[str, dict[str, str]]:

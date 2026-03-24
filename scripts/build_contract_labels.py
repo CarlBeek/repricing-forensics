@@ -27,8 +27,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 import duckdb
 import requests
 
-from eip7904_analysis.config import default_paths
-from eip7904_analysis.labels import ADDRESS_PROJECT_LABELS
+from repricing_forensics.config import default_paths
+from repricing_forensics.labels import ADDRESS_PROJECT_LABELS
 
 _paths = default_paths()
 CACHE_DIR = _paths.cache_dir

@@ -35,9 +35,9 @@ from helpers import (
     fmt_pct,
     plotly_layout,
 )
-from eip7904_analysis.config import default_paths
-from eip7904_analysis.duckdb_utils import connect
-from eip7904_analysis.labels import ADDRESS_PROJECT_LABELS, infer_project_label
+from repricing_forensics.config import default_paths
+from repricing_forensics.duckdb_utils import connect
+from repricing_forensics.labels import ADDRESS_PROJECT_LABELS, infer_project_label
 
 # ── Paths ─────────────────────────────────────────────────────────────
 

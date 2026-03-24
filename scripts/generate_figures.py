@@ -5,8 +5,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from eip7904_analysis.config import default_paths, ensure_workspace_dirs
-from eip7904_analysis.duckdb_utils import connect
+from repricing_forensics.config import default_paths, ensure_workspace_dirs
+from repricing_forensics.duckdb_utils import connect
 
 
 def main() -> None:
