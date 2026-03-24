@@ -120,10 +120,10 @@ def build_normalized_forensics(
         if include_call_frames:
             columns += ["baseline_call_frames", "schedule_call_frames"]
 
-        cursor = conn.execute(
-            f"SELECT {', '.join(columns)} FROM artifacts_7904"
-        )
-        col_names = [desc[0] for desc in cursor.description]
+        # Use a separate cursor for reading so flush writes don't invalidate it
+        read_cur = conn.cursor()
+        read_cur.execute(f"SELECT {', '.join(columns)} FROM artifacts_7904")
+        col_names = [desc[0] for desc in read_cur.description]
 
         forensic_rows: list[dict[str, object]] = []
         frame_rows: list[dict[str, object]] = []
@@ -131,7 +131,7 @@ def build_normalized_forensics(
         first_frames = True
 
         while True:
-            batch = cursor.fetchmany(_BATCH_SIZE)
+            batch = read_cur.fetchmany(_BATCH_SIZE)
             if not batch:
                 break
             for raw in batch:
@@ -153,6 +153,8 @@ def build_normalized_forensics(
                 if frame_rows:
                     first_frames = False
                 frame_rows.clear()
+
+        read_cur.close()
 
     finally:
         conn.close()
