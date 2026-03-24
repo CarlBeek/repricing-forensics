@@ -1,27 +1,34 @@
-HOT_GLOB = "research_lake/divergences_hot/schedule_name=*/block_bucket=*/*.parquet"
-ARTIFACT_GLOB = "research_lake/divergence_artifacts/schedule_name=*/block_bucket=*/*.parquet"
-COVERAGE_GLOB = "research_lake/block_coverage/schedule_name=*/block_bucket=*/*.parquet"
+from __future__ import annotations
+
+from pathlib import Path
 
 
-def create_views_sql(schedule_name: str) -> list[str]:
+def _glob(lake: Path, dataset: str) -> str:
+    return str(lake / dataset / "schedule_name=*" / "block_bucket=*" / "*.parquet")
+
+
+def create_views_sql(schedule_name: str, research_lake: Path) -> list[str]:
     escaped = schedule_name.replace("'", "''")
+    hot = _glob(research_lake, "divergences_hot")
+    artifact = _glob(research_lake, "divergence_artifacts")
+    coverage = _glob(research_lake, "block_coverage")
     return [
         f"""
         CREATE OR REPLACE VIEW hot_7904 AS
         SELECT *
-        FROM read_parquet('{HOT_GLOB}')
+        FROM read_parquet('{hot}')
         WHERE schedule_name = '{escaped}'
         """,
         f"""
         CREATE OR REPLACE VIEW artifacts_7904 AS
         SELECT *
-        FROM read_parquet('{ARTIFACT_GLOB}')
+        FROM read_parquet('{artifact}')
         WHERE schedule_name = '{escaped}'
         """,
         f"""
         CREATE OR REPLACE VIEW coverage_7904 AS
         SELECT *
-        FROM read_parquet('{COVERAGE_GLOB}')
+        FROM read_parquet('{coverage}')
         WHERE schedule_name = '{escaped}'
         """,
     ]

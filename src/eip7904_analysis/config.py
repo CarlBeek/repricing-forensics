@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,19 +15,28 @@ class Paths:
     cache_dir: Path
     artifacts_dir: Path
     notebooks_dir: Path
+    reth_dir: Path
+
+
+def _env_path(var: str, default: Path) -> Path:
+    val = os.environ.get(var)
+    return Path(val).resolve() if val else default
 
 
 def default_paths(repo_root: Path | None = None) -> Paths:
     root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
+    research_lake = _env_path("RESEARCH_LAKE_PATH", root / "research_lake")
+    duckdb_dir = _env_path("DUCKDB_DIR", root / "duckdb")
     return Paths(
         repo_root=root,
-        sqlite_db=root / "divergences.db",
-        research_lake=root / "research_lake",
-        duckdb_dir=root / "duckdb",
-        duckdb_path=root / "duckdb" / "eip7904.duckdb",
-        cache_dir=root / "cache",
-        artifacts_dir=root / "artifacts",
+        sqlite_db=_env_path("DIVERGENCE_DB_PATH", root / "divergences.db"),
+        research_lake=research_lake,
+        duckdb_dir=duckdb_dir,
+        duckdb_path=_env_path("DUCKDB_PATH", duckdb_dir / "eip7904.duckdb"),
+        cache_dir=_env_path("CACHE_DIR", root / "cache"),
+        artifacts_dir=_env_path("ARTIFACTS_DIR", root / "artifacts"),
         notebooks_dir=root / "notebooks",
+        reth_dir=_env_path("RETH_DIR", root.parent / "reth"),
     )
 
 

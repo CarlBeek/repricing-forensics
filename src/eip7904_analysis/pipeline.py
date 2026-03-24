@@ -20,7 +20,7 @@ def initialize_duckdb(paths: Paths, schedule_name: str) -> None:
     ensure_workspace_dirs(paths)
     conn = connect(paths.duckdb_path)
     try:
-        for statement in create_views_sql(schedule_name):
+        for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
         conn.execute(DERIVED_INCIDENTS_SQL)
     finally:
@@ -35,7 +35,7 @@ def build_normalized_forensics(
     ensure_workspace_dirs(paths)
     conn = connect(paths.duckdb_path)
     try:
-        for statement in create_views_sql(schedule_name):
+        for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
 
         df = conn.execute(
@@ -144,7 +144,7 @@ def build_status_change_call_frame_table(paths: Paths, schedule_name: str) -> No
     ensure_workspace_dirs(paths)
     conn = connect(paths.duckdb_path)
     try:
-        for statement in create_views_sql(schedule_name):
+        for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
 
         df = conn.execute(

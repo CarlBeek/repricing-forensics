@@ -35,15 +35,17 @@ from helpers import (
     fmt_pct,
     plotly_layout,
 )
+from eip7904_analysis.config import default_paths
+from eip7904_analysis.duckdb_utils import connect
 from eip7904_analysis.labels import ADDRESS_PROJECT_LABELS, infer_project_label
 
 # ── Paths ─────────────────────────────────────────────────────────────
 
-DUCKDB_PATH = PROJECT_ROOT / "duckdb" / "eip7904.duckdb"
-TABLES_DIR = PROJECT_ROOT / "artifacts" / "tables"
-REPORTS_DIR = PROJECT_ROOT / "artifacts" / "reports"
+_paths = default_paths()
+TABLES_DIR = _paths.artifacts_dir / "tables"
+REPORTS_DIR = _paths.artifacts_dir / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-LABELS_CSV = PROJECT_ROOT / "cache" / "contract_labels.csv"
+LABELS_CSV = _paths.cache_dir / "contract_labels.csv"
 
 # ── Load comprehensive labels ─────────────────────────────────────────
 
@@ -55,11 +57,7 @@ if LABELS_CSV.exists():
 
 # ── DuckDB connection ─────────────────────────────────────────────────
 
-import os
-
-os.chdir(PROJECT_ROOT)
-conn = duckdb.connect(str(DUCKDB_PATH), read_only=True)
-conn.execute("PRAGMA threads=8")
+conn = connect(_paths.duckdb_path)
 
 
 def query(sql: str) -> pd.DataFrame:

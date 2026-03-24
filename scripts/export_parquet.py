@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from eip7904_analysis.config import default_paths, ensure_workspace_dirs
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export the SQLite divergence DB to Parquet")
-    parser.add_argument("--reth-dir", type=Path, default=Path("../reth"))
+    parser.add_argument("--reth-dir", type=Path, default=None)
     parser.add_argument("--block-bucket-size", type=int, default=100_000)
     parser.add_argument("--row-group-size", type=int, default=50_000)
     parser.add_argument("--full-refresh", action="store_true")
@@ -19,28 +20,31 @@ def main() -> None:
     paths = default_paths()
     ensure_workspace_dirs(paths)
 
-    cmd = [
-        "cargo",
-        "run",
-        "--release",
-        "-p",
-        "reth-research-bin",
-        "--bin",
-        "reth-research-export-parquet",
-        "--",
-        "--db-path",
-        str(paths.sqlite_db),
-        "--out-dir",
-        str(paths.research_lake),
-        "--row-group-size",
-        str(args.row_group_size),
-        "--block-bucket-size",
-        str(args.block_bucket_size),
+    reth_dir = (args.reth_dir or paths.reth_dir).resolve()
+
+    # Use a pre-built binary if available, otherwise cargo run
+    prebuilt = reth_dir / "target" / "release" / "reth-research-export-parquet"
+    if prebuilt.exists() or shutil.which("reth-research-export-parquet"):
+        binary = str(prebuilt) if prebuilt.exists() else "reth-research-export-parquet"
+        cmd = [binary]
+    else:
+        cmd = [
+            "cargo", "run", "--release",
+            "-p", "reth-research-bin",
+            "--bin", "reth-research-export-parquet",
+            "--",
+        ]
+
+    cmd += [
+        "--db-path", str(paths.sqlite_db),
+        "--out-dir", str(paths.research_lake),
+        "--row-group-size", str(args.row_group_size),
+        "--block-bucket-size", str(args.block_bucket_size),
     ]
     if args.full_refresh:
         cmd.append("--full-refresh")
 
-    subprocess.run(cmd, cwd=args.reth_dir, check=True)
+    subprocess.run(cmd, cwd=reth_dir, check=True)
 
 
 if __name__ == "__main__":

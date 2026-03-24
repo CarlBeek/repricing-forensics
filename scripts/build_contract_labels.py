@@ -27,9 +27,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 import duckdb
 import requests
 
+from eip7904_analysis.config import default_paths
 from eip7904_analysis.labels import ADDRESS_PROJECT_LABELS
 
-CACHE_DIR = PROJECT_ROOT / "cache"
+_paths = default_paths()
+CACHE_DIR = _paths.cache_dir
 SOURCIFY_DIR = CACHE_DIR / "sourcify"
 LABELS_PATH = CACHE_DIR / "contract_labels.csv"
 
@@ -194,8 +196,7 @@ def main():
     print("Building comprehensive contract labels...")
 
     # Load DuckDB to get all contracts we care about
-    os.chdir(PROJECT_ROOT)
-    conn = duckdb.connect(str(PROJECT_ROOT / "duckdb" / "eip7904.duckdb"), read_only=True)
+    conn = duckdb.connect(str(_paths.duckdb_path), read_only=True)
 
     # Get all recipient contracts with breakage counts
     contracts = conn.execute("""
