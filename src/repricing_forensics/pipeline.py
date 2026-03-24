@@ -96,8 +96,10 @@ def _flush(conn, df_name: str, table: str, rows: list[dict], first: bool) -> Non
     if not rows:
         return
     conn.register(df_name, pd.DataFrame(rows))
-    mode = "CREATE OR REPLACE TABLE" if first else "INSERT INTO"
-    conn.execute(f"{mode} {table} SELECT * FROM {df_name}")
+    if first:
+        conn.execute(f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM {df_name}")
+    else:
+        conn.execute(f"INSERT INTO {table} SELECT * FROM {df_name}")
 
 
 def build_normalized_forensics(
