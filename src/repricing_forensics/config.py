@@ -20,7 +20,7 @@ class Paths:
 
 def _env_path(var: str, default: Path) -> Path:
     val = os.environ.get(var)
-    return Path(val).resolve() if val else default
+    return Path(val).expanduser().resolve() if val else default
 
 
 def default_paths(repo_root: Path | None = None) -> Paths:
