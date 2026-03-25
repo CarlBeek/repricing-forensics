@@ -842,7 +842,7 @@ def build_affected_parties() -> str:
         remed = outreach_info.get("remediation_buckets", "")
 
         # Format sample tx hashes as etherscan links
-        sample_hashes = row["sample_hashes"] if row["sample_hashes"] is not None else []
+        sample_hashes = row["sample_hashes"] if pd.notna(row["sample_hashes"]) and row["sample_hashes"] is not None else []
         tx_links = " ".join(
             f'<a href="https://etherscan.io/tx/{h}" target="_blank" class="mono">{h[:10]}…</a>'
             for h in sample_hashes[:5]
@@ -907,7 +907,7 @@ def build_affected_parties() -> str:
     for i, row in contracts.head(20).iterrows():
         addr = row["recipient"] or ""
         project = label_address(addr)
-        detail_hashes = row["detail_hashes"] if row["detail_hashes"] is not None else []
+        detail_hashes = row["detail_hashes"] if pd.notna(row["detail_hashes"]) and row["detail_hashes"] is not None else []
         outreach_info = outreach_dict.get(project, {})
 
         tx_list = "\n".join(
