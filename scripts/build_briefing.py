@@ -57,7 +57,7 @@ def main() -> None:
     lines.append("")
     for row in motifs[:10]:
         lines.append(
-            f"- {row['effective_caller_project']} -> {row['effective_callee_project']} @ depth {row['depth']}: "
+            f"- {row['caller_project']} -> {row['callee_project']} @ depth {row['depth']}: "
             f"changed_edges={row['changed_edges']}, distinct_txs={row['distinct_txs']}, success_flip_edges={row['success_flip_edges']}"
         )
 
@@ -75,7 +75,7 @@ def main() -> None:
     lines.append("")
     for row in breakpoint_motifs[:10]:
         lines.append(
-            f"- {row['root_project']} -> {row['caller_project']} -> {row['callee_project']} @ depth {row['depth']}: "
+            f"- {row['recipient_project']} -> {row['caller_project']} -> {row['callee_project']} @ depth {row['depth']}: "
             f"txs={row['txs']}, reason={row['change_reason']}, avg_gas_used_delta={row['avg_gas_used_delta']}"
         )
 

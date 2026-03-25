@@ -144,9 +144,9 @@ def main() -> None:
         paths.artifacts_dir / "tables" / "changed_edge_motifs.csv"
     ).head(20)
     changed_motifs_df["edge"] = (
-        changed_motifs_df["effective_caller_project"]
+        changed_motifs_df["caller_project"]
         + " -> "
-        + changed_motifs_df["effective_callee_project"]
+        + changed_motifs_df["callee_project"]
     )
     fig = px.bar(
         changed_motifs_df,
@@ -163,9 +163,9 @@ def main() -> None:
         paths.artifacts_dir / "tables" / "changed_nonroot_sankey_edges.csv"
     ).head(40)
     labels = sorted(
-        set(changed_sankey_df["root_project"].fillna("").tolist())
-        | set(changed_sankey_df["effective_caller_project"].fillna("").tolist())
-        | set(changed_sankey_df["effective_callee_project"].fillna("").tolist())
+        set(changed_sankey_df["recipient_project"].fillna("").tolist())
+        | set(changed_sankey_df["caller_project"].fillna("").tolist())
+        | set(changed_sankey_df["callee_project"].fillna("").tolist())
     )
     labels = [label if label else "unknown" for label in labels]
     label_index = {label: idx for idx, label in enumerate(labels)}
@@ -176,14 +176,14 @@ def main() -> None:
                 link=dict(
                     source=[
                         label_index[(label if label else "unknown")]
-                        for label in changed_sankey_df["root_project"].fillna("")
+                        for label in changed_sankey_df["recipient_project"].fillna("")
                     ],
                     target=[
                         label_index[(label if label else "unknown")]
-                        for label in changed_sankey_df["effective_caller_project"].fillna("")
+                        for label in changed_sankey_df["caller_project"].fillna("")
                     ],
                     value=changed_sankey_df["changed_edges"],
-                    customdata=changed_sankey_df["effective_callee_project"],
+                    customdata=changed_sankey_df["callee_project"],
                     hovertemplate="%{source.label} -> %{target.label}<br>changed_edges=%{value}<br>callee=%{customdata}<extra></extra>",
                 ),
             )
@@ -216,7 +216,7 @@ def main() -> None:
         x="edge",
         y="txs",
         color="depth",
-        hover_data=["root_project", "change_reason", "success_flip_txs"],
+        hover_data=["recipient_project", "change_reason", "success_flip_txs"],
         title="Top First-Changed Non-Root Motifs",
     )
     fig.update_layout(xaxis_tickangle=-45)
