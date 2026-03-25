@@ -148,18 +148,17 @@ jobs:
           </body></html>
           INDEXEOF
 
-          # Deploy from a fresh clone to avoid .venv contamination
+          # Deploy from a fresh git init to avoid .venv contamination
           WORK=$(mktemp -d)
-          git clone --bare "$(pwd)/.git" "$WORK/repo.git"
+          cp -r "$DEPLOY_DIR"/* "$WORK/"
           cd "$WORK"
-          git --git-dir=repo.git --work-tree=. checkout --orphan gh-pages
-          git --git-dir=repo.git --work-tree=. rm -rf . > /dev/null 2>&1 || true
-          rm -rf *
-          cp -r "$DEPLOY_DIR"/* .
-          git --git-dir=repo.git --work-tree=. add -A
-          git --git-dir=repo.git --work-tree=. \
+          git init
+          git checkout -b gh-pages
+          git add -A
+          git \
             -c user.name="github-actions[bot]" \
             -c user.email="github-actions[bot]@users.noreply.github.com" \
             commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git --git-dir=repo.git push origin gh-pages:gh-pages --force
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git push origin gh-pages --force
           rm -rf "$WORK" "$DEPLOY_DIR"
