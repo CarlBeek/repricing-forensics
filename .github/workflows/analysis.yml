@@ -20,6 +20,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore persistent cache
+        run: |
+          # Keep cache/duckdb dirs outside the checkout so they survive across runs
+          mkdir -p ~/.repricing-forensics-cache/cache
+          mkdir -p ~/.repricing-forensics-cache/duckdb
+          ln -sfn ~/.repricing-forensics-cache/cache cache
+          ln -sfn ~/.repricing-forensics-cache/duckdb duckdb
+
       - name: Set up Python venv
         run: |
           rm -rf .venv
