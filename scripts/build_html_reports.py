@@ -662,6 +662,7 @@ def build_breakage_forensics() -> str:
     sankey_edges = read_table("failure_path_sankey_edges.csv")
 
     # Aggregate to top flows only, then build label set from just those edges
+    sankey_edges["status_failures"] = pd.to_numeric(sankey_edges["status_failures"], errors="coerce").fillna(0).astype(int)
     rc = sankey_edges.groupby(["root_project", "failing_caller_project"])["status_failures"].sum().reset_index()
     rc = rc.nlargest(15, "status_failures")
     cc = sankey_edges.groupby(["failing_caller_project", "failing_callee_project"])["status_failures"].sum().reset_index()
