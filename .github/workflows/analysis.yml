@@ -148,7 +148,8 @@ jobs:
           </body></html>
           INDEXEOF
 
-          # Deploy from a fresh git init to avoid .venv contamination
+          # Deploy from a fresh git init, push via the checkout's authenticated remote
+          REPO_DIR=$(pwd)
           WORK=$(mktemp -d)
           cp -r "$DEPLOY_DIR"/* "$WORK/"
           cd "$WORK"
@@ -159,6 +160,8 @@ jobs:
             -c user.name="github-actions[bot]" \
             -c user.email="github-actions[bot]@users.noreply.github.com" \
             commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          # Use the checkout's remote URL (has auth token on hosted runners)
+          REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin)
+          git remote add origin "$REMOTE_URL"
           git push origin gh-pages --force
           rm -rf "$WORK" "$DEPLOY_DIR"
