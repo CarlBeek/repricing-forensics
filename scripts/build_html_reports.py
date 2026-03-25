@@ -761,26 +761,38 @@ def build_affected_parties() -> str:
     print("Building Report 3: Affected Parties...")
     sections = []
 
-    # Get per-contract data with sample tx hashes
+    # Get per-contract data with only the top 20 tx hashes (not all)
     contracts = query("""
-        WITH ranked AS (
+        WITH stats AS (
             SELECT recipient,
                    count(*) as broken_txs,
                    avg(gas_delta) as avg_delta,
                    sum(gas_delta) as total_delta,
                    min(block_number) as min_block,
-                   max(block_number) as max_block,
-                   -- Collect sample tx hashes
-                   array_agg(tx_hash ORDER BY gas_delta DESC) as all_hashes
+                   max(block_number) as max_block
             FROM hot_7904
             WHERE status_changed
             GROUP BY recipient
+        ),
+        top_hashes AS (
+            SELECT recipient, tx_hash, gas_delta,
+                   ROW_NUMBER() OVER (PARTITION BY recipient ORDER BY gas_delta DESC) as rn
+            FROM hot_7904
+            WHERE status_changed
+        ),
+        hashes_agg AS (
+            SELECT recipient,
+                   array_agg(tx_hash ORDER BY gas_delta DESC) FILTER (WHERE rn <= 5) as sample_hashes,
+                   array_agg(tx_hash ORDER BY gas_delta DESC) FILTER (WHERE rn <= 20) as detail_hashes
+            FROM top_hashes
+            WHERE rn <= 20
+            GROUP BY recipient
         )
-        SELECT *,
-               all_hashes[:5] as sample_hashes,
-               all_hashes[:20] as detail_hashes
-        FROM ranked
+        SELECT s.*, h.sample_hashes, h.detail_hashes
+        FROM stats s
+        LEFT JOIN hashes_agg h USING (recipient)
         ORDER BY broken_txs DESC
+        LIMIT 1000
     """)
 
     total_broken = contracts["broken_txs"].sum()
