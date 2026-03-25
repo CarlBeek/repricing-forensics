@@ -19,6 +19,8 @@ jobs:
       ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Restore persistent cache
         run: |
@@ -160,8 +162,7 @@ jobs:
             -c user.name="github-actions[bot]" \
             -c user.email="github-actions[bot]@users.noreply.github.com" \
             commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # Use the checkout's remote URL (has auth token on hosted runners)
-          REMOTE_URL=$(git -C "$REPO_DIR" remote get-url origin)
-          git remote add origin "$REMOTE_URL"
+          # Use SSH URL (self-hosted runner has SSH keys)
+          git remote add origin "git@github.com:$GITHUB_REPOSITORY.git"
           git push origin gh-pages --force
           rm -rf "$WORK" "$DEPLOY_DIR"
