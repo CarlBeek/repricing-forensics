@@ -53,11 +53,6 @@ jobs:
           . .venv/bin/activate
           python scripts/materialize_reports.py
 
-      - name: Generate figures
-        run: |
-          . .venv/bin/activate
-          python scripts/generate_figures.py
-
       - name: Label status failure pairs
         run: |
           . .venv/bin/activate
@@ -68,11 +63,6 @@ jobs:
           . .venv/bin/activate
           python scripts/build_status_call_frames.py --schedule-name 7904-prelim
 
-      - name: Build outreach report
-        run: |
-          . .venv/bin/activate
-          python scripts/build_outreach_report.py
-
       - name: Build project reports
         run: |
           . .venv/bin/activate
@@ -82,6 +72,16 @@ jobs:
         run: |
           . .venv/bin/activate
           python scripts/build_call_graph_analysis.py
+
+      - name: Generate figures
+        run: |
+          . .venv/bin/activate
+          python scripts/generate_figures.py
+
+      - name: Build outreach report
+        run: |
+          . .venv/bin/activate
+          python scripts/build_outreach_report.py
 
       - name: Build HTML reports
         run: |
