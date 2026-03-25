@@ -108,17 +108,12 @@ jobs:
           path: artifacts/
           retention-days: 90
 
-      - name: Deploy to GitHub Pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare site
         run: |
-          # Collect site files into a temp dir outside the repo
-          DEPLOY_DIR=$(mktemp -d)
-          cp -r artifacts/reports/* "$DEPLOY_DIR/" 2>/dev/null || true
-          cp -r artifacts/figures/* "$DEPLOY_DIR/" 2>/dev/null || true
-
-          # Generate an index page
-          cat > "$DEPLOY_DIR/index.html" <<'INDEXEOF'
+          mkdir -p _site
+          cp -r artifacts/reports/* _site/ 2>/dev/null || true
+          cp -r artifacts/figures/* _site/ 2>/dev/null || true
+          cat > _site/index.html <<'EOF'
           <!DOCTYPE html>
           <html><head><title>EIP-7904 Analysis</title>
           <style>
@@ -133,7 +128,6 @@ jobs:
           <div id="links"></div>
           <script>
             document.getElementById('timestamp').textContent = 'Last updated: ' + new Date().toISOString();
-            // List all .html files except index
             fetch('.').then(r => r.text()).then(html => {
               const links = [...html.matchAll(/href="([^"]+\.html)"/g)]
                 .map(m => m[1])
@@ -148,21 +142,11 @@ jobs:
             });
           </script>
           </body></html>
-          INDEXEOF
+          EOF
 
-          # Deploy from a fresh git init, push via the checkout's authenticated remote
-          REPO_DIR=$(pwd)
-          WORK=$(mktemp -d)
-          cp -r "$DEPLOY_DIR"/* "$WORK/"
-          cd "$WORK"
-          git init
-          git checkout -b gh-pages
-          git add -A
-          git \
-            -c user.name="github-actions[bot]" \
-            -c user.email="github-actions[bot]@users.noreply.github.com" \
-            commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # Use the HTTPS URL with the Actions token for auth
-          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_REPOSITORY.git"
-          git push origin gh-pages --force
-          rm -rf "$WORK" "$DEPLOY_DIR"
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./_site
+          force_orphan: true
