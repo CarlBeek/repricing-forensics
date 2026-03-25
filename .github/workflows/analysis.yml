@@ -110,16 +110,13 @@ jobs:
 
       - name: Deploy to GitHub Pages
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Build a minimal pages site from the reports
-          mkdir -p _site
-          cp -r artifacts/reports/* _site/ 2>/dev/null || true
-          cp -r artifacts/figures/* _site/ 2>/dev/null || true
+          # Collect site files into a temp dir outside the repo
+          DEPLOY_DIR=$(mktemp -d)
+          cp -r artifacts/reports/* "$DEPLOY_DIR/" 2>/dev/null || true
+          cp -r artifacts/figures/* "$DEPLOY_DIR/" 2>/dev/null || true
 
           # Generate an index page
-          cat > _site/index.html <<'INDEXEOF'
+          cat > "$DEPLOY_DIR/index.html" <<'INDEXEOF'
           <!DOCTYPE html>
           <html><head><title>EIP-7904 Analysis</title>
           <style>
@@ -151,11 +148,18 @@ jobs:
           </body></html>
           INDEXEOF
 
-          # Force-push to gh-pages (only latest, keeps repo small)
-          git checkout --orphan gh-pages-tmp
-          git rm -rf . > /dev/null 2>&1 || true
-          cp -r _site/* .
-          git add -A
-          git commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push origin gh-pages-tmp:gh-pages --force
-          git checkout -f -
+          # Deploy from a fresh clone to avoid .venv contamination
+          WORK=$(mktemp -d)
+          git clone --bare "$(pwd)/.git" "$WORK/repo.git"
+          cd "$WORK"
+          git --git-dir=repo.git --work-tree=. checkout --orphan gh-pages
+          git --git-dir=repo.git --work-tree=. rm -rf . > /dev/null 2>&1 || true
+          rm -rf *
+          cp -r "$DEPLOY_DIR"/* .
+          git --git-dir=repo.git --work-tree=. add -A
+          git --git-dir=repo.git --work-tree=. \
+            -c user.name="github-actions[bot]" \
+            -c user.email="github-actions[bot]@users.noreply.github.com" \
+            commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git --git-dir=repo.git push origin gh-pages:gh-pages --force
+          rm -rf "$WORK" "$DEPLOY_DIR"
