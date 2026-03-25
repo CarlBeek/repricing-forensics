@@ -115,36 +115,26 @@ jobs:
           cp -r artifacts/figures/* _site/ 2>/dev/null || true
           # Remove files over 90MB (GitHub rejects >100MB)
           find _site -type f -size +90M -exec echo "Excluding oversized: {}" \; -delete
-          cat > _site/index.html <<'EOF'
-          <!DOCTYPE html>
-          <html><head><title>EIP-7904 Analysis</title>
-          <style>
-            body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2em auto; padding: 0 1em; }
-            a { display: block; margin: 0.5em 0; }
-            .meta { color: #666; font-size: 0.9em; }
-          </style></head>
-          <body>
-          <h1>EIP-7904 Repricing Analysis</h1>
-          <div class="meta" id="timestamp"></div>
-          <h2>Reports</h2>
-          <div id="links"></div>
-          <script>
-            document.getElementById('timestamp').textContent = 'Last updated: ' + new Date().toISOString();
-            fetch('.').then(r => r.text()).then(html => {
-              const links = [...html.matchAll(/href="([^"]+\.html)"/g)]
-                .map(m => m[1])
-                .filter(f => f !== 'index.html');
-              const container = document.getElementById('links');
-              links.forEach(f => {
-                const a = document.createElement('a');
-                a.href = f;
-                a.textContent = f.replace('.html', '').replace(/_/g, ' ');
-                container.appendChild(a);
-              });
-            });
-          </script>
-          </body></html>
-          EOF
+          # Build index.html with links generated at build time
+          {
+            echo '<!DOCTYPE html><html><head><title>EIP-7904 Analysis</title>'
+            echo '<style>'
+            echo '  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2em auto; padding: 0 1em; }'
+            echo '  a { display: block; margin: 0.5em 0; font-size: 1.1em; }'
+            echo '  .meta { color: #666; font-size: 0.9em; }'
+            echo '  h2 { margin-top: 1.5em; }'
+            echo '</style></head><body>'
+            echo '<h1>EIP-7904 Repricing Analysis</h1>'
+            echo "<p class=\"meta\">Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)</p>"
+            echo '<h2>Reports</h2>'
+            for f in _site/*.html; do
+              name=$(basename "$f")
+              [ "$name" = "index.html" ] && continue
+              label=$(echo "$name" | sed 's/\.html$//' | sed 's/_/ /g')
+              echo "<a href=\"$name\">$label</a>"
+            done
+            echo '</body></html>'
+          } > _site/index.html
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
