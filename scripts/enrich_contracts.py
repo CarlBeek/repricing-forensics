@@ -3,16 +3,30 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests import RequestException
 
 from repricing_forensics.config import default_paths, ensure_workspace_dirs
 from repricing_forensics.duckdb_utils import connect
-from repricing_forensics.sourcify import classify_contract, fetch_contract, source_hint
+from repricing_forensics.sourcify import (
+    classify_contract,
+    contract_cache_path,
+    fetch_contract,
+    source_hint,
+)
+
+
+def _fetch_one(address: str, cache_dir):
+    try:
+        return address, fetch_contract(address, cache_dir)
+    except RequestException:
+        return address, None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch Sourcify metadata for impacted contracts")
     parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--workers", type=int, default=16)
     parser.add_argument(
         "--address-source",
         choices=["divergence", "recipient", "union"],
@@ -67,6 +81,37 @@ def main() -> None:
             for row in csv.DictReader(handle):
                 existing[row["address"].lower()] = row
 
+    # Split into cached (instant) vs uncached (need HTTP fetch)
+    tx_counts = {addr.lower(): txs for addr, txs in rows}
+    uncached = [
+        addr for addr, _ in rows
+        if not contract_cache_path(paths.cache_dir, addr).exists()
+    ]
+    cached = [addr for addr, _ in rows if addr not in uncached]
+
+    print(f"{len(cached)} cached, {len(uncached)} to fetch ({args.workers} workers)")
+
+    # Load cached results instantly
+    merged = dict(existing)
+    for address in cached:
+        payload = fetch_contract(address, paths.cache_dir)  # reads from disk
+        merged[address.lower()] = _classify(address, tx_counts[address.lower()], payload)
+
+    # Fetch uncached in parallel
+    if uncached:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(_fetch_one, addr, paths.cache_dir): addr
+                for addr in uncached
+            }
+            done = 0
+            for future in as_completed(futures):
+                address, payload = future.result()
+                merged[address.lower()] = _classify(address, tx_counts[address.lower()], payload)
+                done += 1
+                if done % 20 == 0:
+                    print(f"  fetched {done}/{len(uncached)}")
+
     with out_path.open("w", newline="") as handle:
         writer = csv.DictWriter(
             handle,
@@ -80,27 +125,23 @@ def main() -> None:
             ],
         )
         writer.writeheader()
-        merged = dict(existing)
-        for address, divergent_txs in rows:
-            try:
-                payload = fetch_contract(address, paths.cache_dir)
-            except RequestException:
-                payload = None
-            merged[address.lower()] = {
-                "address": address,
-                "divergent_txs": str(divergent_txs),
-                "classification": classify_contract(payload),
-                "match_status": None if payload is None else payload.get("match"),
-                "name": None if payload is None else payload.get("compiledContract", {}).get("name"),
-                "source_hint": source_hint(payload),
-            }
         for row in sorted(
             merged.values(),
             key=lambda item: int(item["divergent_txs"]),
             reverse=True,
         ):
             writer.writerow(row)
-            handle.flush()
+
+
+def _classify(address, divergent_txs, payload):
+    return {
+        "address": address,
+        "divergent_txs": str(divergent_txs),
+        "classification": classify_contract(payload),
+        "match_status": None if payload is None else payload.get("match"),
+        "name": None if payload is None else payload.get("compiledContract", {}).get("name"),
+        "source_hint": source_hint(payload),
+    }
 
 
 if __name__ == "__main__":
