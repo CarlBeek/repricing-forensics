@@ -55,6 +55,17 @@ def main() -> None:
             ORDER BY abs(gas_delta) DESC
             LIMIT 1000
         """,
+        "status_failure_call_pairs.csv": """
+            SELECT
+                caller,
+                callee,
+                count(*) AS status_failures,
+                avg(gas_provided) AS avg_gas_provided,
+                avg(gas_used) AS avg_gas_used
+            FROM status_change_failure_summary
+            GROUP BY caller, callee
+            ORDER BY status_failures DESC
+        """,
     }
 
     for file_name, sql in queries.items():
