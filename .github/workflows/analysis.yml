@@ -19,8 +19,6 @@ jobs:
       ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
 
       - name: Restore persistent cache
         run: |
@@ -111,6 +109,8 @@ jobs:
           retention-days: 90
 
       - name: Deploy to GitHub Pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Collect site files into a temp dir outside the repo
           DEPLOY_DIR=$(mktemp -d)
@@ -162,7 +162,7 @@ jobs:
             -c user.name="github-actions[bot]" \
             -c user.email="github-actions[bot]@users.noreply.github.com" \
             commit -m "Update reports $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # Use SSH URL (self-hosted runner has SSH keys)
-          git remote add origin "git@github.com:$GITHUB_REPOSITORY.git"
+          # Use the HTTPS URL with the Actions token for auth
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_REPOSITORY.git"
           git push origin gh-pages --force
           rm -rf "$WORK" "$DEPLOY_DIR"
