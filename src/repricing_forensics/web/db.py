@@ -50,9 +50,12 @@ def query_df(sql: str) -> pd.DataFrame:
     return get_conn().execute(sql).df()
 
 
-def query_scalar(sql: str) -> Any:
-    """Execute SQL and return the single scalar result."""
-    return get_conn().execute(sql).fetchone()[0]
+def query_scalar(sql: str, default: Any = None) -> Any:
+    """Execute SQL and return the single scalar result, or default if empty."""
+    row = get_conn().execute(sql).fetchone()
+    if row is None:
+        return default
+    return row[0]
 
 
 def read_csv(name: str) -> pd.DataFrame:
