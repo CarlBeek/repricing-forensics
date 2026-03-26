@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}EIP-7904 Breakage Forensics{% endblock %}
+
+{% block content %}
+<h1>EIP-7904 Breakage Forensics</h1>
+<p class="subtitle" id="subtitle">Loading...</p>
+
+<!-- 1. Status change timeline -->
+<h2>1. Status Change Overview</h2>
+<div id="timeChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 2. Gas delta distribution -->
+<h2>2. Gas Delta Distribution</h2>
+<p>How much extra gas would broken transactions have needed to survive:</p>
+<div id="gasDeltaChart"><p class="loading">Loading chart...</p></div>
+<table style="max-width:300px" id="percentileTable">
+  <thead><tr><th>Percentile</th><th>Gas Delta</th></tr></thead>
+  <tbody id="percentileBody"><tr><td colspan="2" class="loading">Loading...</td></tr></tbody>
+</table>
+
+<!-- 3. Opcode breakdown -->
+<h2>3. Opcode Breakdown at Divergence Point</h2>
+<div id="opcodeChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 4. Call depth -->
+<h2>4. Call Depth Distribution</h2>
+<p id="depthNote"></p>
+<div id="depthChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 5. Top 20 contracts -->
+<h2>5. Top 20 Contracts by Breakage</h2>
+<div id="top20Chart"><p class="loading">Loading chart...</p></div>
+
+<!-- 6. Failure motifs -->
+<h2>6. Top Failure Motifs</h2>
+<p>Most common caller→callee patterns in failing call frames:</p>
+<table>
+  <thead><tr><th>Pair Motif</th><th>Triple Motif</th><th>Failures</th><th>Avg Gas Provided</th></tr></thead>
+  <tbody id="motifsBody"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
+</table>
+
+<!-- 7. Failure flow Sankey -->
+<h2>7. Failure Flow Sankey</h2>
+<p>How failures propagate: root transaction contract → failing caller → failing callee.</p>
+<div id="sankeyChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 8. Remediation -->
+<h2>8. Remediation Outlook</h2>
+<p>For contracts with known ownership (excluding unknown):</p>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+  <div id="ownerChart"></div>
+  <div id="remedChart"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async function() {
+  const [overview, ts, gasDelta, opcodes, depth, top20, motifs, flow, remed] = await Promise.all([
+    fetchJSON('/api/overview'),
+    fetchJSON('/api/forensics/time-series'),
+    fetchJSON('/api/forensics/gas-delta'),
+    fetchJSON('/api/opcode-impact'),
+    fetchJSON('/api/forensics/call-depth'),
+    fetchJSON('/api/top-contracts?limit=20'),
+    fetchJSON('/api/forensics/failure-motifs'),
+    fetchJSON('/api/forensics/failure-flow'),
+    fetchJSON('/api/forensics/remediation'),
+  ]);
+
+  document.getElementById('subtitle').textContent =
+    `${fmtCount(overview.broken_txs)} broken transactions analyzed in depth`;
+
+  // 1. Time series
+  Plotly.newPlot('timeChart', [{
+    x: ts.map(r => r.block_group),
+    y: ts.map(r => r.broken),
+    mode: 'lines', fill: 'tozeroy',
+    line: { color: '#e74c3c', width: 1 },
+    fillcolor: 'rgba(231,76,60,0.2)',
+  }], layout({
+    title: { text: 'Broken Transactions per Block' },
+    xaxis: { title: 'Block Number' }, yaxis: { title: 'Broken Txs' },
+    height: 380,
+  }), { responsive: true });
+
+  // 2. Gas delta
+  renderBar('gasDeltaChart', gasDelta.histogram, 'bucket', 'count', {
+    title: 'Gas Delta Distribution (Broken Txs)',
+    xTitle: 'Gas Delta', yTitle: 'Count',
+  });
+  const s = gasDelta.stats;
+  document.getElementById('percentileBody').innerHTML = [
+    ['Median', s.median_delta], ['25th', s.p25], ['75th', s.p75],
+    ['90th', s.p90], ['95th', s.p95], ['99th', s.p99],
+  ].map(([label, val]) =>
+    `<tr><td>${label}</td><td style="text-align:right">${fmtGas(val)}</td></tr>`
+  ).join('');
+
+  // 3. Opcodes
+  renderPie('opcodeChart', opcodes.map(o => o.name), opcodes.map(o => o.count), {
+    title: 'Divergence Point — Opcode at Failure',
+  });
+
+  // 4. Call depth
+  if (depth.length) {
+    const total = depth.reduce((s, r) => s + r.divergent_txs, 0);
+    const shallow = depth.filter(r => r.divergence_call_depth >= 0 && r.divergence_call_depth <= 1)
+                        .reduce((s, r) => s + r.divergent_txs, 0);
+    document.getElementById('depthNote').innerHTML =
+      `<strong>${Math.round(shallow / total * 100)}%</strong> of divergences occur at shallow call depth (0–1).`;
+    renderBar('depthChart',
+      depth.map(r => ({ label: r.divergence_call_depth >= 0 ? `Depth ${r.divergence_call_depth}` : 'Unknown', count: r.divergent_txs })),
+      'label', 'count',
+      { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: '#3498db' }
+    );
+  }
+
+  // 5. Top 20
+  Plotly.newPlot('top20Chart', [{
+    x: top20.map(c => c.broken_txs),
+    y: top20.map(c => c.name.slice(0, 25)),
+    type: 'bar', orientation: 'h',
+    marker: { color: '#e74c3c' },
+  }], layout({
+    title: { text: 'Top 20 Contracts by Broken Tx Count' },
+    xaxis: { title: 'Broken Txs' },
+    yaxis: { autorange: 'reversed' },
+    height: 600,
+    margin: { l: 200, r: 20, t: 50, b: 20 },
+  }), { responsive: true });
+
+  // 6. Motifs
+  document.getElementById('motifsBody').innerHTML = motifs.map(m => `
+    <tr>
+      <td>${escHtml(String(m.pair_motif || ''))}</td>
+      <td>${escHtml(String(m.triple_motif || ''))}</td>
+      <td style="text-align:right">${fmtCount(m.status_failures)}</td>
+      <td style="text-align:right">${fmtGas(m.avg_gas_provided || 0)}</td>
+    </tr>
+  `).join('');
+
+  // 7. Sankey
+  if (flow.labels && flow.labels.length) {
+    renderSankey('sankeyChart', flow, {
+      title: 'Failure Flow: Root → Caller → Callee',
+      height: 550,
+    });
+  }
+
+  // 8. Remediation
+  if (remed.owner_buckets.length) {
+    renderPie('ownerChart',
+      remed.owner_buckets.map(b => b.bucket),
+      remed.owner_buckets.map(b => b.txs),
+      { title: 'Owner Bucket (who can fix)', hole: 0.45 }
+    );
+  }
+  if (remed.remediation_buckets.length) {
+    renderPie('remedChart',
+      remed.remediation_buckets.map(b => b.bucket),
+      remed.remediation_buckets.map(b => b.txs),
+      { title: 'Remediation Bucket (how to fix)', hole: 0.45 }
+    );
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}EIP-7904 Affected Parties{% endblock %}
+
+{% block content %}
+<h1>EIP-7904 Affected Parties</h1>
+<p class="subtitle">Search whether your contract is affected by EIP-7904 repricing</p>
+
+<!-- Search -->
+<div class="search-wrapper">
+  <input type="text" class="search-box" id="contractSearch"
+         placeholder="Search by contract address (0x...) or project name...">
+  <div id="autocompleteList" class="autocomplete-list"></div>
+</div>
+
+<!-- Contract detail panel (shown on selection) -->
+<div id="contractDetail" class="contract-detail hidden"></div>
+
+<!-- Summary -->
+<h2>Summary</h2>
+<div class="poster-grid" id="summaryCards" style="grid-template-columns: repeat(3, 1fr);">
+  <p class="loading">Loading...</p>
+</div>
+
+<!-- Full table -->
+<h2>All Affected Contracts</h2>
+<p class="note">Click column headers to sort. <span id="contractCount"></span> contracts shown.
+  Type in the search box above to filter.</p>
+<div style="overflow-x: auto;">
+  <table id="contractTable">
+    <thead><tr>
+      <th onclick="sortTable('contractTable', 0)">Address</th>
+      <th onclick="sortTable('contractTable', 1)">Project</th>
+      <th onclick="sortTable('contractTable', 2)">Broken Txs &#x21C5;</th>
+      <th onclick="sortTable('contractTable', 3)">Avg Gas Δ &#x21C5;</th>
+      <th onclick="sortTable('contractTable', 4)">Total Gas Δ &#x21C5;</th>
+      <th onclick="sortTable('contractTable', 5)">Remediation</th>
+      <th onclick="sortTable('contractTable', 6)">Owner</th>
+    </tr></thead>
+    <tbody id="contractBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allContracts = [];
+
+function ownerTagClass(owner) {
+  if (!owner) return '';
+  if (owner.includes('proxy')) return 'tag-blue';
+  if (owner.includes('direct')) return 'tag-purple';
+  return 'tag-orange';
+}
+
+function remedTagClass(remed) {
+  if (!remed) return '';
+  if (remed.includes('upgrade')) return 'tag-green';
+  if (remed.includes('integration')) return 'tag-orange';
+  return 'tag-red';
+}
+
+function renderTable(contracts) {
+  document.getElementById('contractBody').innerHTML = contracts.map(c => {
+    const firstOwner = (c.owner || '').split(';')[0];
+    const firstRemed = (c.remediation || '').split(';')[0];
+    return `<tr data-search="${c.recipient.toLowerCase()} ${c.name.toLowerCase()}" data-addr="${c.recipient}">
+      <td class="mono" style="font-size:0.8em">
+        ${escHtml(c.recipient)}
+        <button class="copy-btn" onclick="event.stopPropagation(); navigator.clipboard.writeText('${c.recipient}')">copy</button>
+      </td>
+      <td><strong>${escHtml(c.name)}</strong></td>
+      <td style="text-align:right" data-sort="${c.broken_txs}">${fmtCount(c.broken_txs)}</td>
+      <td style="text-align:right" data-sort="${Math.round(c.avg_delta)}">${fmtGas(c.avg_delta)}</td>
+      <td style="text-align:right" data-sort="${Math.round(c.total_delta)}">${fmtGas(c.total_delta)}</td>
+      <td>${firstRemed ? `<span class="tag ${remedTagClass(firstRemed)}">${escHtml(firstRemed)}</span>` : ''}</td>
+      <td>${firstOwner ? `<span class="tag ${ownerTagClass(firstOwner)}">${escHtml(firstOwner)}</span>` : ''}</td>
+    </tr>`;
+  }).join('');
+
+  // Click row to show detail
+  document.querySelectorAll('#contractBody tr').forEach(row => {
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', () => showDetail(row.getAttribute('data-addr')));
+  });
+}
+
+function filterTable() {
+  const q = document.getElementById('contractSearch').value.toLowerCase();
+  const rows = document.getElementById('contractBody').querySelectorAll('tr');
+  for (const row of rows) {
+    const data = row.getAttribute('data-search') || '';
+    row.style.display = data.includes(q) ? '' : 'none';
+  }
+}
+
+async function showDetail(address) {
+  const panel = document.getElementById('contractDetail');
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<p class="loading">Loading contract details...</p>';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  const data = await fetchJSON(`/api/affected/${encodeURIComponent(address)}`);
+  if (!data.found) {
+    panel.innerHTML = `<h3>Not Found</h3><p>Contract <span class="mono">${escHtml(address)}</span> is not affected by EIP-7904 repricing.</p>`;
+    return;
+  }
+
+  const txRows = (data.transactions || []).map((t, i) =>
+    `<tr>
+      <td>${i + 1}</td>
+      <td><a href="https://etherscan.io/tx/${t.tx_hash}" target="_blank" class="mono">${t.tx_hash}</a></td>
+      <td style="text-align:right">${t.block_number.toLocaleString()}</td>
+      <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
+    </tr>`
+  ).join('');
+
+  panel.innerHTML = `
+    <h3>${escHtml(data.name)}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')">copy address</button>
+    </h3>
+    <p class="mono" style="color:#999">${data.address}</p>
+    <div class="stat-row">
+      <div class="stat"><div class="val">${fmtCount(data.broken_txs)}</div><div class="lbl">Broken Txs</div></div>
+      <div class="stat"><div class="val">${fmtGas(data.avg_delta)}</div><div class="lbl">Avg Gas Δ</div></div>
+      <div class="stat"><div class="val">${fmtGas(data.total_delta)}</div><div class="lbl">Total Gas Δ</div></div>
+      <div class="stat"><div class="val">${data.min_block.toLocaleString()}–${data.max_block.toLocaleString()}</div><div class="lbl">Block Range</div></div>
+    </div>
+    ${data.owner ? `<p><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
+    ${data.remediation ? `<p><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
+    <h4>Example Transactions (up to 50)</h4>
+    <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
+      <table>
+        <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
+        <tbody>${txRows || '<tr><td colspan="4">No transactions</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+(async function() {
+  // Load all affected contracts
+  const [contracts, overview, meta] = await Promise.all([
+    fetchJSON('/api/affected'),
+    fetchJSON('/api/overview'),
+    fetchJSON('/api/metadata'),
+  ]);
+  allContracts = contracts;
+
+  // Summary cards
+  renderPosterCards('summaryCards', [
+    { value: fmtCount(overview.broken_txs), label: 'Total Broken Txs' },
+    { value: fmtCount(meta.total_contracts_affected), label: 'Unique Contracts Affected' },
+    { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block Range' },
+  ]);
+
+  // Table
+  document.getElementById('contractCount').textContent = contracts.length;
+  renderTable(contracts);
+
+  // Search with autocomplete
+  initSearch('contractSearch', 'autocompleteList', showDetail);
+
+  // Also filter table as user types
+  document.getElementById('contractSearch').addEventListener('input', filterTable);
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}EIP-7904 ACD Briefing{% endblock %}
+
+{% block content %}
+<h1>EIP-7904 ACD Briefing</h1>
+<p class="subtitle" id="subtitle">Loading...</p>
+
+<!-- 1. Headline Numbers -->
+<h2>1. Headline Numbers</h2>
+<div class="poster-grid" id="headlines"><p class="loading">Loading...</p></div>
+
+<!-- 2. The Funnel -->
+<h2>2. The Funnel</h2>
+<p>How divergent transactions break down:</p>
+<div id="funnel"><p class="loading">Loading...</p></div>
+
+<!-- 3. Opcode Impact -->
+<h2>3. Opcode Impact</h2>
+<p>Which repriced opcodes cause divergence at the point of failure:</p>
+<table id="opcodeTable">
+  <thead><tr><th>Opcode</th><th>Divergent Txs</th><th>Share</th></tr></thead>
+  <tbody id="opcodeBody"><tr><td colspan="3" class="loading">Loading...</td></tr></tbody>
+</table>
+
+<!-- 4. Gas Overhead -->
+<h2>4. Gas Overhead for Non-Broken Txs</h2>
+<div class="poster-grid" id="gasCards" style="grid-template-columns: repeat(4, 1fr);"></div>
+<div id="gasChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 5. Concentration -->
+<h2>5. Breakage Concentration</h2>
+<p id="concNote"></p>
+<div id="concChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 6. Top 10 Contracts -->
+<h2>6. Top 10 Affected Contracts</h2>
+<table id="top10Table">
+  <thead><tr><th>#</th><th>Contract</th><th>Broken Txs</th><th>Avg Gas Δ</th><th>Total Gas Δ</th></tr></thead>
+  <tbody id="top10Body"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async function() {
+  const [overview, funnel, opcodes, gas, conc, top10, meta] = await Promise.all([
+    fetchJSON('/api/overview'),
+    fetchJSON('/api/funnel'),
+    fetchJSON('/api/opcode-impact'),
+    fetchJSON('/api/gas-overhead'),
+    fetchJSON('/api/concentration'),
+    fetchJSON('/api/top-contracts?limit=10'),
+    fetchJSON('/api/metadata'),
+  ]);
+
+  document.getElementById('subtitle').textContent =
+    `EIP-7904 Repricing Impact — Blocks ${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`;
+
+  // 1. Headlines
+  renderPosterCards('headlines', [
+    { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
+    { value: fmtCount(overview.divergent_txs), label: 'Divergent Txs' },
+    { value: fmtCount(overview.broken_txs), label: 'Broken Txs<br>(success→fail)' },
+    { value: fmtPct(overview.breakage_rate), label: 'Breakage Rate<br>(of divergent)' },
+  ]);
+
+  // 2. Funnel
+  const total = funnel.divergent_txs;
+  const funnelData = [
+    { label: 'All divergent txs', count: total, color: '#e67e22', pct: 100 },
+    { label: 'Cost-only change', count: funnel.cost_only, color: '#27ae60', pct: funnel.cost_only / total * 100 },
+    { label: 'Event logs also changed', count: funnel.event_log_changed, color: '#f39c12', pct: funnel.event_log_changed / total * 100 },
+    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: '#e74c3c', pct: Math.max(3, funnel.broken_txs / total * 100) },
+  ];
+  document.getElementById('funnel').innerHTML = funnelData.map(f => `
+    <div class="funnel-step">
+      <div class="funnel-label">${f.label}</div>
+      <div class="funnel-bar" style="width:${f.pct}%; background:${f.color}">${fmtCount(f.count)}</div>
+    </div>
+  `).join('');
+
+  // 3. Opcodes
+  document.getElementById('opcodeBody').innerHTML = opcodes.map(o =>
+    `<tr><td><strong>${escHtml(o.name)}</strong></td><td>${fmtCount(o.count)}</td><td>${o.share}%</td></tr>`
+  ).join('');
+
+  // 4. Gas overhead
+  const s = gas.stats;
+  renderPosterCards('gasCards', [
+    { value: fmtGas(s.median_delta), label: 'Median Extra Gas', color: '#e67e22' },
+    { value: fmtGas(s.mean_delta), label: 'Mean Extra Gas', color: '#e67e22' },
+    { value: fmtGas(s.p95), label: '95th Percentile', color: '#e67e22' },
+    { value: fmtGas(s.p99), label: '99th Percentile', color: '#e67e22' },
+  ]);
+  renderBar('gasChart', gas.histogram, 'bucket', 'count', {
+    title: 'Gas Overhead Distribution (Non-Broken Txs)',
+    xTitle: 'Additional Gas (delta)', yTitle: 'Transaction Count',
+    color: '#e67e22',
+  });
+
+  // 5. Concentration
+  const n95 = conc.find(c => c.cum_pct >= 95);
+  document.getElementById('concNote').innerHTML = n95
+    ? `Breakage is highly concentrated: <strong>top ${n95.rank} contracts account for 95%</strong> of all broken transactions.`
+    : '';
+  renderScatter('concChart', conc, 'rank', 'cum_pct', {
+    title: 'Breakage Concentration: Top Contracts',
+    xTitle: 'Number of Contracts (ranked by breakage)',
+    yTitle: 'Cumulative % of Broken Txs',
+    height: 420,
+    hlines: [{ y: 95 }],
+  });
+
+  // 6. Top 10
+  document.getElementById('top10Body').innerHTML = top10.map((c, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:#999">${c.recipient.slice(0, 10)}...</span></td>
+      <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
+      <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
+      <td style="text-align:right">${fmtGas(c.total_delta)}</td>
+    </tr>
+  `).join('');
+})();
+</script>
+{% endblock %}

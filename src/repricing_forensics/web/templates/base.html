@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}EIP-7904 Analysis{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+</head>
+<body>
+  <nav>
+    <a href="/" class="nav-brand">EIP-7904</a>
+    <div class="nav-links">
+      <a href="/" {% if active == "briefing" %}class="active"{% endif %}>Briefing</a>
+      <a href="/forensics" {% if active == "forensics" %}class="active"{% endif %}>Forensics</a>
+      <a href="/affected" {% if active == "affected" %}class="active"{% endif %}>Affected Parties</a>
+    </div>
+  </nav>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <hr>
+    <p class="note">EIP-7904 Advanced Repricing Analysis &mdash; <span id="lastUpdated"></span></p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+  <script>
+    fetchJSON('/api/metadata').then(m => {
+      document.getElementById('lastUpdated').textContent =
+        'Last updated: ' + new Date(m.last_updated).toLocaleString();
+    });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
