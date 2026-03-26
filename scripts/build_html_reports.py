@@ -846,11 +846,11 @@ def build_affected_parties() -> str:
         if raw is None or (isinstance(raw, float) and pd.isna(raw)):
             sample_hashes = []
         elif isinstance(raw, (list, tuple)):
-            sample_hashes = list(raw)
+            sample_hashes = [h for h in raw if h is not None and not (isinstance(h, float) and pd.isna(h)) and pd.notna(h)]
         else:
-            sample_hashes = [raw]
+            sample_hashes = [raw] if pd.notna(raw) else []
         tx_links = " ".join(
-            f'<a href="https://etherscan.io/tx/{h}" target="_blank" class="mono">{h[:10]}…</a>'
+            f'<a href="https://etherscan.io/tx/{h}" target="_blank" class="mono">{str(h)[:10]}…</a>'
             for h in sample_hashes[:5]
         )
 
@@ -917,9 +917,9 @@ def build_affected_parties() -> str:
         if raw_detail is None or (isinstance(raw_detail, float) and pd.isna(raw_detail)):
             detail_hashes = []
         elif isinstance(raw_detail, (list, tuple)):
-            detail_hashes = list(raw_detail)
+            detail_hashes = [h for h in raw_detail if h is not None and not (isinstance(h, float) and pd.isna(h)) and pd.notna(h)]
         else:
-            detail_hashes = [raw_detail]
+            detail_hashes = [raw_detail] if pd.notna(raw_detail) else []
         outreach_info = outreach_dict.get(project, {})
 
         tx_list = "\n".join(

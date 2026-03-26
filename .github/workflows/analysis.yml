@@ -38,7 +38,7 @@ jobs:
       - name: Export Parquet from divergence DB
         run: |
           . .venv/bin/activate
-          python scripts/export_parquet.py
+          python scripts/export_parquet.py --max-age 3600
 
       - name: Build DuckDB and normalize forensics
         run: |
