@@ -101,6 +101,30 @@ def fig_to_html(fig: go.Figure) -> str:
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 
+def _to_hash_list(raw) -> list[str]:
+    """Safely convert a DuckDB array_agg result to a list of hash strings.
+
+    Handles None, NA/NAType scalars, numpy arrays, and Python lists—all of
+    which DuckDB or pandas may produce depending on the column type.
+    """
+    import numpy as np
+
+    if raw is None:
+        return []
+    # numpy array or similar array-like (not str)
+    if isinstance(raw, np.ndarray):
+        raw = raw.tolist()
+    if isinstance(raw, (list, tuple)):
+        return [str(h) for h in raw if h is not None and str(h) not in ("", "<NA>") and not (isinstance(h, float) and pd.isna(h))]
+    # scalar
+    try:
+        if pd.isna(raw):
+            return []
+    except (ValueError, TypeError):
+        pass
+    return [str(raw)]
+
+
 def label_address(addr: str) -> str:
     """Return project label for an address, or the address itself."""
     if addr is None:
@@ -842,13 +866,7 @@ def build_affected_parties() -> str:
         remed = outreach_info.get("remediation_buckets", "")
 
         # Format sample tx hashes as etherscan links
-        raw = row["sample_hashes"]
-        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
-            sample_hashes = []
-        elif isinstance(raw, (list, tuple)):
-            sample_hashes = [h for h in raw if h is not None and not (isinstance(h, float) and pd.isna(h)) and pd.notna(h)]
-        else:
-            sample_hashes = [raw] if pd.notna(raw) else []
+        sample_hashes = _to_hash_list(row["sample_hashes"])
         tx_links = " ".join(
             f'<a href="https://etherscan.io/tx/{h}" target="_blank" class="mono">{str(h)[:10]}…</a>'
             for h in sample_hashes[:5]
@@ -913,13 +931,7 @@ def build_affected_parties() -> str:
     for i, row in contracts.head(20).iterrows():
         addr = row["recipient"] or ""
         project = label_address(addr)
-        raw_detail = row["detail_hashes"]
-        if raw_detail is None or (isinstance(raw_detail, float) and pd.isna(raw_detail)):
-            detail_hashes = []
-        elif isinstance(raw_detail, (list, tuple)):
-            detail_hashes = [h for h in raw_detail if h is not None and not (isinstance(h, float) and pd.isna(h)) and pd.notna(h)]
-        else:
-            detail_hashes = [raw_detail] if pd.notna(raw_detail) else []
+        detail_hashes = _to_hash_list(row["detail_hashes"])
         outreach_info = outreach_dict.get(project, {})
 
         tx_list = "\n".join(
