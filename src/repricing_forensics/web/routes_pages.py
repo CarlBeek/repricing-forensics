@@ -10,19 +10,19 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def briefing(request: Request):
     return request.app.state.templates.TemplateResponse(
-        "briefing.html", {"request": request, "active": "briefing"}
+        request=request, name="briefing.html", context={"active": "briefing"}
     )
 
 
 @router.get("/forensics", response_class=HTMLResponse)
 async def forensics(request: Request):
     return request.app.state.templates.TemplateResponse(
-        "forensics.html", {"request": request, "active": "forensics"}
+        request=request, name="forensics.html", context={"active": "forensics"}
     )
 
 
 @router.get("/affected", response_class=HTMLResponse)
 async def affected(request: Request):
     return request.app.state.templates.TemplateResponse(
-        "affected.html", {"request": request, "active": "affected"}
+        request=request, name="affected.html", context={"active": "affected"}
     )
