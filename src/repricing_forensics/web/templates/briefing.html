@@ -98,18 +98,21 @@
     { value: fmtGas(s.p95), label: '95th Percentile', color: '#e67e22' },
     { value: fmtGas(s.p99), label: '99th Percentile', color: '#e67e22' },
   ]);
-  // PMF with log x-axis
+  // CMF (cumulative mass function) with log x-axis
+  let gasCum = 0;
+  const gasCmf = gas.histogram.map(b => { gasCum += b.density; return gasCum; });
   Plotly.newPlot('gasChart', [{
     x: gas.histogram.map(b => b.bin_start || 1),
-    y: gas.histogram.map(b => b.density),
-    type: 'bar',
-    marker: { color: '#e67e22' },
-    hovertext: gas.histogram.map(b => `${b.label}: ${fmtCount(b.count)} txs`),
-    hoverinfo: 'text+y',
+    y: gasCmf,
+    mode: 'lines+markers',
+    marker: { size: 5, color: '#e67e22' },
+    line: { color: '#e67e22', width: 2 },
+    hovertext: gas.histogram.map((b, i) => `${b.label}: ${fmtCount(b.count)} txs (CDF: ${(gasCmf[i]*100).toFixed(1)}%)`),
+    hoverinfo: 'text',
   }], layout({
-    title: { text: 'Gas Overhead PMF (Non-Broken Txs)' },
+    title: { text: 'Gas Overhead CDF (Non-Broken Txs)' },
     xaxis: { title: 'Additional Gas (delta)', type: 'log', automargin: true },
-    yaxis: { title: 'Probability', automargin: true },
+    yaxis: { title: 'Cumulative Probability', range: [0, 1.05], automargin: true },
     height: 400,
   }), { responsive: true });
 
