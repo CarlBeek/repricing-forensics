@@ -131,9 +131,11 @@ async function showDetail(address) {
   }
 
   const txRows = (data.transactions || []).map((t, i) =>
-    `<tr>
+    `<tr style="cursor:pointer" onclick="showTxDetail('${t.tx_hash}', this)">
       <td>${i + 1}</td>
-      <td><a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${t.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" class="mono">${t.tx_hash}</a></td>
+      <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 18)}...
+        <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${t.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" onclick="event.stopPropagation()" style="font-size:0.85em">gas profiler</a>
+      </td>
       <td style="text-align:right">${t.block_number.toLocaleString()}</td>
       <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
     </tr>`
@@ -152,12 +154,115 @@ async function showDetail(address) {
     </div>
     ${data.owner ? `<p><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
     ${data.remediation ? `<p><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
-    <h4>Example Transactions (up to 50)</h4>
+    <h4>Example Transactions (up to 50) — click a row for details</h4>
     <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
       <table>
         <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
         <tbody>${txRows || '<tr><td colspan="4">No transactions</td></tr>'}</tbody>
       </table>
+    </div>
+    <div id="txDetailPanel"></div>
+  `;
+}
+
+function renderCallStack(stack) {
+  if (!stack || !stack.length) return '<p class="note">No call stack data available.</p>';
+  return `<table style="font-size:0.85em">
+    <thead><tr><th>Depth</th><th>Type</th><th>From</th><th>To</th><th>Selector</th><th>Gas Provided</th><th>Gas Used</th><th>Result</th></tr></thead>
+    <tbody>${stack.map(f => {
+      const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
+      const indent = '\u00A0\u00A0'.repeat(f.depth);
+      const statusColor = f.success ? '#27ae60' : '#e74c3c';
+      const statusText = f.success ? 'OK' : 'FAIL';
+      return `<tr style="${!f.success ? 'background:rgba(231,76,60,0.08)' : ''}">
+        <td>${indent}${f.depth}</td>
+        <td>${escHtml(f.call_type)}</td>
+        <td title="${f.from_address}">${escHtml(f.from)}</td>
+        <td title="${f.to_address}">${escHtml(f.to)}</td>
+        <td class="mono">${f.selector || '-'}</td>
+        <td style="text-align:right">${fmtGas(f.gas_provided)}</td>
+        <td style="text-align:right">${fmtGas(f.gas_used)} (${pct}%)</td>
+        <td style="color:${statusColor};font-weight:bold">${statusText}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+async function showTxDetail(txHash, rowEl) {
+  // Remove any existing detail panel content
+  const panel = document.getElementById('txDetailPanel');
+  if (!panel) return;
+  panel.innerHTML = '<p class="loading">Loading transaction details...</p>';
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  const tx = await fetchJSON(`/api/tx/${encodeURIComponent(txHash)}`);
+  if (!tx.found) {
+    panel.innerHTML = '<p>Transaction details not available.</p>';
+    return;
+  }
+
+  const gasUsedPct = tx.gas_limit > 0 ? Math.round(tx.baseline_gas_used / tx.gas_limit * 100) : 0;
+  const schedUsedPct = tx.gas_limit > 0 ? Math.round(tx.schedule_gas_used / tx.gas_limit * 100) : 0;
+
+  panel.innerHTML = `
+    <div style="border:1px solid #ddd; border-radius:8px; padding:16px; margin-top:16px; background:#fafafa;">
+      <h4 style="margin-top:0">
+        Transaction Detail
+        <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${tx.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.8em; margin-left:8px">gas profiler</a>
+        <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.8em; margin-left:8px">etherscan</a>
+      </h4>
+      <p class="mono" style="font-size:0.85em; color:#666; word-break:break-all">${tx.tx_hash}</p>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0;">
+        <div>
+          <strong>Block:</strong> ${tx.block_number.toLocaleString()} (index ${tx.tx_index})<br>
+          <strong>From:</strong> <span class="mono" style="font-size:0.85em">${tx.sender}</span><br>
+          <strong>To:</strong> ${escHtml(tx.recipient_name)} <span class="mono" style="font-size:0.85em; color:#999">${(tx.recipient || '').slice(0, 12)}...</span>
+        </div>
+        <div>
+          <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
+          <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:#27ae60; font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
+          <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:#e74c3c; font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
+          <strong>Gas Delta:</strong> +${fmtGas(tx.gas_delta)}
+        </div>
+      </div>
+
+      ${tx.divergence ? `
+        <div style="margin:12px 0; padding:8px; background:#fff3cd; border-radius:4px;">
+          <strong>Divergence Point:</strong>
+          Opcode <code>${escHtml(tx.divergence.opcode)}</code>
+          at depth ${tx.divergence.call_depth ?? '?'}
+          in ${escHtml(tx.divergence.contract)}
+          <span class="mono" style="font-size:0.8em; color:#999">${(tx.divergence.contract_address || '').slice(0, 12)}...</span>
+        </div>
+      ` : ''}
+
+      ${tx.oog ? `
+        <div style="margin:12px 0; padding:8px; background:#f8d7da; border-radius:4px;">
+          <strong>Out of Gas:</strong>
+          <code>${escHtml(tx.oog.opcode)}</code>
+          at depth ${tx.oog.call_depth ?? '?'}
+          in ${escHtml(tx.oog.contract)}
+          — pattern: <code>${escHtml(tx.oog.pattern)}</code>,
+          gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
+        </div>
+      ` : ''}
+
+      ${tx.op_counts ? `
+        <p style="margin:8px 0; font-size:0.9em">
+          <strong>Op Counts:</strong>
+          ${tx.op_counts.total.toLocaleString()} total ops,
+          ${tx.op_counts.sload} SLOADs,
+          ${tx.op_counts.sstore} SSTOREs,
+          ${tx.op_counts.call} CALLs,
+          ${tx.op_counts.log} LOGs
+        </p>
+      ` : ''}
+
+      <h5>Call Stack (schedule re-execution)</h5>
+      <div style="overflow-x:auto; max-height:500px; overflow-y:auto;">
+        ${renderCallStack(tx.call_stack)}
+      </div>
     </div>
   `;
 }

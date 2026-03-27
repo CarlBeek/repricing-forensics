@@ -479,6 +479,109 @@ def affected_detail(address: str):
     }
 
 
+@router.get("/tx/{tx_hash}")
+def tx_detail(tx_hash: str):
+    """Detailed view of a single broken transaction: gas info, divergence location, call stack."""
+    tx_hash = tx_hash.lower().strip()
+
+    # Core tx info from hot table
+    hot = query(f"""
+        SELECT h.divergence_id, h.block_number, h.tx_index, h.tx_hash,
+               h.baseline_success, h.schedule_success,
+               h.baseline_gas_used, h.schedule_gas_used, h.gas_delta,
+               h.tx_gas_limit, h.sender, h.recipient
+        FROM hot_7904 h
+        WHERE lower(h.tx_hash) = '{tx_hash}'
+        LIMIT 1
+    """)
+    if not hot:
+        return {"found": False}
+    h = hot[0]
+    div_id = h["divergence_id"]
+
+    # Forensic info: divergence location + OOG info
+    forensics = query(f"""
+        SELECT divergence_contract, divergence_call_depth, divergence_opcode_name,
+               oog_contract, oog_call_depth, oog_opcode_name, oog_pattern, oog_gas_remaining,
+               sload_count, sstore_count, call_count, log_count, total_ops
+        FROM normalized_forensics
+        WHERE divergence_id = {div_id}
+        LIMIT 1
+    """)
+
+    # Schedule call frames (the re-execution trace) from raw artifacts
+    frames_raw = query(f"""
+        SELECT schedule_call_frames
+        FROM artifacts_7904
+        WHERE divergence_id = {div_id}
+          AND schedule_call_frames IS NOT NULL
+        LIMIT 1
+    """)
+
+    call_stack = []
+    if frames_raw and frames_raw[0].get("schedule_call_frames"):
+        import json
+        try:
+            frames = json.loads(frames_raw[0]["schedule_call_frames"])
+            for f in frames:
+                to_addr = f.get("to") or ""
+                input_hex = f.get("input") or ""
+                selector = input_hex[:10] if len(input_hex) >= 10 else ""
+                call_stack.append({
+                    "depth": f.get("depth", 0),
+                    "call_type": f.get("call_type", ""),
+                    "from": label_address(f.get("from", "")),
+                    "from_address": f.get("from", ""),
+                    "to": label_address(to_addr),
+                    "to_address": to_addr,
+                    "selector": selector,
+                    "gas_provided": f.get("gas_provided", 0),
+                    "gas_used": f.get("gas_used", 0),
+                    "success": f.get("success", False),
+                })
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    f = forensics[0] if forensics else {}
+    return {
+        "found": True,
+        "tx_hash": h["tx_hash"],
+        "block_number": int(h["block_number"]),
+        "tx_index": int(h["tx_index"]),
+        "sender": h["sender"],
+        "recipient": h["recipient"],
+        "recipient_name": label_address(h["recipient"]),
+        "baseline_success": h["baseline_success"],
+        "schedule_success": h["schedule_success"],
+        "baseline_gas_used": int(h["baseline_gas_used"]),
+        "schedule_gas_used": int(h["schedule_gas_used"]),
+        "gas_delta": int(h["gas_delta"]),
+        "gas_limit": int(h["tx_gas_limit"]),
+        "divergence": {
+            "contract": label_address(f.get("divergence_contract") or ""),
+            "contract_address": f.get("divergence_contract") or "",
+            "call_depth": f.get("divergence_call_depth"),
+            "opcode": f.get("divergence_opcode_name") or "",
+        } if f else None,
+        "oog": {
+            "contract": label_address(f.get("oog_contract") or ""),
+            "contract_address": f.get("oog_contract") or "",
+            "call_depth": f.get("oog_call_depth"),
+            "opcode": f.get("oog_opcode_name") or "",
+            "pattern": f.get("oog_pattern") or "",
+            "gas_remaining": f.get("oog_gas_remaining"),
+        } if f and f.get("oog_contract") else None,
+        "op_counts": {
+            "sload": f.get("sload_count", 0),
+            "sstore": f.get("sstore_count", 0),
+            "call": f.get("call_count", 0),
+            "log": f.get("log_count", 0),
+            "total": f.get("total_ops", 0),
+        } if f else None,
+        "call_stack": call_stack,
+    }
+
+
 @router.get("/search")
 def search(q: str = Query(default="")):
     """Search contracts by address prefix or project name."""
