@@ -48,14 +48,23 @@ function fmtPct(n) {
   return n.toFixed(1) + '%';
 }
 
+function fixAxis(axis, standoff) {
+  if (!axis) axis = {};
+  axis.automargin = true;
+  // Convert string title to object so we can set standoff
+  if (typeof axis.title === 'string') axis.title = { text: axis.title };
+  if (axis.title && typeof axis.title === 'object') {
+    axis.title.standoff = axis.title.standoff || standoff;
+  } else if (!axis.title) {
+    axis.title = { text: '', standoff: standoff };
+  }
+  return axis;
+}
+
 function layout(overrides) {
   const merged = Object.assign({}, LAYOUT_DEFAULTS, overrides);
-  // Ensure automargin + standoff on all axes so titles never overlap tick numbers
-  merged.xaxis = Object.assign({ automargin: true, title: { standoff: 15 } }, merged.xaxis || {});
-  merged.yaxis = Object.assign({ automargin: true, title: { standoff: 10 } }, merged.yaxis || {});
-  // Preserve title text if passed as a string
-  if (typeof merged.xaxis.title === 'string') merged.xaxis.title = { text: merged.xaxis.title, standoff: 15 };
-  if (typeof merged.yaxis.title === 'string') merged.yaxis.title = { text: merged.yaxis.title, standoff: 10 };
+  merged.xaxis = fixAxis(merged.xaxis, 20);
+  merged.yaxis = fixAxis(merged.yaxis, 15);
   return merged;
 }
 
@@ -82,8 +91,8 @@ function renderBar(divId, data, xKey, yKey, opts = {}) {
     orientation: opts.horizontal ? 'h' : undefined,
   }], layout({
     title: { text: opts.title || '' },
-    xaxis: Object.assign({ title: opts.xTitle || '', tickangle: opts.tickAngle || 0, automargin: true }, opts.xaxis || {}),
-    yaxis: Object.assign({ title: opts.yTitle || '', autorange: opts.horizontal ? 'reversed' : undefined, automargin: true }, opts.yaxis || {}),
+    xaxis: Object.assign({ title: opts.xTitle || '', tickangle: opts.tickAngle || 0 }, opts.xaxis || {}),
+    yaxis: Object.assign({ title: opts.yTitle || '', autorange: opts.horizontal ? 'reversed' : undefined }, opts.yaxis || {}),
     height: opts.height || 400,
     margin: opts.margin || LAYOUT_DEFAULTS.margin,
   }), { responsive: true });
