@@ -18,27 +18,42 @@ SCHEDULE_NAME = os.environ.get("SCHEDULE_NAME", "7904-prelim")
 
 _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None
+_conn_inode: int | None = None
 _labels: dict[str, str] = {}
 _csv_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 _db_lock = threading.Lock()
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:
-    """Return a shared read-only DuckDB connection, creating views if needed."""
-    global _conn
+    """Return a shared read-only DuckDB connection, reconnecting if the file was replaced."""
+    global _conn, _conn_inode
+    db_path = _paths.duckdb_path
+    # Detect atomic file replacement (inode change) by the build pipeline
+    try:
+        current_inode = db_path.stat().st_ino
+    except FileNotFoundError:
+        current_inode = None
+    if _conn is not None and current_inode != _conn_inode:
+        try:
+            _conn.close()
+        except Exception:
+            pass
+        _conn = None
     if _conn is None:
         os.chdir(_paths.repo_root)
-        _conn = duckdb.connect(str(_paths.duckdb_path), read_only=True)
+        _conn = duckdb.connect(str(db_path), read_only=True)
         threads = os.environ.get("DUCKDB_THREADS", str(os.cpu_count() or 4))
         _conn.execute(f"PRAGMA threads={threads}")
+        _conn_inode = current_inode
     return _conn
 
 
 def close_conn() -> None:
-    global _conn
+    global _conn, _conn_inode
     if _conn is not None:
         _conn.close()
         _conn = None
+        _conn_inode = None
 
 
 def query(sql: str) -> list[dict[str, Any]]:

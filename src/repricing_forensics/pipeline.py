@@ -7,9 +7,9 @@ from .duckdb_utils import connect
 from .sql import DERIVED_INCIDENTS_SQL, create_views_sql
 
 
-def initialize_duckdb(paths: Paths, schedule_name: str) -> None:
+def initialize_duckdb(paths: Paths, schedule_name: str, db_path: Path | None = None) -> None:
     ensure_workspace_dirs(paths)
-    conn = connect(paths.duckdb_path)
+    conn = connect(db_path or paths.duckdb_path)
     try:
         for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
@@ -111,9 +111,10 @@ def build_normalized_forensics(
     paths: Paths,
     schedule_name: str,
     include_call_frames: bool = False,
+    db_path: Path | None = None,
 ) -> None:
     ensure_workspace_dirs(paths)
-    conn = connect(paths.duckdb_path)
+    conn = connect(db_path or paths.duckdb_path)
     try:
         for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)

@@ -37,7 +37,7 @@ def overview():
         "total_analyzed": int(total_analyzed),
         "divergent_txs": int(total_divergent),
         "broken_txs": int(broken),
-        "breakage_rate": round(broken / total_divergent * 100, 2) if total_divergent else 0,
+        "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
     }
 
 
