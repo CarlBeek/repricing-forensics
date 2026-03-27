@@ -47,10 +47,8 @@
 <!-- 8. Remediation -->
 <h2>8. Remediation Outlook</h2>
 <p>For contracts with known ownership (excluding unknown):</p>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-  <div id="ownerChart"></div>
-  <div id="remedChart"></div>
-</div>
+<div id="ownerChart"></div>
+<div id="remedChart"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -71,24 +69,36 @@
   document.getElementById('subtitle').textContent =
     `${fmtCount(overview.broken_txs)} broken transactions analyzed in depth`;
 
-  // 1. Time series
+  // 1. Time series — broken as fraction of total txs
   Plotly.newPlot('timeChart', [{
     x: ts.map(r => r.block_group),
-    y: ts.map(r => r.broken),
+    y: ts.map(r => r.broken_pct),
     mode: 'lines', fill: 'tozeroy',
     line: { color: '#e74c3c', width: 1 },
     fillcolor: 'rgba(231,76,60,0.2)',
+    hovertext: ts.map(r => `Block ~${r.block_group.toLocaleString()}<br>${r.broken.toLocaleString()} / ${r.total_txs.toLocaleString()} txs`),
+    hoverinfo: 'text+y',
   }], layout({
-    title: { text: 'Broken Transactions per Block' },
-    xaxis: { title: 'Block Number' }, yaxis: { title: 'Broken Txs' },
+    title: { text: 'Broken Transactions as % of Block Transactions' },
+    xaxis: { title: 'Block Number', automargin: true },
+    yaxis: { title: '% Broken', automargin: true },
     height: 380,
   }), { responsive: true });
 
-  // 2. Gas delta
-  renderBar('gasDeltaChart', gasDelta.histogram, 'bucket', 'count', {
-    title: 'Gas Delta Distribution (Broken Txs)',
-    xTitle: 'Gas Delta', yTitle: 'Count',
-  });
+  // 2. Gas delta — PMF with log x
+  Plotly.newPlot('gasDeltaChart', [{
+    x: gasDelta.histogram.map(b => b.bin_start || 1),
+    y: gasDelta.histogram.map(b => b.density),
+    type: 'bar',
+    marker: { color: COLORS.broken },
+    hovertext: gasDelta.histogram.map(b => `${b.label}: ${fmtCount(b.count)} txs`),
+    hoverinfo: 'text+y',
+  }], layout({
+    title: { text: 'Gas Delta PMF (Broken Txs)' },
+    xaxis: { title: 'Gas Delta', type: 'log', automargin: true },
+    yaxis: { title: 'Probability', automargin: true },
+    height: 400,
+  }), { responsive: true });
   const s = gasDelta.stats;
   document.getElementById('percentileBody').innerHTML = [
     ['Median', s.median_delta], ['25th', s.p25], ['75th', s.p75],
@@ -148,20 +158,34 @@
     });
   }
 
-  // 8. Remediation
+  // 8. Remediation — full width with enough room for labels
   if (remed.owner_buckets.length) {
-    renderPie('ownerChart',
-      remed.owner_buckets.map(b => b.bucket),
-      remed.owner_buckets.map(b => b.txs),
-      { title: 'Owner Bucket (who can fix)', hole: 0.45 }
-    );
+    Plotly.newPlot('ownerChart', [{
+      labels: remed.owner_buckets.map(b => b.bucket),
+      values: remed.owner_buckets.map(b => b.txs),
+      type: 'pie', hole: 0.45,
+      textinfo: 'label+percent',
+      automargin: true,
+      marker: { colors: PIE_COLORS },
+    }], layout({
+      title: { text: 'Owner Bucket (who can fix)' },
+      height: 450,
+      margin: { l: 40, r: 40, t: 50, b: 40 },
+    }), { responsive: true });
   }
   if (remed.remediation_buckets.length) {
-    renderPie('remedChart',
-      remed.remediation_buckets.map(b => b.bucket),
-      remed.remediation_buckets.map(b => b.txs),
-      { title: 'Remediation Bucket (how to fix)', hole: 0.45 }
-    );
+    Plotly.newPlot('remedChart', [{
+      labels: remed.remediation_buckets.map(b => b.bucket),
+      values: remed.remediation_buckets.map(b => b.txs),
+      type: 'pie', hole: 0.45,
+      textinfo: 'label+percent',
+      automargin: true,
+      marker: { colors: PIE_COLORS },
+    }], layout({
+      title: { text: 'Remediation Bucket (how to fix)' },
+      height: 450,
+      margin: { l: 40, r: 40, t: 50, b: 40 },
+    }), { responsive: true });
   }
 })();
 </script>

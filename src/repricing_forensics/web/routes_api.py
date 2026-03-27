@@ -91,27 +91,31 @@ def gas_overhead():
             percentile_cont(0.99) WITHIN GROUP (ORDER BY gas_delta) as p99
         FROM hot_7904 WHERE NOT status_changed
     """)[0]
+    # Log-scale PMF: use power-of-2 buckets for the gas delta
     histogram = query("""
-        SELECT
-            CASE
-                WHEN gas_delta < 50 THEN '<50'
-                WHEN gas_delta < 100 THEN '50-100'
-                WHEN gas_delta < 200 THEN '100-200'
-                WHEN gas_delta < 500 THEN '200-500'
-                WHEN gas_delta < 1000 THEN '500-1K'
-                WHEN gas_delta < 5000 THEN '1K-5K'
-                WHEN gas_delta < 10000 THEN '5K-10K'
-                ELSE '10K+'
-            END as bucket,
-            count(*) as cnt
-        FROM hot_7904 WHERE NOT status_changed
-        GROUP BY 1
+        WITH bucketed AS (
+            SELECT
+                CASE WHEN gas_delta <= 0 THEN 0
+                     ELSE floor(log2(gas_delta))::int
+                END AS log_bin,
+                count(*) AS cnt
+            FROM hot_7904 WHERE NOT status_changed
+            GROUP BY 1
+        )
+        SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
     """)
-    bucket_order = ["<50", "50-100", "100-200", "200-500", "500-1K", "1K-5K", "5K-10K", "10K+"]
-    histogram.sort(key=lambda r: bucket_order.index(r["bucket"]) if r["bucket"] in bucket_order else 99)
+    total = sum(r["cnt"] for r in histogram) or 1
     return {
         "stats": {k: float(v) if v is not None else 0 for k, v in stats.items()},
-        "histogram": [{"bucket": r["bucket"], "count": int(r["cnt"])} for r in histogram],
+        "histogram": [
+            {
+                "bin_start": 2 ** int(r["log_bin"]) if r["log_bin"] > 0 else 0,
+                "label": f'{2**int(r["log_bin"])}–{2**(int(r["log_bin"])+1)}' if r["log_bin"] > 0 else '≤1',
+                "count": int(r["cnt"]),
+                "density": round(r["cnt"] / total, 6),
+            }
+            for r in histogram
+        ],
     }
 
 
@@ -164,15 +168,37 @@ def top_contracts(limit: int = Query(default=10, le=500)):
 def forensics_time_series():
     return query("""
         WITH bounds AS (
-            SELECT min(block_number) as mn, max(block_number) as mx
-            FROM hot_7904 WHERE status_changed
+            SELECT min(block_number) AS mn, max(block_number) AS mx FROM coverage_7904
+        ),
+        buckets AS (
+            SELECT (mx - mn) / 300 AS bucket_size, mn FROM bounds
+        ),
+        broken_per_bucket AS (
+            SELECT
+                b.mn + ((h.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
+                count(*) AS broken
+            FROM hot_7904 h, buckets b
+            WHERE h.status_changed
+            GROUP BY block_group
+        ),
+        total_per_bucket AS (
+            SELECT
+                b.mn + ((c.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
+                sum(c.tx_count) AS total_txs
+            FROM coverage_7904 c, buckets b
+            GROUP BY block_group
         )
         SELECT
-            mn + ((block_number - mn) // ((mx - mn) / 300)) * ((mx - mn) / 300) as block_group,
-            count(*) as broken
-        FROM hot_7904, bounds
-        WHERE status_changed
-        GROUP BY block_group ORDER BY block_group
+            t.block_group,
+            coalesce(bp.broken, 0) AS broken,
+            t.total_txs,
+            CASE WHEN t.total_txs > 0
+                 THEN round(coalesce(bp.broken, 0) * 100.0 / t.total_txs, 4)
+                 ELSE 0
+            END AS broken_pct
+        FROM total_per_bucket t
+        LEFT JOIN broken_per_bucket bp ON t.block_group = bp.block_group
+        ORDER BY t.block_group
     """)
 
 
@@ -190,24 +216,29 @@ def forensics_gas_delta():
         FROM hot_7904 WHERE status_changed
     """)[0]
     histogram = query("""
-        SELECT
-            CASE
-                WHEN gas_delta < 1000 THEN '<1K'
-                WHEN gas_delta < 5000 THEN '1K-5K'
-                WHEN gas_delta < 10000 THEN '5K-10K'
-                WHEN gas_delta < 50000 THEN '10K-50K'
-                WHEN gas_delta < 100000 THEN '50K-100K'
-                ELSE '100K+'
-            END as bucket,
-            count(*) as cnt
-        FROM hot_7904 WHERE status_changed
-        GROUP BY 1
+        WITH bucketed AS (
+            SELECT
+                CASE WHEN gas_delta <= 0 THEN 0
+                     ELSE floor(log2(gas_delta))::int
+                END AS log_bin,
+                count(*) AS cnt
+            FROM hot_7904 WHERE status_changed
+            GROUP BY 1
+        )
+        SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
     """)
-    bucket_order = ["<1K", "1K-5K", "5K-10K", "10K-50K", "50K-100K", "100K+"]
-    histogram.sort(key=lambda r: bucket_order.index(r["bucket"]) if r["bucket"] in bucket_order else 99)
+    total = sum(r["cnt"] for r in histogram) or 1
     return {
         "stats": {k: float(v) if v is not None else 0 for k, v in stats.items()},
-        "histogram": [{"bucket": r["bucket"], "count": int(r["cnt"])} for r in histogram],
+        "histogram": [
+            {
+                "bin_start": 2 ** int(r["log_bin"]) if r["log_bin"] > 0 else 0,
+                "label": f'{2**int(r["log_bin"])}–{2**(int(r["log_bin"])+1)}' if r["log_bin"] > 0 else '≤1',
+                "count": int(r["cnt"]),
+                "density": round(r["cnt"] / total, 6),
+            }
+            for r in histogram
+        ],
     }
 
 

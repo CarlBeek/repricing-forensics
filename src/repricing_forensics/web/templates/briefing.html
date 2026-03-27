@@ -64,20 +64,26 @@
     { value: fmtPct(overview.breakage_rate), label: 'Breakage Rate<br>(of all analyzed)' },
   ]);
 
-  // 2. Funnel
-  const total = funnel.divergent_txs;
+  // 2. Funnel — scaled to total analyzed, showing raw count + fraction
+  const totalAnalyzed = overview.total_analyzed;
   const funnelData = [
-    { label: 'All divergent txs', count: total, color: '#e67e22', pct: 100 },
-    { label: 'Cost-only change', count: funnel.cost_only, color: '#27ae60', pct: funnel.cost_only / total * 100 },
-    { label: 'Event logs also changed', count: funnel.event_log_changed, color: '#f39c12', pct: funnel.event_log_changed / total * 100 },
-    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: '#e74c3c', pct: Math.max(3, funnel.broken_txs / total * 100) },
+    { label: 'Total analyzed', count: totalAnalyzed, color: '#95a5a6' },
+    { label: 'Divergent (any gas change)', count: funnel.divergent_txs, color: '#e67e22' },
+    { label: 'Cost-only change', count: funnel.cost_only, color: '#27ae60' },
+    { label: 'Event logs also changed', count: funnel.event_log_changed, color: '#f39c12' },
+    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: '#e74c3c' },
   ];
-  document.getElementById('funnel').innerHTML = funnelData.map(f => `
-    <div class="funnel-step">
-      <div class="funnel-label">${f.label}</div>
-      <div class="funnel-bar" style="width:${f.pct}%; background:${f.color}">${fmtCount(f.count)}</div>
-    </div>
-  `).join('');
+  document.getElementById('funnel').innerHTML = funnelData.map(f => {
+    const pct = totalAnalyzed ? f.count / totalAnalyzed * 100 : 0;
+    const barWidth = Math.max(2, pct);
+    return `
+      <div class="funnel-step">
+        <div class="funnel-label">${f.label}</div>
+        <div class="funnel-bar" style="width:${barWidth}%; background:${f.color}">
+          ${fmtCount(f.count)} (${fmtPct(pct)})
+        </div>
+      </div>`;
+  }).join('');
 
   // 3. Opcodes
   document.getElementById('opcodeBody').innerHTML = opcodes.map(o =>
@@ -92,11 +98,20 @@
     { value: fmtGas(s.p95), label: '95th Percentile', color: '#e67e22' },
     { value: fmtGas(s.p99), label: '99th Percentile', color: '#e67e22' },
   ]);
-  renderBar('gasChart', gas.histogram, 'bucket', 'count', {
-    title: 'Gas Overhead Distribution (Non-Broken Txs)',
-    xTitle: 'Additional Gas (delta)', yTitle: 'Transaction Count',
-    color: '#e67e22',
-  });
+  // PMF with log x-axis
+  Plotly.newPlot('gasChart', [{
+    x: gas.histogram.map(b => b.bin_start || 1),
+    y: gas.histogram.map(b => b.density),
+    type: 'bar',
+    marker: { color: '#e67e22' },
+    hovertext: gas.histogram.map(b => `${b.label}: ${fmtCount(b.count)} txs`),
+    hoverinfo: 'text+y',
+  }], layout({
+    title: { text: 'Gas Overhead PMF (Non-Broken Txs)' },
+    xaxis: { title: 'Additional Gas (delta)', type: 'log', automargin: true },
+    yaxis: { title: 'Probability', automargin: true },
+    height: 400,
+  }), { responsive: true });
 
   // 5. Concentration
   const n95 = conc.find(c => c.cum_pct >= 95);

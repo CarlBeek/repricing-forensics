@@ -80,33 +80,6 @@ jobs:
           . .venv/bin/activate
           python scripts/build_call_graph_analysis.py
 
-      - name: Generate figures
-        run: |
-          . .venv/bin/activate
-          python scripts/generate_figures.py
-
-      - name: Build outreach report
-        run: |
-          . .venv/bin/activate
-          python scripts/build_outreach_report.py
-
-      - name: Build HTML reports
-        run: |
-          . .venv/bin/activate
-          python scripts/build_html_reports.py
-
-      - name: Build briefing
-        run: |
-          . .venv/bin/activate
-          python scripts/build_briefing.py
-
-      - name: Upload artifacts (90-day snapshot)
-        uses: actions/upload-artifact@v4
-        with:
-          name: eip7904-reports-${{ github.run_number }}
-          path: artifacts/
-          retention-days: 90
-
       - name: Restart web server
         run: |
           sudo systemctl restart eip7904-web || echo "Web server service not configured yet — skipping restart"

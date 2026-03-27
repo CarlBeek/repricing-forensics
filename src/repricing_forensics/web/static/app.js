@@ -14,7 +14,7 @@ const SANKEY_PALETTE = ['#3498db', '#e67e22', '#27ae60', '#8e44ad', '#e74c3c'];
 const LAYOUT_DEFAULTS = {
   template: 'plotly_white',
   font: { size: 13 },
-  margin: { l: 20, r: 20, t: 50, b: 20 },
+  margin: { l: 60, r: 20, t: 50, b: 50 },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -75,8 +75,8 @@ function renderBar(divId, data, xKey, yKey, opts = {}) {
     orientation: opts.horizontal ? 'h' : undefined,
   }], layout({
     title: { text: opts.title || '' },
-    xaxis: { title: opts.xTitle || '', tickangle: opts.tickAngle || 0 },
-    yaxis: { title: opts.yTitle || '', autorange: opts.horizontal ? 'reversed' : undefined },
+    xaxis: Object.assign({ title: opts.xTitle || '', tickangle: opts.tickAngle || 0, automargin: true }, opts.xaxis || {}),
+    yaxis: Object.assign({ title: opts.yTitle || '', autorange: opts.horizontal ? 'reversed' : undefined, automargin: true }, opts.yaxis || {}),
     height: opts.height || 400,
     margin: opts.margin || LAYOUT_DEFAULTS.margin,
   }), { responsive: true });
@@ -113,8 +113,8 @@ function renderScatter(divId, data, xKey, yKey, opts = {}) {
   }));
   Plotly.newPlot(divId, traces, layout({
     title: { text: opts.title || '' },
-    xaxis: { title: opts.xTitle || '' },
-    yaxis: { title: opts.yTitle || '' },
+    xaxis: { title: opts.xTitle || '', automargin: true },
+    yaxis: { title: opts.yTitle || '', automargin: true },
     height: opts.height || 400,
     shapes: shapes,
   }), { responsive: true });
