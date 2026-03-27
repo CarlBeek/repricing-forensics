@@ -47,8 +47,7 @@
 <!-- 8. Remediation -->
 <h2>8. Remediation Outlook</h2>
 <p>For contracts with known ownership (excluding unknown):</p>
-<div id="ownerChart"></div>
-<div id="remedChart"></div>
+<div id="remedSankey"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -160,34 +159,12 @@
     });
   }
 
-  // 8. Remediation — full width with enough room for labels
-  if (remed.owner_buckets.length) {
-    Plotly.newPlot('ownerChart', [{
-      labels: remed.owner_buckets.map(b => b.bucket),
-      values: remed.owner_buckets.map(b => b.txs),
-      type: 'pie', hole: 0.45,
-      textinfo: 'label+percent',
-      automargin: true,
-      marker: { colors: PIE_COLORS },
-    }], layout({
-      title: { text: 'Owner Bucket (who can fix)' },
-      height: 450,
-      margin: { l: 40, r: 40, t: 50, b: 40 },
-    }), { responsive: true });
-  }
-  if (remed.remediation_buckets.length) {
-    Plotly.newPlot('remedChart', [{
-      labels: remed.remediation_buckets.map(b => b.bucket),
-      values: remed.remediation_buckets.map(b => b.txs),
-      type: 'pie', hole: 0.45,
-      textinfo: 'label+percent',
-      automargin: true,
-      marker: { colors: PIE_COLORS },
-    }], layout({
-      title: { text: 'Remediation Bucket (how to fix)' },
-      height: 450,
-      margin: { l: 40, r: 40, t: 50, b: 40 },
-    }), { responsive: true });
+  // 8. Remediation — sankey: contracts → owner bucket → remediation bucket
+  if (remed.labels && remed.labels.length) {
+    renderSankey('remedSankey', remed, {
+      title: 'Remediation Outlook: Contract → Owner → Remediation',
+      height: 600,
+    });
   }
 })();
 </script>

@@ -307,15 +307,55 @@ def forensics_failure_flow():
 
 @router.get("/forensics/remediation")
 def forensics_remediation():
+    """Sankey: Top 10 contracts → owner bucket → remediation bucket."""
+    import pandas as pd
+
     df = read_csv("project_owner_summary.csv")
     if df.empty:
-        return {"owner_buckets": [], "remediation_buckets": []}
-    known = df[df["owner_bucket"] != "unknown_owner"]
-    owner = known.groupby("owner_bucket")["status_changed_txs"].sum().sort_values(ascending=False)
-    remed = known.groupby("remediation_bucket")["status_changed_txs"].sum().sort_values(ascending=False)
+        return {"labels": [], "sources": [], "targets": [], "values": [], "link_colors": []}
+
+    known = df[df["owner_bucket"] != "unknown_owner"].copy()
+    if known.empty:
+        return {"labels": [], "sources": [], "targets": [], "values": [], "link_colors": []}
+
+    # Top 10 projects by status_changed_txs; rest grouped as "Other"
+    known["status_changed_txs"] = pd.to_numeric(known["status_changed_txs"], errors="coerce").fillna(0)
+    project_totals = known.groupby("divergence_project")["status_changed_txs"].sum().sort_values(ascending=False)
+    top_projects = set(project_totals.head(10).index)
+    known["project_label"] = known["divergence_project"].apply(lambda p: p if p in top_projects else "Other")
+
+    # Aggregate: project → owner
+    po = known.groupby(["project_label", "owner_bucket"])["status_changed_txs"].sum().reset_index()
+    po = po[po["status_changed_txs"] > 0]
+    # Aggregate: owner → remediation
+    or_ = known.groupby(["owner_bucket", "remediation_bucket"])["status_changed_txs"].sum().reset_index()
+    or_ = or_[or_["status_changed_txs"] > 0]
+
+    # Build label list: projects first, then owner buckets, then remediation buckets
+    project_labels = sorted(po["project_label"].unique(), key=lambda p: (p == "Other", p))
+    owner_labels = sorted(po["owner_bucket"].unique())
+    remed_labels = sorted(or_["remediation_bucket"].unique())
+    all_labels = list(project_labels) + list(owner_labels) + list(remed_labels)
+    idx = {l: i for i, l in enumerate(all_labels)}
+
+    sources, targets, values, link_colors = [], [], [], []
+    for _, row in po.iterrows():
+        sources.append(idx[row["project_label"]])
+        targets.append(idx[row["owner_bucket"]])
+        values.append(int(row["status_changed_txs"]))
+        link_colors.append("rgba(52,152,219,0.3)")
+    for _, row in or_.iterrows():
+        sources.append(idx[row["owner_bucket"]])
+        targets.append(idx[row["remediation_bucket"]])
+        values.append(int(row["status_changed_txs"]))
+        link_colors.append("rgba(231,76,60,0.3)")
+
     return {
-        "owner_buckets": [{"bucket": k, "txs": int(v)} for k, v in owner.items()],
-        "remediation_buckets": [{"bucket": k, "txs": int(v)} for k, v in remed.items()],
+        "labels": all_labels,
+        "sources": sources,
+        "targets": targets,
+        "values": values,
+        "link_colors": link_colors,
     }
 
 
