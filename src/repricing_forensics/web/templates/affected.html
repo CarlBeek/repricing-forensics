@@ -223,7 +223,7 @@ async function showTxDetail(txHash, rowEl) {
           <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
           <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:#27ae60; font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
           <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:#e74c3c; font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
-          <strong>Gas Delta:</strong> +${fmtGas(tx.gas_delta)}
+          <strong>Headroom Was:</strong> ${fmtGas(tx.gas_limit - tx.baseline_gas_used)} (${100 - gasUsedPct}% of limit)
         </div>
       </div>
 
@@ -248,10 +248,14 @@ async function showTxDetail(txHash, rowEl) {
         </div>
       ` : ''}
 
-      ${tx.gas_breakdown && tx.gas_breakdown.length ? `
+      ${tx.gas_breakdown && tx.gas_breakdown.length ? (() => {
+        const repricingCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
+        const headroom = tx.gas_limit - tx.baseline_gas_used;
+        const overBy = repricingCost - headroom;
+        return `
         <h5>Gas Delta Breakdown by Repriced Opcode</h5>
-        <table style="font-size:0.9em; max-width:500px;">
-          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th><th style="text-align:right">Avg/Op</th></tr></thead>
+        <table style="font-size:0.9em; max-width:550px;">
+          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th><th style="text-align:right">Per Op</th></tr></thead>
           <tbody>
             ${tx.gas_breakdown.map(b => `<tr>
               <td><code>${b.opcode}</code></td>
@@ -260,14 +264,26 @@ async function showTxDetail(txHash, rowEl) {
               <td style="text-align:right">${b.count > 0 ? (b.gas_delta / b.count).toFixed(1) : '-'}</td>
             </tr>`).join('')}
             <tr style="font-weight:bold; border-top:2px solid #333">
-              <td>Total</td>
+              <td>Repricing Cost</td>
               <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
-              <td style="text-align:right">+${fmtGas(tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0))}</td>
+              <td style="text-align:right; color:#e74c3c">+${fmtGas(repricingCost)}</td>
               <td></td>
             </tr>
+            <tr style="color:#666">
+              <td>Headroom Was</td>
+              <td></td>
+              <td style="text-align:right">${fmtGas(headroom)}</td>
+              <td></td>
+            </tr>
+            ${overBy > 0 ? `<tr style="font-weight:bold; color:#e74c3c">
+              <td>Over Limit By</td>
+              <td></td>
+              <td style="text-align:right">+${fmtGas(overBy)}</td>
+              <td></td>
+            </tr>` : ''}
           </tbody>
-        </table>
-      ` : ''}
+        </table>`;
+      })() : ''}
 
       ${tx.op_counts ? `
         <p style="margin:8px 0; font-size:0.9em; color:#666">
