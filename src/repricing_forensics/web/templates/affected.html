@@ -30,7 +30,6 @@
   <table id="contractTable">
     <thead><tr>
       <th>Rank</th>
-      <th>Address</th>
       <th>Project</th>
       <th>Broken Txs</th>
       <th>Avg Gas Δ</th>
@@ -38,7 +37,7 @@
       <th>Remediation</th>
       <th>Owner</th>
     </tr></thead>
-    <tbody id="contractBody"><tr><td colspan="8" class="loading">Loading...</td></tr></tbody>
+    <tbody id="contractBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
   </table>
 </div>
 <div id="pagination" style="display:flex; gap:8px; align-items:center; margin:16px 0;"></div>
@@ -70,10 +69,6 @@ function renderTable(items, page) {
     const firstRemed = (c.remediation || '').split(';')[0];
     return `<tr data-addr="${c.recipient}" style="cursor:pointer">
       <td>${startRank + i + 1}</td>
-      <td class="mono" style="font-size:0.8em">
-        ${escHtml(c.recipient)}
-        <button class="copy-btn" onclick="event.stopPropagation(); navigator.clipboard.writeText('${c.recipient}')">copy</button>
-      </td>
       <td><strong>${escHtml(c.name)}</strong></td>
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
       <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
@@ -114,7 +109,7 @@ function renderPagination(total, totalPages, page) {
 
 async function loadPage(page) {
   currentPage = page;
-  document.getElementById('contractBody').innerHTML = '<tr><td colspan="8" class="loading">Loading...</td></tr>';
+  document.getElementById('contractBody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
   const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);
