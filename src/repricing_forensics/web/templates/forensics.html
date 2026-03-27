@@ -80,26 +80,26 @@
     hoverinfo: 'text+y',
   }], layout({
     title: { text: 'Broken Transactions as % of Block Transactions' },
-    xaxis: { title: 'Block Number', automargin: true },
-    yaxis: { title: '% Broken', automargin: true },
+    xaxis: { title: 'Block Number', tickformat: ',' },
+    yaxis: { title: '% Broken', ticksuffix: '%' },
     height: 380,
   }), { responsive: true });
 
-  // 2. Gas delta — CMF (cumulative mass function) with log x
+  // 2. Gas delta — CDF with log x
   let deltaCum = 0;
-  const deltaCmf = gasDelta.histogram.map(b => { deltaCum += b.density; return deltaCum; });
+  const deltaCmf = gasDelta.histogram.map(b => { deltaCum += b.density; return deltaCum * 100; });
   Plotly.newPlot('gasDeltaChart', [{
     x: gasDelta.histogram.map(b => b.bin_start || 1),
     y: deltaCmf,
     mode: 'lines+markers',
     marker: { size: 5, color: COLORS.broken },
     line: { color: COLORS.broken, width: 2 },
-    hovertext: gasDelta.histogram.map((b, i) => `${b.label}: ${fmtCount(b.count)} txs (CDF: ${(deltaCmf[i]*100).toFixed(1)}%)`),
+    hovertext: gasDelta.histogram.map((b, i) => `${b.label} gas: ${fmtCount(b.count)} txs (${deltaCmf[i].toFixed(1)}%)`),
     hoverinfo: 'text',
   }], layout({
     title: { text: 'Gas Delta CDF (Broken Txs)' },
-    xaxis: { title: 'Gas Delta', type: 'log', automargin: true },
-    yaxis: { title: 'Cumulative Probability', range: [0, 1.05], automargin: true },
+    xaxis: { title: 'Gas Delta', type: 'log', tickformat: ',', exponentformat: 'none' },
+    yaxis: { title: 'Cumulative %', range: [0, 105], ticksuffix: '%' },
     height: 400,
   }), { responsive: true });
   const s = gasDelta.stats;

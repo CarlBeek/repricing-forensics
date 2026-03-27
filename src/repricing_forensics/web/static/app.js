@@ -50,9 +50,12 @@ function fmtPct(n) {
 
 function layout(overrides) {
   const merged = Object.assign({}, LAYOUT_DEFAULTS, overrides);
-  // Ensure automargin on all axes so labels never overlap tick numbers
-  merged.xaxis = Object.assign({ automargin: true }, merged.xaxis || {});
-  merged.yaxis = Object.assign({ automargin: true }, merged.yaxis || {});
+  // Ensure automargin + standoff on all axes so titles never overlap tick numbers
+  merged.xaxis = Object.assign({ automargin: true, title: { standoff: 15 } }, merged.xaxis || {});
+  merged.yaxis = Object.assign({ automargin: true, title: { standoff: 10 } }, merged.yaxis || {});
+  // Preserve title text if passed as a string
+  if (typeof merged.xaxis.title === 'string') merged.xaxis.title = { text: merged.xaxis.title, standoff: 15 };
+  if (typeof merged.yaxis.title === 'string') merged.yaxis.title = { text: merged.yaxis.title, standoff: 10 };
   return merged;
 }
 
