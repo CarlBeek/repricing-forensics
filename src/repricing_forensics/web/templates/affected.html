@@ -138,7 +138,7 @@ async function showDetail(address) {
   const txRows = (data.transactions || []).map((t, i) =>
     `<tr>
       <td>${i + 1}</td>
-      <td><a href="https://etherscan.io/tx/${t.tx_hash}" target="_blank" class="mono">${t.tx_hash}</a></td>
+      <td><a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${t.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" class="mono">${t.tx_hash}</a></td>
       <td style="text-align:right">${t.block_number.toLocaleString()}</td>
       <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
     </tr>`
