@@ -39,13 +39,8 @@
   <tbody id="motifsBody"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<!-- 7. Failure flow Sankey -->
-<h2>7. Failure Flow Sankey</h2>
-<p>How failures propagate: root transaction contract → failing caller → failing callee.</p>
-<div id="sankeyChart"><p class="loading">Loading chart...</p></div>
-
-<!-- 8. Remediation -->
-<h2>8. Remediation Outlook</h2>
+<!-- 7. Remediation -->
+<h2>7. Remediation Outlook</h2>
 <p>For contracts with known ownership (excluding unknown):</p>
 <div id="remedSankey"></div>
 {% endblock %}
@@ -53,7 +48,7 @@
 {% block scripts %}
 <script>
 (async function() {
-  const [overview, ts, gasDelta, opcodes, depth, top20, motifs, flow, remed] = await Promise.all([
+  const [overview, ts, gasDelta, opcodes, depth, top20, motifs, remed] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/forensics/time-series'),
     fetchJSON('/api/forensics/gas-delta'),
@@ -61,7 +56,6 @@
     fetchJSON('/api/forensics/call-depth'),
     fetchJSON('/api/top-contracts?limit=20'),
     fetchJSON('/api/forensics/failure-motifs'),
-    fetchJSON('/api/forensics/failure-flow'),
     fetchJSON('/api/forensics/remediation'),
   ]);
 
@@ -151,15 +145,7 @@
     </tr>
   `).join('');
 
-  // 7. Sankey
-  if (flow.labels && flow.labels.length) {
-    renderSankey('sankeyChart', flow, {
-      title: 'Failure Flow: Root → Caller → Callee',
-      height: 550,
-    });
-  }
-
-  // 8. Remediation — sankey: contracts → owner bucket → remediation bucket
+  // 7. Remediation — sankey: contracts → owner bucket → remediation bucket
   if (remed.labels && remed.labels.length) {
     renderSankey('remedSankey', remed, {
       title: 'Remediation Outlook: Contract → Owner → Remediation',
