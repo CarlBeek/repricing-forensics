@@ -14,7 +14,7 @@ const SANKEY_PALETTE = ['#3498db', '#e67e22', '#27ae60', '#8e44ad', '#e74c3c'];
 const LAYOUT_DEFAULTS = {
   template: 'plotly_white',
   font: { size: 13 },
-  margin: { l: 60, r: 20, t: 50, b: 50 },
+  margin: { l: 80, r: 20, t: 50, b: 70 },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -48,23 +48,21 @@ function fmtPct(n) {
   return n.toFixed(1) + '%';
 }
 
-function fixAxis(axis, standoff) {
-  if (!axis) axis = {};
-  axis.automargin = true;
-  // Convert string title to object so we can set standoff
-  if (typeof axis.title === 'string') axis.title = { text: axis.title };
-  if (axis.title && typeof axis.title === 'object') {
-    axis.title.standoff = axis.title.standoff || standoff;
-  } else if (!axis.title) {
-    axis.title = { text: '', standoff: standoff };
-  }
-  return axis;
-}
-
 function layout(overrides) {
   const merged = Object.assign({}, LAYOUT_DEFAULTS, overrides);
-  merged.xaxis = fixAxis(merged.xaxis, 20);
-  merged.yaxis = fixAxis(merged.yaxis, 15);
+  // Only touch axes that were explicitly provided — don't create them
+  // (creating them on pie/sankey charts causes spurious axis rendering)
+  for (const key of ['xaxis', 'yaxis']) {
+    if (merged[key]) {
+      merged[key].automargin = true;
+      // Convert string title to object with standoff
+      if (typeof merged[key].title === 'string') {
+        merged[key].title = { text: merged[key].title, standoff: 20 };
+      } else if (merged[key].title && typeof merged[key].title === 'object' && !merged[key].title.standoff) {
+        merged[key].title.standoff = 20;
+      }
+    }
+  }
   return merged;
 }
 
@@ -129,8 +127,8 @@ function renderScatter(divId, data, xKey, yKey, opts = {}) {
   }));
   Plotly.newPlot(divId, traces, layout({
     title: { text: opts.title || '' },
-    xaxis: { title: opts.xTitle || '', automargin: true },
-    yaxis: { title: opts.yTitle || '', automargin: true },
+    xaxis: { title: opts.xTitle || '' },
+    yaxis: { title: opts.yTitle || '' },
     height: opts.height || 400,
     shapes: shapes,
   }), { responsive: true });
