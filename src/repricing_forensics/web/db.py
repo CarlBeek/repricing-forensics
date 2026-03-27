@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None
 _labels: dict[str, str] = {}
 _csv_cache: dict[str, tuple[float, pd.DataFrame]] = {}
+_db_lock = threading.Lock()
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:
@@ -41,18 +43,21 @@ def close_conn() -> None:
 
 def query(sql: str) -> list[dict[str, Any]]:
     """Execute SQL and return a list of dicts."""
-    df = get_conn().execute(sql).df()
+    with _db_lock:
+        df = get_conn().execute(sql).df()
     return df.where(df.notna(), None).to_dict(orient="records")
 
 
 def query_df(sql: str) -> pd.DataFrame:
     """Execute SQL and return a DataFrame."""
-    return get_conn().execute(sql).df()
+    with _db_lock:
+        return get_conn().execute(sql).df()
 
 
 def query_scalar(sql: str, default: Any = None) -> Any:
     """Execute SQL and return the single scalar result, or default if empty."""
-    row = get_conn().execute(sql).fetchone()
+    with _db_lock:
+        row = get_conn().execute(sql).fetchone()
     if row is None:
         return default
     return row[0]
