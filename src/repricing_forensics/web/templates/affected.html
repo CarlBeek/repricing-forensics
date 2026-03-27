@@ -248,9 +248,29 @@ async function showTxDetail(txHash, rowEl) {
         </div>
       ` : ''}
 
+      ${tx.gas_breakdown && tx.gas_breakdown.length ? `
+        <h5>Gas Delta Breakdown by Repriced Opcode</h5>
+        <table style="font-size:0.9em; max-width:500px;">
+          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th><th style="text-align:right">Avg/Op</th></tr></thead>
+          <tbody>
+            ${tx.gas_breakdown.map(b => `<tr>
+              <td><code>${b.opcode}</code></td>
+              <td style="text-align:right">${b.count.toLocaleString()}</td>
+              <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
+              <td style="text-align:right">${b.count > 0 ? (b.gas_delta / b.count).toFixed(1) : '-'}</td>
+            </tr>`).join('')}
+            <tr style="font-weight:bold; border-top:2px solid #333">
+              <td>Total</td>
+              <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
+              <td style="text-align:right">+${fmtGas(tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0))}</td>
+              <td></td>
+            </tr>
+          </tbody>
+        </table>
+      ` : ''}
+
       ${tx.op_counts ? `
-        <p style="margin:8px 0; font-size:0.9em">
-          <strong>Op Counts:</strong>
+        <p style="margin:8px 0; font-size:0.9em; color:#666">
           ${tx.op_counts.total.toLocaleString()} total ops,
           ${tx.op_counts.sload} SLOADs,
           ${tx.op_counts.sstore} SSTOREs,

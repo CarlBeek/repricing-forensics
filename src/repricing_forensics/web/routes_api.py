@@ -509,14 +509,14 @@ def tx_detail(tx_hash: str):
         LIMIT 1
     """)
 
-    # Schedule call frames (the re-execution trace) from raw artifacts
-    frames_raw = query(f"""
-        SELECT schedule_call_frames
+    # Raw artifacts: call frames + operation counts
+    artifacts_raw = query(f"""
+        SELECT schedule_call_frames, operation_counts
         FROM artifacts_7904
         WHERE divergence_id = {div_id}
-          AND schedule_call_frames IS NOT NULL
         LIMIT 1
     """)
+    frames_raw = artifacts_raw
 
     call_stack = []
     if frames_raw and frames_raw[0].get("schedule_call_frames"):
@@ -540,6 +540,30 @@ def tx_detail(tx_hash: str):
                     "success": f.get("success", False),
                 })
         except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Per-opcode gas breakdown from operation_counts JSON
+    gas_breakdown = []
+    if artifacts_raw and artifacts_raw[0].get("operation_counts"):
+        import json
+        try:
+            oc = json.loads(artifacts_raw[0]["operation_counts"]) if isinstance(
+                artifacts_raw[0]["operation_counts"], str
+            ) else artifacts_raw[0]["operation_counts"]
+            REPRICED_OPCODES = [
+                ("DIV", "div"), ("SDIV", "sdiv"), ("MOD", "mod"), ("SMOD", "smod"),
+                ("ADDMOD", "addmod"), ("MULMOD", "mulmod"), ("EXP", "exp"), ("KECCAK256", "keccak256"),
+            ]
+            for name, key in REPRICED_OPCODES:
+                count = int(oc.get(f"{key}_count", 0))
+                delta = int(oc.get(f"{key}_gas_delta", 0))
+                if count > 0 or delta != 0:
+                    gas_breakdown.append({
+                        "opcode": name,
+                        "count": count,
+                        "gas_delta": delta,
+                    })
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
     f = forensics[0] if forensics else {}
@@ -579,6 +603,7 @@ def tx_detail(tx_hash: str):
             "total": f.get("total_ops", 0),
         } if f else None,
         "call_stack": call_stack,
+        "gas_breakdown": gas_breakdown,
     }
 
 
