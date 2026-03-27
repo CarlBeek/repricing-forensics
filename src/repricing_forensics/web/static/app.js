@@ -49,7 +49,11 @@ function fmtPct(n) {
 }
 
 function layout(overrides) {
-  return Object.assign({}, LAYOUT_DEFAULTS, overrides);
+  const merged = Object.assign({}, LAYOUT_DEFAULTS, overrides);
+  // Ensure automargin on all axes so labels never overlap tick numbers
+  merged.xaxis = Object.assign({ automargin: true }, merged.xaxis || {});
+  merged.yaxis = Object.assign({ automargin: true }, merged.yaxis || {});
+  return merged;
 }
 
 // ── Poster cards ─────────────────────────────────────────────────────
