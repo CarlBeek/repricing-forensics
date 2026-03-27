@@ -125,22 +125,21 @@
     renderBar('depthChart',
       depth.map(r => ({ label: r.divergence_call_depth >= 0 ? `Depth ${r.divergence_call_depth}` : 'Unknown', count: r.divergent_txs })),
       'label', 'count',
-      { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: '#3498db' }
+      { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: '#3498db', yaxis: { tickformat: ',' } }
     );
   }
 
   // 5. Top 20
   Plotly.newPlot('top20Chart', [{
     x: top20.map(c => c.broken_txs),
-    y: top20.map(c => c.name.slice(0, 25)),
+    y: top20.map(c => c.name.length > 30 ? c.name.slice(0, 28) + '…' : c.name),
     type: 'bar', orientation: 'h',
     marker: { color: '#e74c3c' },
   }], layout({
     title: { text: 'Top 20 Contracts by Broken Tx Count' },
-    xaxis: { title: 'Broken Txs' },
-    yaxis: { autorange: 'reversed' },
+    xaxis: { title: 'Broken Txs', tickformat: ',' },
+    yaxis: { autorange: 'reversed', automargin: true },
     height: 600,
-    margin: { l: 200, r: 20, t: 50, b: 20 },
   }), { responsive: true });
 
   // 6. Motifs

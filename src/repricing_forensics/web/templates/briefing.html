@@ -121,13 +121,21 @@
   document.getElementById('concNote').innerHTML = n95
     ? `Breakage is highly concentrated: <strong>top ${n95.rank} contracts account for 95%</strong> of all broken transactions.`
     : '';
-  renderScatter('concChart', conc, 'rank', 'cum_pct', {
-    title: 'Breakage Concentration: Top Contracts',
-    xTitle: 'Number of Contracts (ranked by breakage)',
-    yTitle: 'Cumulative % of Broken Txs',
+  Plotly.newPlot('concChart', [{
+    x: conc.map(c => c.rank),
+    y: conc.map(c => c.cum_pct),
+    mode: 'lines+markers',
+    marker: { size: 5, color: COLORS.broken },
+    line: { color: COLORS.broken, width: 2 },
+    hovertext: conc.map(c => `#${c.rank} ${escHtml(c.name)}: ${fmtCount(c.broken_txs)} txs (${c.cum_pct.toFixed(1)}%)`),
+    hoverinfo: 'text',
+  }], layout({
+    title: { text: 'Breakage Concentration: Top Contracts' },
+    xaxis: { title: 'Number of Contracts (ranked by breakage)' },
+    yaxis: { title: 'Cumulative % of Broken Txs', ticksuffix: '%' },
     height: 420,
-    hlines: [{ y: 95 }],
-  });
+    shapes: [{ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 95, y1: 95, line: { dash: 'dash', color: '#95a5a6' } }],
+  }), { responsive: true });
 
   // 6. Top 10
   document.getElementById('top10Body').innerHTML = top10.map((c, i) => `
