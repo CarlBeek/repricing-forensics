@@ -25,6 +25,7 @@ def main() -> None:
     )
     os.close(tmp_fd)
     tmp_path = Path(tmp_path_str)
+    tmp_path.unlink()  # remove empty file so DuckDB creates a fresh database
     try:
         initialize_duckdb(paths, args.schedule_name, db_path=tmp_path)
         build_normalized_forensics(
