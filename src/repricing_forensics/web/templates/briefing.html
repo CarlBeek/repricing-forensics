@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}EIP-7904 ACD Briefing{% endblock %}
+{% block title %}EIP-7904 Overview{% endblock %}
 
 {% block content %}
-<h1>EIP-7904 ACD Briefing</h1>
+<h1>EIP-7904 Overview</h1>
 <p class="subtitle" id="subtitle">Loading...</p>
 
 <!-- 1. Headline Numbers -->
@@ -54,7 +54,7 @@
   ]);
 
   document.getElementById('subtitle').textContent =
-    `EIP-7904 Repricing Impact — Blocks ${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`;
+    `Blocks ${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`;
 
   // 1. Headlines
   renderPosterCards('headlines', [

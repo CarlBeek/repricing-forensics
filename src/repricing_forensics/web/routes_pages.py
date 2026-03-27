@@ -10,7 +10,7 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def briefing(request: Request):
     return request.app.state.templates.TemplateResponse(
-        request=request, name="briefing.html", context={"active": "briefing"}
+        request=request, name="briefing.html", context={"active": "overview"}
     )
 
 
