@@ -292,9 +292,17 @@ def forensics_remediation():
 
 
 @router.get("/affected")
-def affected():
-    """All affected contracts — no limit."""
-    rows = query("""
+def affected(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=100, ge=1, le=500),
+):
+    """Paginated affected contracts, ordered by broken_txs desc."""
+    offset = (page - 1) * per_page
+    total_count = query_scalar(
+        "SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed",
+        default=0,
+    )
+    rows = query(f"""
         SELECT recipient,
                count(*) as broken_txs,
                avg(gas_delta) as avg_delta,
@@ -305,6 +313,7 @@ def affected():
         WHERE status_changed
         GROUP BY recipient
         ORDER BY broken_txs DESC
+        LIMIT {int(per_page)} OFFSET {int(offset)}
     """)
 
     outreach = read_csv("outreach_priority.csv")
@@ -316,11 +325,11 @@ def affected():
                 "remediation_buckets": str(row.get("remediation_buckets", "")),
             }
 
-    result = []
+    items = []
     for r in rows:
         name = label_address(r["recipient"])
         info = outreach_dict.get(name, {})
-        result.append({
+        items.append({
             "recipient": r["recipient"],
             "name": name,
             "broken_txs": int(r["broken_txs"]),
@@ -331,7 +340,13 @@ def affected():
             "owner": info.get("owner_buckets", ""),
             "remediation": info.get("remediation_buckets", ""),
         })
-    return result
+    return {
+        "items": items,
+        "total": int(total_count),
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (int(total_count) + per_page - 1) // per_page,
+    }
 
 
 @router.get("/affected/{address}")
