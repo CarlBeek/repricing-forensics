@@ -1,25 +1,25 @@
 /* EIP-7904 Analysis — Client-side rendering */
 
 const COLORS = {
-  broken: '#f87171',
-  changed: '#fb923c',
-  saved: '#4ade80',
-  neutral: '#52525b',
-  call_tree: '#60a5fa',
-  event_logs: '#fb923c',
+  broken: '#ff6b35',
+  changed: '#ffb830',
+  saved: '#7fff50',
+  neutral: '#5a4a20',
+  call_tree: '#50b8ff',
+  event_logs: '#ffb830',
 };
-const PIE_COLORS = ['#f87171', '#60a5fa', '#4ade80', '#fb923c', '#a78bfa', '#5eead4'];
-const SANKEY_PALETTE = ['#60a5fa', '#fb923c', '#4ade80', '#a78bfa', '#f87171'];
+const PIE_COLORS = ['#ff6b35', '#50b8ff', '#7fff50', '#ffb830', '#c090ff', '#50ffd0'];
+const SANKEY_PALETTE = ['#ffb830', '#ff6b35', '#7fff50', '#50b8ff', '#c090ff'];
 
 const LAYOUT_DEFAULTS = {
   template: 'plotly_dark',
-  font: { family: 'Inter, system-ui, sans-serif', size: 12, color: '#a1a1aa' },
+  font: { family: 'JetBrains Mono, Consolas, monospace', size: 11, color: '#cc9020' },
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(0,0,0,0)',
   margin: { l: 70, r: 16, t: 44, b: 60 },
-  xaxis: { gridcolor: '#27272a', zerolinecolor: '#27272a', gridwidth: 1 },
-  yaxis: { gridcolor: '#27272a', zerolinecolor: '#27272a', gridwidth: 1 },
-  title: { font: { size: 14, color: '#a1a1aa' } },
+  xaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
+  yaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
+  title: { font: { size: 12, color: '#cc9020' } },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -148,7 +148,7 @@ function renderSankey(divId, data, opts = {}) {
       source: data.sources,
       target: data.targets,
       value: data.values,
-      color: data.link_colors || data.values.map(() => 'rgba(96,165,250,0.2)'),
+      color: data.link_colors || data.values.map(() => 'rgba(255,184,48,0.15)'),
     },
   }], layout({
     title: { text: opts.title || '' },
