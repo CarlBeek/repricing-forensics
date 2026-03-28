@@ -170,6 +170,20 @@ deepest_fail AS (
         ) AS rn
     FROM schedule_frames
     WHERE success = false
+      -- Exclude precompile addresses (0x01-0x0a) as "deepest" failures;
+      -- the real failure is in the contract that called the precompile.
+      AND to_address NOT IN (
+          '0x0000000000000000000000000000000000000001',
+          '0x0000000000000000000000000000000000000002',
+          '0x0000000000000000000000000000000000000003',
+          '0x0000000000000000000000000000000000000004',
+          '0x0000000000000000000000000000000000000005',
+          '0x0000000000000000000000000000000000000006',
+          '0x0000000000000000000000000000000000000007',
+          '0x0000000000000000000000000000000000000008',
+          '0x0000000000000000000000000000000000000009',
+          '0x000000000000000000000000000000000000000a'
+      )
 ),
 failing AS (
     SELECT * EXCLUDE (rn) FROM deepest_fail WHERE rn = 1
