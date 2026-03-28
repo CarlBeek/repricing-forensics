@@ -8,6 +8,13 @@ router = APIRouter()
 
 
 @router.get("/", response_class=HTMLResponse)
+async def landing(request: Request):
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="landing.html", context={"active": "home"}
+    )
+
+
+@router.get("/overview", response_class=HTMLResponse)
 async def briefing(request: Request):
     return request.app.state.templates.TemplateResponse(
         request=request, name="briefing.html", context={"active": "overview"}
@@ -39,4 +46,11 @@ async def affected_contract(request: Request, address: str):
 async def tx_detail(request: Request, tx_hash: str):
     return request.app.state.templates.TemplateResponse(
         request=request, name="tx.html", context={"active": "affected", "tx_hash": tx_hash}
+    )
+
+
+@router.get("/about", response_class=HTMLResponse)
+async def about(request: Request):
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="about.html", context={"active": "about"}
     )

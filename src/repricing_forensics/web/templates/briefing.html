@@ -12,16 +12,17 @@
 
 <!-- 1. Headline Numbers -->
 <h2>1. Headline Numbers</h2>
+<p>"Wallet-fixable" means simple calls where the sender just needs a higher gas estimate &mdash; wallets auto-correct this via <code>eth_estimateGas</code>. "Contract-broken" means the failure is structural and requires code changes.</p>
 <div class="poster-grid" id="headlines"><p class="loading">Loading...</p></div>
 
 <!-- 2. The Funnel -->
-<h2>2. The Funnel</h2>
-<p>How divergent transactions break down:</p>
+<h2>2. Transaction Breakdown</h2>
+<p>Every re-executed transaction falls into one of these buckets. "Cost-only" means it succeeded but used more gas. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" means a previously-successful transaction now reverts.</p>
 <div id="funnel"><p class="loading">Loading...</p></div>
 
 <!-- 3. Opcode Impact -->
-<h2>3. Opcode Impact</h2>
-<p>Which repriced opcodes cause divergence at the point of failure:</p>
+<h2>3. Opcode at Divergence Point</h2>
+<p>Which repriced opcode was executing at the exact EVM step where the new-schedule trace first diverges from the baseline. <code>KECCAK256</code> dominates because it is both frequently used and receives a 50% price increase.</p>
 <table id="opcodeTable">
   <thead><tr><th>Opcode</th><th>Divergent Txs</th><th>Share</th></tr></thead>
   <tbody id="opcodeBody"><tr><td colspan="3" class="loading">Loading...</td></tr></tbody>
@@ -29,16 +30,19 @@
 
 <!-- 4. Gas Overhead -->
 <h2>4. Gas Overhead for Non-Broken Txs</h2>
+<p>For transactions that still succeed under the new schedule, this shows how much additional gas they consume. The CDF shows that the vast majority see minimal overhead, but a long tail exists.</p>
 <div class="poster-grid" id="gasCards" style="grid-template-columns: repeat(4, 1fr);"></div>
 <div id="gasChart"><p class="loading">Loading chart...</p></div>
 
 <!-- 5. Concentration -->
 <h2>5. Breakage Concentration</h2>
+<p>Breakage is not uniformly distributed. A small number of heavily-used contracts account for the majority of broken transactions, which means targeted outreach to a handful of teams can address most of the impact.</p>
 <p id="concNote"></p>
 <div id="concChart"><p class="loading">Loading chart...</p></div>
 
 <!-- 6. Top 10 Contracts -->
 <h2>6. Top 10 Affected Contracts</h2>
+<p>The contracts with the most broken transactions (excluding wallet-fixable cases). <a href="/affected">Search all affected contracts</a> or click through to any contract's detail page.</p>
 <table id="top10Table">
   <thead><tr><th>#</th><th>Contract</th><th>Broken Txs</th><th>Avg Gas Δ</th><th>Total Gas Δ</th></tr></thead>
   <tbody id="top10Body"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>

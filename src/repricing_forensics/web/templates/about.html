@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}About - EIP-7904 Gas Repricing{% endblock %}
+
+{% block content %}
+<div class="prose">
+  <h1>About this analysis</h1>
+
+  <h2>What is EIP-7904?</h2>
+  <p>
+    EIP-7904 proposes raising the gas cost of eight EVM opcodes whose prices have not been
+    updated since Ethereum's Frontier release in 2015. Over that time, improvements to EVM
+    interpreters have shifted the relative cost profile of instructions, but the gas schedule
+    has not kept pace. Opcodes like <code>DIV</code>, <code>SDIV</code>, <code>MOD</code>,
+    <code>SMOD</code>, <code>ADDMOD</code>, <code>MULMOD</code>, <code>EXP</code>, and
+    <code>KECCAK256</code> now consume more real CPU time per unit of gas than their peers,
+    creating a potential vector for denial-of-service attacks that exploit the mispricing.
+  </p>
+  <p>
+    The proposed changes also adjust precompile costs to keep them consistent with the
+    repriced opcode schedule. The full specification is available in
+    <a href="https://eips.ethereum.org/EIPS/eip-7904" target="_blank" rel="noopener">EIP-7904</a>.
+  </p>
+
+  <h2>How we measure impact</h2>
+  <p>
+    We forked <a href="https://github.com/paradigmxyz/reth" target="_blank" rel="noopener">reth</a>
+    and modified its EVM gas table to reflect the proposed schedule. The fork re-executes
+    historical mainnet blocks exactly as they originally ran -- same state, same transaction
+    ordering, same block headers -- but charges the new gas prices. After each transaction,
+    we compare the baseline execution result (status, gas used, logs) against the repriced
+    result and record every difference.
+  </p>
+  <p>
+    Re-execution happens at the EVM level, not via tracing. The modified node processes each
+    opcode natively, so the measurements capture the actual gas accounting path rather than
+    an after-the-fact estimate.
+  </p>
+
+  <h2>What the data captures</h2>
+  <p>For every transaction in the sample, the analysis records:</p>
+  <ul>
+    <li><strong>Baseline gas used</strong> -- gas consumed under the current schedule.</li>
+    <li><strong>Schedule gas used</strong> -- gas consumed under the EIP-7904 schedule.</li>
+    <li><strong>Status change</strong> -- whether the transaction flips from success to revert (or vice versa).</li>
+    <li><strong>Divergence location</strong> -- the program counter and call depth where execution first diverges.</li>
+    <li><strong>Call stack snapshot</strong> -- the full call chain at the point of divergence, including contract addresses and function selectors.</li>
+    <li><strong>Per-opcode deltas</strong> -- how many additional gas units each repriced opcode contributes in the affected transaction.</li>
+  </ul>
+
+  <h2>Wallet-fixable vs contract-broken</h2>
+  <p>
+    Not all failing transactions represent real breakage. If a transaction runs out of gas
+    only because the user-supplied gas limit was too low, a wallet can fix the problem by
+    raising the limit. We call these <strong>wallet-fixable</strong> transactions. They fail
+    under the new schedule but would succeed if re-submitted with a higher gas limit.
+  </p>
+  <p>
+    <strong>Contract-broken</strong> transactions are different. These fail because a smart
+    contract hardcodes a gas value in an internal call -- for example, passing a fixed
+    <code>gas</code> parameter to <code>CALL</code>. No wallet adjustment can help because
+    the contract itself constrains the gas available to the sub-call. Fixing these requires
+    a contract upgrade or migration.
+  </p>
+  <p>
+    The classifier uses a depth heuristic: if the out-of-gas event occurs at call depth
+    greater than 1 and the parent call forwarded a fixed (non-63/64) amount of gas, the
+    transaction is marked contract-broken. Otherwise it is marked wallet-fixable.
+  </p>
+
+  <h2 id="sstore-refunds">The SSTORE refund complication</h2>
+  <p>
+    EVM gas accounting distinguishes between pre-refund and post-refund gas usage.
+    <code>SSTORE</code> operations that clear storage slots earn a gas refund, but this
+    refund is applied after execution completes. When a transaction runs out of gas under
+    the new schedule, no refund is issued (the transaction reverted), so the reported
+    <code>gas_used</code> can be dramatically higher than the baseline -- not because the
+    opcodes cost that much more, but because the refund that would have offset the cost
+    was never applied.
+  </p>
+  <p>
+    This means the raw gas delta for OOG transactions inflates the apparent cost increase.
+    The analysis reports both the gross delta and the pre-refund headroom to give a more
+    accurate picture.
+  </p>
+
+  <h2 id="6364-rule">The 63/64 rule and deep call chains</h2>
+  <p>
+    When a contract makes an external call, EIP-150 requires it to withhold 1/64 of
+    available gas (the "63/64 rule"). The callee receives at most 63/64 of the caller's
+    remaining gas. In deep call chains this compounds: each level withholds a fraction,
+    and by depth 10 or more, a significant share of the original gas has been retained
+    across the stack.
+  </p>
+  <p>
+    Under higher opcode prices, the compounding effect is amplified. Contracts that
+    forwarded gas via <code>CALL</code> without specifying an explicit limit relied on
+    the 63/64 share being "enough." When per-opcode costs rise, the same 63/64 share
+    may no longer cover the callee's execution. Contracts that hardcode a specific gas
+    stipend (e.g., <code>2300</code> for the transfer stipend) are especially fragile
+    because the stipend was sized for the original gas schedule.
+  </p>
+
+  <h2>Limitations</h2>
+  <ul>
+    <li>
+      <strong>Identical state assumption.</strong> Re-execution replays transactions against
+      the same state that existed when they originally ran. In practice, if gas costs change,
+      earlier transactions in a block may produce different state, which could alter the
+      outcome of later transactions. This second-order effect is not captured.
+    </li>
+    <li>
+      <strong>Heuristic classification.</strong> The wallet-fixable vs contract-broken
+      distinction relies on a depth-and-gas heuristic. Edge cases (e.g., a contract that
+      forwards <code>gasleft() - 100</code>) may be misclassified.
+    </li>
+    <li>
+      <strong>Labeling coverage.</strong> Contract and project labels come from public
+      sources (Etherscan, 4byte directory). Unlabeled contracts appear by address only.
+    </li>
+    <li>
+      <strong>Sample, not census.</strong> The analysis covers a specific range of mainnet
+      blocks. Contracts deployed after the sample period or rarely called within it may
+      not appear in the results.
+    </li>
+  </ul>
+</div>
+{% endblock %}

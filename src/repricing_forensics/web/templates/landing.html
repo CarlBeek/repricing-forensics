@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}EIP-7904 Gas Repricing Analysis{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>EIP-7904 changes gas costs for 8 EVM opcodes. We re-executed every mainnet transaction to find out what breaks.</h1>
+  <p class="lead">A modified reth node replays historical blocks under the proposed gas schedule, comparing execution outcomes instruction-by-instruction.</p>
+
+  <div class="hero-stats">
+    <div class="hero-stat">
+      <div class="number" id="statBrokenTxs">--</div>
+      <div class="label">contract-broken transactions</div>
+    </div>
+    <div class="hero-stat">
+      <div class="number" id="statContracts">--</div>
+      <div class="label">unique contracts affected</div>
+    </div>
+  </div>
+
+  <div class="hero-actions">
+    <a href="/affected" class="cta-btn">Check if your contract is affected</a>
+    <a href="/overview" class="btn-secondary">See the full analysis</a>
+  </div>
+</div>
+
+<h2>What is EIP-7904?</h2>
+<p>Several computational opcodes have been underpriced since the Frontier release. Their gas costs no longer reflect the actual CPU time they consume relative to other operations. EIP-7904 corrects this by raising the gas cost of eight opcodes:</p>
+
+<table class="opcode-table">
+  <thead><tr><th>Opcode</th><th>Current</th><th>Proposed</th></tr></thead>
+  <tbody>
+    <tr><td><code>DIV</code></td><td>5</td><td>15</td></tr>
+    <tr><td><code>SDIV</code></td><td>5</td><td>20</td></tr>
+    <tr><td><code>MOD</code></td><td>5</td><td>12</td></tr>
+    <tr><td><code>SMOD</code></td><td>5</td><td>5</td></tr>
+    <tr><td><code>ADDMOD</code></td><td>8</td><td>8</td></tr>
+    <tr><td><code>MULMOD</code></td><td>8</td><td>11</td></tr>
+    <tr><td><code>KECCAK256</code></td><td>30</td><td>45</td></tr>
+  </tbody>
+</table>
+
+<p>Most transactions absorb the extra cost. A small fraction break. This tool quantifies exactly which ones.</p>
+
+<h2>What this site does</h2>
+<div class="site-features">
+  <div class="feature-card">
+    <h3>Overview</h3>
+    <p>Headline numbers, gas overhead distributions, and opcode-level impact across the entire sample.</p>
+    <a href="/overview">View the overview</a>
+  </div>
+  <div class="feature-card">
+    <h3>Forensics</h3>
+    <p>Drill into divergent transactions: where they fail, why they fail, and how the call stack changes.</p>
+    <a href="/forensics">Explore forensics</a>
+  </div>
+  <div class="feature-card">
+    <h3>Affected Parties</h3>
+    <p>Search by contract address or project name to see every transaction that would break under the new schedule.</p>
+    <a href="/affected">Search affected contracts</a>
+  </div>
+</div>
+
+<p style="text-align: center; margin-top: 32px;">
+  <a href="/about">Read the full methodology</a>
+</p>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  Promise.all([fetchJSON('/api/overview'), fetchJSON('/api/metadata')]).then(([ov, meta]) => {
+    document.getElementById('statBrokenTxs').textContent = fmtCount(ov.contract_broken_txs);
+    document.getElementById('statContracts').textContent = fmtCount(meta.total_contracts_affected);
+  }).catch(() => {});
+</script>
+{% endblock %}

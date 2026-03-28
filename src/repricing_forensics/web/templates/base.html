@@ -6,16 +6,18 @@
   <title>{% block title %}EIP-7904 Gas Repricing{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=5">
   <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
 </head>
 <body>
   <nav>
     <a href="/" class="nav-brand">EIP-7904 Repricing</a>
     <div class="nav-links">
-      <a href="/" {% if active == "overview" %}class="active"{% endif %}>Overview</a>
+      <a href="/" {% if active == "home" %}class="active"{% endif %}>Home</a>
+      <a href="/overview" {% if active == "overview" %}class="active"{% endif %}>Overview</a>
       <a href="/forensics" {% if active == "forensics" %}class="active"{% endif %}>Forensics</a>
       <a href="/affected" {% if active == "affected" %}class="active"{% endif %}>Affected Parties</a>
+      <a href="/about" {% if active == "about" %}class="active"{% endif %}>About</a>
     </div>
   </nav>
 
@@ -28,7 +30,7 @@
     <p class="note">EIP-7904 Advanced Repricing Analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
   </footer>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
   <script>
     fetchJSON('/api/metadata').then(m => {
       document.getElementById('lastUpdated').textContent =

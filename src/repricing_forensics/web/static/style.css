@@ -294,6 +294,86 @@ a:hover { color: #a5b4fc; }
 }
 .cta-btn:hover { background: #a5b4fc; color: #fff; text-decoration: none; }
 
+/* ── Landing page hero ──────────────────────────────────────────────── */
+.hero {
+  text-align: center; padding: 48px 0 32px;
+  max-width: 720px; margin: 0 auto;
+}
+.hero h1 {
+  font-size: 2.2em; line-height: 1.25; letter-spacing: -0.04em;
+  margin-bottom: 16px;
+}
+.hero .lead {
+  font-size: 1.05em; color: var(--text-secondary); line-height: 1.6;
+  margin-bottom: 32px;
+}
+.hero-stats {
+  display: flex; justify-content: center; gap: 32px; margin: 32px 0;
+}
+.hero-stat {
+  text-align: center;
+}
+.hero-stat .number {
+  font-size: 2.8em; font-weight: 700; color: var(--text);
+  letter-spacing: -0.03em; line-height: 1.1;
+}
+.hero-stat .label {
+  font-size: 0.85em; color: var(--text-muted); margin-top: 4px;
+}
+.hero-actions {
+  display: flex; justify-content: center; gap: 12px; margin-top: 32px;
+}
+.hero-actions .cta-btn { padding: 12px 28px; font-size: 0.95em; }
+.btn-secondary {
+  display: inline-block; padding: 12px 28px;
+  background: var(--bg-card); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-weight: 600; font-size: 0.95em; text-decoration: none;
+  transition: all 0.15s;
+}
+.btn-secondary:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+
+.site-features {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  margin: 32px 0;
+}
+.feature-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px;
+  transition: border-color 0.15s;
+}
+.feature-card:hover { border-color: var(--border-light); }
+.feature-card h3 { font-size: 0.95em; color: var(--text); margin-bottom: 8px; }
+.feature-card p { font-size: 0.85em; color: var(--text-muted); margin: 0; }
+.feature-card a { display: inline-block; margin-top: 10px; font-size: 0.85em; }
+
+/* ── Prose (about page) ─────────────────────────────────────────────── */
+.prose {
+  max-width: 720px; line-height: 1.75; font-size: 0.95em;
+}
+.prose h2 {
+  margin-top: 40px; font-size: 1.2em; text-transform: none;
+  letter-spacing: -0.02em; color: var(--text);
+}
+.prose h3 { margin-top: 28px; font-size: 1em; }
+.prose p { color: var(--text-secondary); margin: 12px 0; }
+.prose ul, .prose ol { color: var(--text-secondary); padding-left: 24px; margin: 12px 0; }
+.prose li { margin: 6px 0; }
+.prose table {
+  max-width: 500px; margin: 16px 0;
+}
+.prose code {
+  font-size: 0.88em; background: var(--bg-hover);
+  padding: 1px 5px; border-radius: 3px;
+}
+
+/* ── Opcode comparison table (static, small) ────────────────────────── */
+.opcode-table { max-width: 400px; margin: 16px 0; }
+.opcode-table td:nth-child(2),
+.opcode-table td:nth-child(3),
+.opcode-table th:nth-child(2),
+.opcode-table th:nth-child(3) { text-align: right; }
+
 /* ── Footer ─────────────────────────────────────────────────────────── */
 footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12px; }
 
@@ -302,4 +382,8 @@ footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12
   body { padding: 0 16px 32px; font-size: 13px; }
   .poster-grid { grid-template-columns: repeat(2, 1fr); }
   nav { flex-direction: column; gap: 8px; position: static; }
+  .hero h1 { font-size: 1.6em; }
+  .hero-stats { flex-direction: column; gap: 16px; }
+  .hero-actions { flex-direction: column; align-items: center; }
+  .site-features { grid-template-columns: 1fr; }
 }
