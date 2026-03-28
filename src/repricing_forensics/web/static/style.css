@@ -139,6 +139,20 @@ tr:hover td { background: var(--bg-hover); }
 tr:last-child td { border-bottom: none; }
 td strong { color: var(--text); }
 
+/* Clickable rows */
+tr.clickable, tr[style*="cursor:pointer"], tr[onclick] { cursor: pointer; }
+tr.clickable td:first-child, tr[onclick] td:first-child { position: relative; }
+tr.clickable:hover td, tr[onclick]:hover td {
+  background: var(--bg-hover); color: var(--text);
+}
+tr.clickable td:last-child::after, tr[onclick] td:last-child::after {
+  content: '\203A'; float: right; color: var(--text-dim);
+  font-size: 1.2em; font-weight: 600; margin-left: 8px;
+}
+tr.clickable:hover td:last-child::after, tr[onclick]:hover td:last-child::after {
+  color: var(--accent);
+}
+
 /* ── Tags ───────────────────────────────────────────────────────────── */
 .tag {
   display: inline-block; padding: 3px 8px; border-radius: 4px;
@@ -261,6 +275,24 @@ a:hover { color: #a5b4fc; }
   border: 1px solid var(--orange-border);
   font-size: 0.88em;
 }
+
+/* ── CTA banner ─────────────────────────────────────────────────────── */
+.cta-banner {
+  background: linear-gradient(135deg, rgba(129,140,248,0.1), rgba(248,113,113,0.08));
+  border: 1px solid rgba(129,140,248,0.2);
+  border-radius: var(--radius); padding: 20px 24px;
+  margin: 24px 0; display: flex; align-items: center;
+  justify-content: space-between; gap: 16px;
+}
+.cta-banner p { color: var(--text-secondary); margin: 0; font-size: 0.95em; }
+.cta-banner strong { color: var(--text); }
+.cta-btn {
+  display: inline-block; padding: 10px 20px;
+  background: var(--accent); color: #fff; border-radius: var(--radius-sm);
+  font-weight: 600; font-size: 0.88em; white-space: nowrap;
+  text-decoration: none; transition: background 0.15s;
+}
+.cta-btn:hover { background: #a5b4fc; color: #fff; text-decoration: none; }
 
 /* ── Footer ─────────────────────────────────────────────────────────── */
 footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12px; }

@@ -23,7 +23,7 @@ const ADDRESS = "{{ address }}";
   }
 
   const txRows = (data.transactions || []).map((t, i) =>
-    `<tr style="cursor:pointer" onclick="location.href='/tx/${t.tx_hash}'">
+    `<tr onclick="location.href='/tx/${t.tx_hash}'">
       <td>${i + 1}</td>
       <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
       <td style="text-align:right">${t.block_number.toLocaleString()}</td>
@@ -48,6 +48,9 @@ const ADDRESS = "{{ address }}";
     ${data.remediation ? `<p style="margin:12px 0"><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
 
     <h2>Example Transactions</h2>
+    <p style="color:var(--text-muted); font-size:0.88em; margin-bottom:12px">
+      Click a transaction to see the full gas breakdown and call stack analysis.
+    </p>
     <div style="overflow-x:auto;">
       <table>
         <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>

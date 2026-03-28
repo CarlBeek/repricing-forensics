@@ -6,7 +6,7 @@
   <title>{% block title %}EIP-7904 Gas Repricing{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=4">
   <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
 </head>
 <body>
@@ -28,7 +28,7 @@
     <p class="note">EIP-7904 Advanced Repricing Analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
   </footer>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=4"></script>
   <script>
     fetchJSON('/api/metadata').then(m => {
       document.getElementById('lastUpdated').textContent =

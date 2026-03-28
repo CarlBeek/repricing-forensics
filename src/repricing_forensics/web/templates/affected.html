@@ -1,13 +1,14 @@
 {% extends "base.html" %}
-{% block title %}EIP-7904 Affected Parties{% endblock %}
+{% block title %}Is Your Contract Affected? — EIP-7904{% endblock %}
 
 {% block content %}
-<h1>Affected Parties</h1>
-<p class="subtitle">Contracts broken by EIP-7904 repricing (excluding wallet-fixable)</p>
+<h1>Is Your Contract Affected?</h1>
+<p class="subtitle">Check if EIP-7904 gas repricing will break transactions to your contract</p>
 
-<div class="search-wrapper">
+<div class="search-wrapper" style="margin-top:24px">
   <input type="text" class="search-box" id="contractSearch"
-         placeholder="Search by contract address (0x...) or project name...">
+         placeholder="Paste a contract address or search by project name..."
+         style="font-size:15px; padding:14px 18px;">
   <div id="autocompleteList" class="autocomplete-list"></div>
 </div>
 
@@ -15,6 +16,11 @@
   <p class="loading">Loading...</p>
 </div>
 
+<h2>Most Affected Contracts</h2>
+<p style="color:var(--text-muted); font-size:0.88em; margin-bottom:12px">
+  Click any row to see transaction-level details and gas flow analysis.
+  Only showing contracts with breakages that require code changes (wallet-fixable excluded).
+</p>
 <div style="overflow-x: auto;">
   <table id="contractTable">
     <thead><tr>
@@ -38,7 +44,7 @@ const perPage = 100;
 function renderTable(items, page) {
   const startRank = (page - 1) * perPage;
   document.getElementById('contractBody').innerHTML = items.map((c, i) =>
-    `<tr style="cursor:pointer" onclick="location.href='/affected/${encodeURIComponent(c.recipient)}'">
+    `<tr onclick="location.href='/affected/${encodeURIComponent(c.recipient)}'">
       <td>${startRank + i + 1}</td>
       <td><strong>${escHtml(c.name)}</strong></td>
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
@@ -80,9 +86,9 @@ async function loadPage(page) {
     fetchJSON('/api/metadata'),
   ]);
   renderPosterCards('summaryCards', [
-    { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken Txs' },
-    { value: fmtCount(meta.total_contracts_affected), label: 'Unique Contracts' },
-    { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block Range' },
+    { value: fmtCount(overview.contract_broken_txs), label: 'Broken Transactions', color: COLORS.broken },
+    { value: fmtCount(meta.total_contracts_affected), label: 'Contracts Affected' },
+    { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block Range Analyzed' },
   ]);
   await loadPage(1);
   initSearch('contractSearch', 'autocompleteList', addr => {
