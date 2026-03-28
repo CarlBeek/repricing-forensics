@@ -1,25 +1,50 @@
 /* EIP-7904 Analysis — Client-side rendering */
 
-const COLORS = {
-  broken: '#ffb830',
-  changed: '#cc9020',
-  saved: '#ffd070',
-  neutral: '#5a4a20',
-  call_tree: '#cc9020',
-  event_logs: '#8a7030',
+// Theme-aware color palettes
+const THEMES = {
+  crt: {
+    colors: { broken: '#ffb830', changed: '#cc9020', saved: '#ffd070', neutral: '#5a4a20', call_tree: '#cc9020', event_logs: '#8a7030' },
+    pie: ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20', '#e6a828'],
+    sankey: ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20'],
+    layout: {
+      font: { family: 'JetBrains Mono, Consolas, monospace', size: 11, color: '#cc9020' },
+      xaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
+      yaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
+      title: { font: { size: 12, color: '#cc9020' } },
+    },
+  },
+  clean: {
+    colors: { broken: '#f87171', changed: '#fb923c', saved: '#4ade80', neutral: '#4a4a60', call_tree: '#60a5fa', event_logs: '#fb923c' },
+    pie: ['#f87171', '#60a5fa', '#4ade80', '#fb923c', '#a78bfa', '#5eead4'],
+    sankey: ['#60a5fa', '#fb923c', '#4ade80', '#a78bfa', '#f87171'],
+    layout: {
+      font: { family: 'Inter, system-ui, sans-serif', size: 12, color: '#a0a0b8' },
+      xaxis: { gridcolor: '#2a2a3a', zerolinecolor: '#2a2a3a', gridwidth: 1, color: '#6e6e88' },
+      yaxis: { gridcolor: '#2a2a3a', zerolinecolor: '#2a2a3a', gridwidth: 1, color: '#6e6e88' },
+      title: { font: { size: 13, color: '#a0a0b8' } },
+    },
+  },
 };
-const PIE_COLORS = ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20', '#e6a828'];
-const SANKEY_PALETTE = ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20'];
+
+function currentTheme() {
+  return (document.documentElement.getAttribute('data-theme') || 'crt');
+}
+function themeConfig() { return THEMES[currentTheme()]; }
+
+// Live accessors — always read from current theme
+const COLORS = new Proxy({}, { get: (_, k) => themeConfig().colors[k] });
+const PIE_COLORS = new Proxy([], { get: (_, k) => k === 'length' ? themeConfig().pie.length : k === 'slice' ? ((...a) => themeConfig().pie.slice(...a)) : themeConfig().pie[k] });
+const SANKEY_PALETTE = new Proxy([], { get: (_, k) => k === 'length' ? themeConfig().sankey.length : themeConfig().sankey[k] });
 
 const LAYOUT_DEFAULTS = {
   template: 'plotly_dark',
-  font: { family: 'JetBrains Mono, Consolas, monospace', size: 11, color: '#cc9020' },
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(0,0,0,0)',
   margin: { l: 70, r: 16, t: 44, b: 60 },
-  xaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
-  yaxis: { gridcolor: '#2a2a1a', zerolinecolor: '#2a2a1a', gridwidth: 1, color: '#8a7030' },
-  title: { font: { size: 12, color: '#cc9020' } },
+  get font() { return themeConfig().layout.font; },
+  get xaxis() { return themeConfig().layout.xaxis; },
+  get yaxis() { return themeConfig().layout.yaxis; },
+  get title() { return themeConfig().layout.title; },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────

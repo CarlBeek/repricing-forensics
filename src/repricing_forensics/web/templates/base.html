@@ -19,6 +19,7 @@
       <a href="/affected" {% if active == "affected" %}class="active"{% endif %}>Affected Parties</a>
       <a href="/about" {% if active == "about" %}class="active"{% endif %}>About</a>
     </div>
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle CRT / Clean theme">CRT</button>
   </nav>
 
   <main>
@@ -30,6 +31,26 @@
     <p class="note">EIP-7904 Advanced Repricing Analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
   </footer>
 
+  <script>
+    // Theme toggle — persisted in localStorage
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'clean' ? 'crt' : 'clean';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      document.querySelector('.theme-toggle').textContent = next === 'crt' ? 'CRT' : 'CLEAN';
+      // Re-render any existing Plotly charts with new colors
+      if (window.updatePlotlyTheme) window.updatePlotlyTheme();
+    }
+    // Apply saved theme immediately (before render)
+    (function() {
+      const saved = localStorage.getItem('theme') || 'crt';
+      document.documentElement.setAttribute('data-theme', saved);
+      document.addEventListener('DOMContentLoaded', () => {
+        document.querySelector('.theme-toggle').textContent = saved === 'crt' ? 'CRT' : 'CLEAN';
+      });
+    })();
+  </script>
   <script src="/static/app.js?v={{ cache_bust }}"></script>
   <script>
     fetchJSON('/api/metadata').then(m => {
