@@ -428,22 +428,23 @@ footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12
   font-family: 'JetBrains Mono', monospace; font-size: 1.1em;
   font-weight: 600; color: var(--text); margin-bottom: 8px;
 }
-.opcode-card .opcode-costs {
-  font-size: 0.85em; color: var(--text-secondary); margin-bottom: 10px;
+.opcode-bar-stacked {
+  display: flex; border-radius: 4px; overflow: hidden;
+  height: 28px; margin: 10px 0 6px;
+  font-size: 0.75em; font-weight: 600;
 }
-.opcode-card .opcode-costs .old { color: var(--text-muted); }
-.opcode-card .opcode-costs .arrow { color: var(--text-dim); margin: 0 4px; }
-.opcode-card .opcode-costs .new { color: var(--accent); font-weight: 600; }
-.opcode-card .opcode-bar-track {
-  height: 6px; background: var(--bg-inset); border-radius: 3px; overflow: hidden;
+.opcode-bar-old {
+  background: var(--bg-inset); color: var(--text-dim);
+  display: flex; align-items: center; justify-content: center;
+  min-width: 20px;
 }
-.opcode-card .opcode-bar-fill {
-  height: 100%; border-radius: 3px;
-  background: linear-gradient(90deg, var(--accent), var(--orange));
-  transition: width 0.6s ease;
+.opcode-bar-new {
+  background: var(--accent); color: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  min-width: 24px;
 }
-.opcode-card .opcode-pct {
-  font-size: 0.78em; color: var(--text-muted); margin-top: 6px; text-align: right;
+.opcode-total {
+  font-size: 0.78em; color: var(--text-muted); text-align: right;
 }
 
 /* ── Verdict banner ────────────────────────────────────────────────── */
