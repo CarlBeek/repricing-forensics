@@ -26,3 +26,17 @@ async def affected(request: Request):
     return request.app.state.templates.TemplateResponse(
         request=request, name="affected.html", context={"active": "affected"}
     )
+
+
+@router.get("/affected/{address}", response_class=HTMLResponse)
+async def affected_contract(request: Request, address: str):
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="contract.html", context={"active": "affected", "address": address}
+    )
+
+
+@router.get("/tx/{tx_hash}", response_class=HTMLResponse)
+async def tx_detail(request: Request, tx_hash: str):
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="tx.html", context={"active": "affected", "tx_hash": tx_hash}
+    )

@@ -2,30 +2,19 @@
 {% block title %}EIP-7904 Affected Parties{% endblock %}
 
 {% block content %}
-<h1>EIP-7904 Affected Parties</h1>
-<p class="subtitle">Search whether your contract is affected by EIP-7904 repricing</p>
+<h1>Affected Parties</h1>
+<p class="subtitle">Contracts broken by EIP-7904 repricing (excluding wallet-fixable)</p>
 
-<!-- Search -->
 <div class="search-wrapper">
   <input type="text" class="search-box" id="contractSearch"
          placeholder="Search by contract address (0x...) or project name...">
   <div id="autocompleteList" class="autocomplete-list"></div>
 </div>
 
-<!-- Contract detail panel (shown on selection) -->
-<div id="contractDetail" class="contract-detail hidden"></div>
-
-<!-- Summary -->
-<h2>Summary</h2>
 <div class="poster-grid" id="summaryCards" style="grid-template-columns: repeat(3, 1fr);">
   <p class="loading">Loading...</p>
 </div>
 
-<!-- Paginated table -->
-<h2>Most Affected Contracts</h2>
-<p class="note">Showing top contracts ranked by broken transaction count.
-  Use search above to look up any specific contract.
-  <span id="contractCount"></span></p>
 <div style="overflow-x: auto;">
   <table id="contractTable">
     <thead><tr>
@@ -34,13 +23,11 @@
       <th>Broken Txs</th>
       <th>Avg Gas Δ</th>
       <th>Total Gas Δ</th>
-      <th>Remediation</th>
-      <th>Owner</th>
     </tr></thead>
-    <tbody id="contractBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+    <tbody id="contractBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
   </table>
 </div>
-<div id="pagination" style="display:flex; gap:8px; align-items:center; margin:16px 0;"></div>
+<div id="pagination" class="pagination"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -48,362 +35,43 @@
 let currentPage = 1;
 const perPage = 100;
 
-function ownerTagClass(owner) {
-  if (!owner) return '';
-  if (owner.includes('proxy')) return 'tag-blue';
-  if (owner.includes('direct')) return 'tag-purple';
-  return 'tag-orange';
-}
-
-function remedTagClass(remed) {
-  if (!remed) return '';
-  if (remed.includes('upgrade')) return 'tag-green';
-  if (remed.includes('integration')) return 'tag-orange';
-  return 'tag-red';
-}
-
 function renderTable(items, page) {
   const startRank = (page - 1) * perPage;
-  document.getElementById('contractBody').innerHTML = items.map((c, i) => {
-    const firstOwner = (c.owner || '').split(';')[0];
-    const firstRemed = (c.remediation || '').split(';')[0];
-    return `<tr data-addr="${c.recipient}" style="cursor:pointer">
+  document.getElementById('contractBody').innerHTML = items.map((c, i) =>
+    `<tr style="cursor:pointer" onclick="location.href='/affected/${encodeURIComponent(c.recipient)}'">
       <td>${startRank + i + 1}</td>
       <td><strong>${escHtml(c.name)}</strong></td>
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
       <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
       <td style="text-align:right">${fmtGas(c.total_delta)}</td>
-      <td>${firstRemed ? `<span class="tag ${remedTagClass(firstRemed)}">${escHtml(firstRemed)}</span>` : ''}</td>
-      <td>${firstOwner ? `<span class="tag ${ownerTagClass(firstOwner)}">${escHtml(firstOwner)}</span>` : ''}</td>
-    </tr>`;
-  }).join('');
-
-  document.querySelectorAll('#contractBody tr').forEach(row => {
-    row.addEventListener('click', () => showDetail(row.getAttribute('data-addr')));
-  });
+    </tr>`
+  ).join('');
 }
 
 function renderPagination(total, totalPages, page) {
   const el = document.getElementById('pagination');
   const buttons = [];
-
   buttons.push(`<button ${page <= 1 ? 'disabled' : ''} onclick="loadPage(1)">&#x21E4;</button>`);
-  buttons.push(`<button ${page <= 1 ? 'disabled' : ''} onclick="loadPage(${page - 1})">&laquo; Prev</button>`);
-
-  // Show a window of pages around current
+  buttons.push(`<button ${page <= 1 ? 'disabled' : ''} onclick="loadPage(${page - 1})">&laquo;</button>`);
   const start = Math.max(1, page - 3);
   const end = Math.min(totalPages, page + 3);
-  if (start > 1) buttons.push('<span>...</span>');
+  if (start > 1) buttons.push('<span style="color:var(--text-dim)">...</span>');
   for (let p = start; p <= end; p++) {
-    buttons.push(`<button ${p === page ? 'class="active"' : ''}
-      onclick="loadPage(${p})">${p}</button>`);
+    buttons.push(`<button ${p === page ? 'class="active"' : ''} onclick="loadPage(${p})">${p}</button>`);
   }
-  if (end < totalPages) buttons.push(`<span>...</span>`);
-
-  buttons.push(`<button ${page >= totalPages ? 'disabled' : ''} onclick="loadPage(${page + 1})">Next &raquo;</button>`);
+  if (end < totalPages) buttons.push('<span style="color:var(--text-dim)">...</span>');
+  buttons.push(`<button ${page >= totalPages ? 'disabled' : ''} onclick="loadPage(${page + 1})">&raquo;</button>`);
   buttons.push(`<button ${page >= totalPages ? 'disabled' : ''} onclick="loadPage(${totalPages})">&#x21E5;</button>`);
   buttons.push(`<span class="note" style="margin-left:12px">Page ${page} of ${totalPages.toLocaleString()} (${total.toLocaleString()} contracts)</span>`);
-
   el.innerHTML = buttons.join('');
 }
 
 async function loadPage(page) {
   currentPage = page;
-  document.getElementById('contractBody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
+  document.getElementById('contractBody').innerHTML = '<tr><td colspan="5" class="loading">Loading...</td></tr>';
   const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);
-  document.getElementById('contractCount').textContent =
-    `${data.total.toLocaleString()} contracts total.`;
-  document.getElementById('contractTable').scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-async function showDetail(address) {
-  const panel = document.getElementById('contractDetail');
-  panel.classList.remove('hidden');
-  panel.innerHTML = '<p class="loading">Loading contract details...</p>';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-  const data = await fetchJSON(`/api/affected/${encodeURIComponent(address)}`);
-  if (!data.found) {
-    panel.innerHTML = `<h3>Not Found</h3><p>Contract <span class="mono">${escHtml(address)}</span> is not affected by EIP-7904 repricing.</p>`;
-    return;
-  }
-
-  const txRows = (data.transactions || []).map((t, i) =>
-    `<tr style="cursor:pointer" onclick="showTxDetail('${t.tx_hash}', this)">
-      <td>${i + 1}</td>
-      <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 18)}...
-        <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${t.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" onclick="event.stopPropagation()" style="font-size:0.85em">gas profiler</a>
-      </td>
-      <td style="text-align:right">${t.block_number.toLocaleString()}</td>
-      <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
-    </tr>`
-  ).join('');
-
-  panel.innerHTML = `
-    <h3>${escHtml(data.name)}
-      <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')">copy address</button>
-    </h3>
-    <p class="mono" style="color:var(--text-dim)">${data.address}</p>
-    <div class="stat-row">
-      <div class="stat"><div class="val">${fmtCount(data.broken_txs)}</div><div class="lbl">Broken Txs</div></div>
-      <div class="stat"><div class="val">${fmtGas(data.avg_delta)}</div><div class="lbl">Avg Gas Δ</div></div>
-      <div class="stat"><div class="val">${fmtGas(data.total_delta)}</div><div class="lbl">Total Gas Δ</div></div>
-      <div class="stat"><div class="val">${data.min_block.toLocaleString()}–${data.max_block.toLocaleString()}</div><div class="lbl">Block Range</div></div>
-    </div>
-    ${data.owner ? `<p><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
-    ${data.remediation ? `<p><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
-    <h4>Example Transactions (up to 50) — click a row for details</h4>
-    <div style="overflow-x:auto; max-height:400px; overflow-y:auto;">
-      <table>
-        <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
-        <tbody>${txRows || '<tr><td colspan="4">No transactions</td></tr>'}</tbody>
-      </table>
-    </div>
-    <div id="txDetailPanel"></div>
-  `;
-}
-
-function renderCallStack(stack) {
-  if (!stack || !stack.length) return '<p class="note">No call stack data available.</p>';
-  return `<table style="font-size:0.85em">
-    <thead><tr><th>Depth</th><th>Type</th><th>From</th><th>To</th><th>Selector</th><th>Gas Provided</th><th>Gas Used</th><th>Result</th></tr></thead>
-    <tbody>${stack.map(f => {
-      const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
-      const indent = '\u00A0\u00A0'.repeat(f.depth);
-      const statusColor = f.success ? 'var(--green)' : 'var(--red)';
-      const statusText = f.success ? 'OK' : 'FAIL';
-      return `<tr style="${!f.success ? 'background:var(--red-bg)' : ''}">
-        <td>${indent}${f.depth}</td>
-        <td>${escHtml(f.call_type)}</td>
-        <td title="${f.from_address}">${escHtml(f.from)}</td>
-        <td title="${f.to_address}">${escHtml(f.to)}</td>
-        <td class="mono">${f.selector || '-'}</td>
-        <td style="text-align:right">${fmtGas(f.gas_provided)}</td>
-        <td style="text-align:right">${fmtGas(f.gas_used)} (${pct}%)</td>
-        <td style="color:${statusColor};font-weight:bold">${statusText}</td>
-      </tr>`;
-    }).join('')}</tbody>
-  </table>`;
-}
-
-function renderCallSankey(divId, stack) {
-  if (!stack || stack.length < 1) return;
-
-  // Build node list: each unique (address, label) pair at a given depth.
-  // For Sankey, we create one node per call frame "to" contract (the callee),
-  // disambiguated by call_index so repeated calls to the same contract get separate nodes.
-  const nodeLabels = [];
-  const nodeColors = [];
-  const frameToNode = new Map();
-
-  // Node for the EOA sender (from of depth-0 frame)
-  if (stack.length > 0) {
-    nodeLabels.push(stack[0].from);
-    nodeColors.push('rgba(129,140,248,0.6)');
-  }
-
-  stack.forEach((f, i) => {
-    const label = `${f.to}\n${f.selector || ''}`;
-    nodeLabels.push(label);
-    nodeColors.push(f.success ? 'rgba(74,222,128,0.45)' : 'rgba(248,113,113,0.45)');
-    frameToNode.set(i, nodeLabels.length - 1);
-  });
-
-  // Build links: each frame links from its parent to itself.
-  // The parent of a frame at depth D is the most recent frame at depth D-1.
-  const sources = [];
-  const targets = [];
-  const values = [];
-  const linkColors = [];
-  const linkLabels = [];
-
-  // Track the most recent node at each depth
-  const depthStack = [0]; // depth 0's parent is the EOA node (index 0)
-
-  stack.forEach((f, i) => {
-    const nodeIdx = frameToNode.get(i);
-    const gasVal = Math.max(f.gas_used, 1); // Sankey needs positive values
-
-    // Find parent: the most recent node at depth - 1
-    // For depth 0, parent is the EOA sender (node 0)
-    let parentNode;
-    if (f.depth === 0) {
-      parentNode = 0;
-    } else {
-      parentNode = depthStack[f.depth] || depthStack[depthStack.length - 1] || 0;
-    }
-
-    sources.push(parentNode);
-    targets.push(nodeIdx);
-    values.push(gasVal);
-    linkColors.push(f.success ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.2)');
-    linkLabels.push(`${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0}%)`);
-
-    // Update depth stack
-    depthStack[f.depth + 1] = nodeIdx;
-  });
-
-  Plotly.newPlot(divId, [{
-    type: 'sankey',
-    orientation: 'h',
-    node: {
-      label: nodeLabels,
-      color: nodeColors,
-      pad: 20,
-      thickness: 20,
-      line: { width: 0 },
-    },
-    link: {
-      source: sources,
-      target: targets,
-      value: values,
-      color: linkColors,
-      customdata: linkLabels,
-      hovertemplate: '%{customdata}<extra></extra>',
-    },
-  }], layout({
-    title: { text: 'Gas Flow Through Call Stack' },
-    height: Math.max(300, stack.length * 50 + 100),
-  }), { responsive: true });
-}
-
-async function showTxDetail(txHash, rowEl) {
-  // Remove any existing detail panel content
-  const panel = document.getElementById('txDetailPanel');
-  if (!panel) return;
-  panel.innerHTML = '<p class="loading">Loading transaction details...</p>';
-  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-  const tx = await fetchJSON(`/api/tx/${encodeURIComponent(txHash)}`);
-  if (!tx.found) {
-    panel.innerHTML = '<p>Transaction details not available.</p>';
-    return;
-  }
-
-  const gasUsedPct = tx.gas_limit > 0 ? Math.round(tx.baseline_gas_used / tx.gas_limit * 100) : 0;
-  const schedUsedPct = tx.gas_limit > 0 ? Math.round(tx.schedule_gas_used / tx.gas_limit * 100) : 0;
-
-  panel.innerHTML = `
-    <div style="border:1px solid var(--border); border-radius:8px; padding:16px; margin-top:16px; background:var(--bg-card);">
-      <h4 style="margin-top:0">
-        Transaction Detail
-        <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${tx.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.8em; margin-left:8px">gas profiler</a>
-        <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.8em; margin-left:8px">etherscan</a>
-      </h4>
-      <p class="mono" style="font-size:0.85em; color:var(--text-muted); word-break:break-all">${tx.tx_hash}</p>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0;">
-        <div>
-          <strong>Block:</strong> ${tx.block_number.toLocaleString()} (index ${tx.tx_index})<br>
-          <strong>From:</strong> <span class="mono" style="font-size:0.85em">${tx.sender}</span><br>
-          <strong>To:</strong> ${escHtml(tx.recipient_name)} <span class="mono" style="font-size:0.85em; color:var(--text-dim)">${(tx.recipient || '').slice(0, 12)}...</span>
-        </div>
-        <div>
-          <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
-          <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:var(--green); font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
-          <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:var(--red); font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
-          <strong>Gas Delta:</strong> ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}${
-            tx.baseline_success && !tx.schedule_success ? ' <span style="color:var(--orange); font-size:0.85em">(all gas consumed on OOG)</span>' : ''
-          }
-        </div>
-      </div>
-
-      ${tx.divergence ? `
-        <div style="margin:12px 0; padding:8px; background:var(--orange-bg); border-radius:4px;">
-          <strong>Divergence Point:</strong>
-          Opcode <code>${escHtml(tx.divergence.opcode)}</code>
-          at depth ${tx.divergence.call_depth ?? '?'}
-          in ${escHtml(tx.divergence.contract)}
-          <span class="mono" style="font-size:0.8em; color:var(--text-dim)">${(tx.divergence.contract_address || '').slice(0, 12)}...</span>
-        </div>
-      ` : ''}
-
-      ${tx.oog ? `
-        <div style="margin:12px 0; padding:8px; background:var(--red-bg); border-radius:4px;">
-          <strong>Out of Gas:</strong>
-          <code>${escHtml(tx.oog.opcode)}</code>
-          at depth ${tx.oog.call_depth ?? '?'}
-          in ${escHtml(tx.oog.contract)}
-          — pattern: <code>${escHtml(tx.oog.pattern)}</code>,
-          gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
-        </div>
-      ` : ''}
-
-      ${tx.gas_breakdown && tx.gas_breakdown.length ? (() => {
-        const repricingCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
-        const postRefundHeadroom = tx.gas_limit - tx.baseline_gas_used;
-        const statusChanged = tx.baseline_success && !tx.schedule_success;
-        const refundInduced = statusChanged && repricingCost < postRefundHeadroom;
-        const overBy = repricingCost - postRefundHeadroom;
-        return `
-        <h5>Gas Delta Breakdown by Repriced Opcode</h5>
-        <table style="font-size:0.9em; max-width:450px;">
-          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th></tr></thead>
-          <tbody>
-            ${tx.gas_breakdown.filter(b => b.gas_delta !== 0).map(b => `<tr>
-              <td><code>${b.opcode}</code></td>
-              <td style="text-align:right">${b.count.toLocaleString()}</td>
-              <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
-            </tr>`).join('')}
-            <tr style="font-weight:bold; border-top:2px solid var(--text-dim)">
-              <td>Repricing Cost</td>
-              <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
-              <td style="text-align:right; color:var(--red)">+${fmtGas(repricingCost)}</td>
-            </tr>
-            ${refundInduced ? `
-            <tr style="color:var(--text-muted)">
-              <td>Headroom (post-refund)</td>
-              <td></td>
-              <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-            </tr>
-            <tr style="color:var(--orange)">
-              <td colspan="2">Pre-refund headroom</td>
-              <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
-            </tr>` : `
-            <tr style="color:var(--text-muted)">
-              <td>Headroom</td>
-              <td></td>
-              <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-            </tr>`}
-            ${overBy > 0 ? `<tr style="font-weight:bold; color:var(--red)">
-              <td>Over Limit By</td>
-              <td></td>
-              <td style="text-align:right">+${fmtGas(overBy)}</td>
-            </tr>` : ''}
-          </tbody>
-        </table>
-        ${refundInduced ? `
-        <div style="margin:8px 0; padding:8px; background:var(--orange-bg); border-radius:4px; font-size:0.88em;">
-          SSTORE gas refunds (${tx.op_counts ? tx.op_counts.sstore : '?'} SSTOREs) are only applied after successful execution.
-          The baseline barely fit within the gas limit before refunds were applied.
-          Adding +${fmtGas(repricingCost)} from repricing tipped it over, causing OOG and consuming all ${fmtGas(tx.gas_limit)} gas.
-        </div>` : ''}`;
-      })() : ''}
-
-      ${tx.op_counts ? `
-        <p style="margin:8px 0; font-size:0.9em; color:var(--text-muted)">
-          ${tx.op_counts.total.toLocaleString()} total ops,
-          ${tx.op_counts.sload} SLOADs,
-          ${tx.op_counts.sstore} SSTOREs,
-          ${tx.op_counts.call} CALLs,
-          ${tx.op_counts.log} LOGs
-        </p>
-      ` : ''}
-
-      <div id="txSankey"></div>
-
-      <h5>Call Stack (schedule re-execution)</h5>
-      <div style="overflow-x:auto; max-height:500px; overflow-y:auto;">
-        ${renderCallStack(tx.call_stack)}
-      </div>
-    </div>
-  `;
-  // Render Sankey after DOM is updated
-  if (tx.call_stack && tx.call_stack.length > 0) {
-    setTimeout(() => renderCallSankey('txSankey', tx.call_stack), 0);
-  }
 }
 
 (async function() {
@@ -411,19 +79,15 @@ async function showTxDetail(txHash, rowEl) {
     fetchJSON('/api/overview'),
     fetchJSON('/api/metadata'),
   ]);
-
-  // Summary cards
   renderPosterCards('summaryCards', [
-    { value: fmtCount(overview.broken_txs), label: 'Total Broken Txs' },
-    { value: fmtCount(meta.total_contracts_affected), label: 'Unique Contracts Affected' },
+    { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken Txs' },
+    { value: fmtCount(meta.total_contracts_affected), label: 'Unique Contracts' },
     { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block Range' },
   ]);
-
-  // Load first page
   await loadPage(1);
-
-  // Search with autocomplete — goes directly to detail
-  initSearch('contractSearch', 'autocompleteList', showDetail);
+  initSearch('contractSearch', 'autocompleteList', addr => {
+    location.href = `/affected/${encodeURIComponent(addr)}`;
+  });
 })();
 </script>
 {% endblock %}

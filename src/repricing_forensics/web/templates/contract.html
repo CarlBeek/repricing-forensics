@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Contract — EIP-7904{% endblock %}
+
+{% block content %}
+<p style="margin-bottom:16px"><a href="/affected">&larr; Back to affected parties</a></p>
+<div id="contractDetail"><p class="loading">Loading contract details...</p></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ADDRESS = "{{ address }}";
+
+(async function() {
+  const data = await fetchJSON(`/api/affected/${encodeURIComponent(ADDRESS)}`);
+  const el = document.getElementById('contractDetail');
+
+  if (!data.found) {
+    el.innerHTML = `
+      <h1>Not Found</h1>
+      <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> is not affected by EIP-7904 repricing
+         (or is wallet-fixable and filtered from this view).</p>`;
+    return;
+  }
+
+  const txRows = (data.transactions || []).map((t, i) =>
+    `<tr style="cursor:pointer" onclick="location.href='/tx/${t.tx_hash}'">
+      <td>${i + 1}</td>
+      <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
+      <td style="text-align:right">${t.block_number.toLocaleString()}</td>
+      <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
+    </tr>`
+  ).join('');
+
+  el.innerHTML = `
+    <h1>${escHtml(data.name)}</h1>
+    <p class="mono" style="color:var(--text-dim); margin-bottom:20px">${data.address}
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')" style="margin-left:8px">copy</button>
+    </p>
+
+    <div class="poster-grid" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="poster-card"><div class="number">${fmtCount(data.broken_txs)}</div><div class="label">Broken Txs</div></div>
+      <div class="poster-card"><div class="number">${fmtGas(data.avg_delta)}</div><div class="label">Avg Gas Δ</div></div>
+      <div class="poster-card"><div class="number">${fmtGas(data.total_delta)}</div><div class="label">Total Gas Δ</div></div>
+      <div class="poster-card"><div class="number" style="font-size:1.2em">${data.min_block.toLocaleString()}–${data.max_block.toLocaleString()}</div><div class="label">Block Range</div></div>
+    </div>
+
+    ${data.owner ? `<p style="margin:12px 0"><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
+    ${data.remediation ? `<p style="margin:12px 0"><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
+
+    <h2>Example Transactions</h2>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
+        <tbody>${txRows || '<tr><td colspan="4">No transactions</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+})();
+</script>
+{% endblock %}

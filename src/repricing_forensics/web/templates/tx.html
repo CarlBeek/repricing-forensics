@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Transaction — EIP-7904{% endblock %}
+
+{% block content %}
+<p style="margin-bottom:16px"><a id="backLink" href="/affected">&larr; Back</a></p>
+<div id="txDetail"><p class="loading">Loading transaction details...</p></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TX_HASH = "{{ tx_hash }}";
+
+function renderCallStack(stack) {
+  if (!stack || !stack.length) return '<p class="note">No call stack data available.</p>';
+  return `<table style="font-size:0.85em">
+    <thead><tr><th>Depth</th><th>Type</th><th>From</th><th>To</th><th>Selector</th><th>Gas</th><th>Used</th><th>Result</th></tr></thead>
+    <tbody>${stack.map(f => {
+      const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
+      const indent = '\u00A0\u00A0'.repeat(f.depth);
+      return `<tr style="${!f.success ? 'background:var(--red-bg)' : ''}">
+        <td>${indent}${f.depth}</td>
+        <td>${escHtml(f.call_type)}</td>
+        <td title="${f.from_address}">${escHtml(f.from)}</td>
+        <td title="${f.to_address}">${escHtml(f.to)}</td>
+        <td class="mono">${f.selector || '-'}</td>
+        <td style="text-align:right">${fmtGas(f.gas_provided)}</td>
+        <td style="text-align:right">${fmtGas(f.gas_used)} (${pct}%)</td>
+        <td style="color:${f.success ? 'var(--green)' : 'var(--red)'};font-weight:bold">${f.success ? 'OK' : 'FAIL'}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function renderCallSankey(divId, stack) {
+  if (!stack || stack.length < 1) return;
+  const nodeLabels = [stack[0].from];
+  const nodeColors = ['rgba(129,140,248,0.6)'];
+  const frameToNode = new Map();
+
+  stack.forEach((f, i) => {
+    nodeLabels.push(`${f.to}\n${f.selector || ''}`);
+    nodeColors.push(f.success ? 'rgba(74,222,128,0.45)' : 'rgba(248,113,113,0.45)');
+    frameToNode.set(i, nodeLabels.length - 1);
+  });
+
+  const sources = [], targets = [], values = [], linkColors = [], linkLabels = [];
+  const depthStack = [0];
+
+  stack.forEach((f, i) => {
+    const nodeIdx = frameToNode.get(i);
+    const parentNode = f.depth === 0 ? 0 : (depthStack[f.depth] || 0);
+    sources.push(parentNode);
+    targets.push(nodeIdx);
+    values.push(Math.max(f.gas_used, 1));
+    linkColors.push(f.success ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.2)');
+    linkLabels.push(`${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0}%)`);
+    depthStack[f.depth + 1] = nodeIdx;
+  });
+
+  Plotly.newPlot(divId, [{
+    type: 'sankey', orientation: 'h',
+    node: { label: nodeLabels, color: nodeColors, pad: 20, thickness: 20, line: { width: 0 } },
+    link: { source: sources, target: targets, value: values, color: linkColors,
+            customdata: linkLabels, hovertemplate: '%{customdata}<extra></extra>' },
+  }], layout({
+    title: { text: 'Gas Flow Through Call Stack' },
+    height: Math.max(300, stack.length * 50 + 100),
+  }), { responsive: true });
+}
+
+(async function() {
+  const tx = await fetchJSON(`/api/tx/${encodeURIComponent(TX_HASH)}`);
+  const el = document.getElementById('txDetail');
+
+  if (!tx.found) {
+    el.innerHTML = '<h1>Transaction Not Found</h1><p>No divergence data available for this transaction.</p>';
+    return;
+  }
+
+  // Update back link to point to the contract page
+  if (tx.recipient) {
+    document.getElementById('backLink').href = `/affected/${tx.recipient}`;
+    document.getElementById('backLink').textContent = `\u2190 ${escHtml(tx.recipient_name)}`;
+  }
+
+  const gasUsedPct = tx.gas_limit > 0 ? Math.round(tx.baseline_gas_used / tx.gas_limit * 100) : 0;
+  const schedUsedPct = tx.gas_limit > 0 ? Math.round(tx.schedule_gas_used / tx.gas_limit * 100) : 0;
+
+  // Gas breakdown
+  let breakdownHtml = '';
+  if (tx.gas_breakdown && tx.gas_breakdown.length) {
+    const repricingCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
+    const postRefundHeadroom = tx.gas_limit - tx.baseline_gas_used;
+    const statusChanged = tx.baseline_success && !tx.schedule_success;
+    const refundInduced = statusChanged && repricingCost < postRefundHeadroom;
+    const overBy = repricingCost - postRefundHeadroom;
+
+    breakdownHtml = `
+      <h2>Repriced Opcode Breakdown</h2>
+      <table style="max-width:450px;">
+        <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th></tr></thead>
+        <tbody>
+          ${tx.gas_breakdown.filter(b => b.gas_delta !== 0).map(b => `<tr>
+            <td><code>${b.opcode}</code></td>
+            <td style="text-align:right">${b.count.toLocaleString()}</td>
+            <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
+          </tr>`).join('')}
+          <tr style="font-weight:bold; border-top:2px solid var(--text-dim)">
+            <td>Repricing Cost</td>
+            <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
+            <td style="text-align:right; color:var(--red)">+${fmtGas(repricingCost)}</td>
+          </tr>
+          ${refundInduced ? `
+          <tr style="color:var(--text-muted)">
+            <td>Headroom (post-refund)</td><td></td>
+            <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
+          </tr>
+          <tr style="color:var(--orange)">
+            <td colspan="2">Pre-refund headroom</td>
+            <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
+          </tr>` : `
+          <tr style="color:var(--text-muted)">
+            <td>Headroom</td><td></td>
+            <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
+          </tr>`}
+          ${overBy > 0 ? `<tr style="font-weight:bold; color:var(--red)">
+            <td>Over Limit By</td><td></td>
+            <td style="text-align:right">+${fmtGas(overBy)}</td>
+          </tr>` : ''}
+        </tbody>
+      </table>
+      ${refundInduced ? `
+      <div style="margin:12px 0; padding:10px 12px; background:var(--orange-bg); border:1px solid var(--orange-border); border-radius:var(--radius-sm); font-size:0.88em; color:var(--text-secondary);">
+        SSTORE gas refunds (${tx.op_counts ? tx.op_counts.sstore : '?'} SSTOREs) are only applied after successful execution.
+        The baseline barely fit within the gas limit before refunds were applied.
+        Adding +${fmtGas(repricingCost)} from repricing tipped it over, causing OOG and consuming all ${fmtGas(tx.gas_limit)} gas.
+      </div>` : ''}`;
+  }
+
+  el.innerHTML = `
+    <h1>Transaction Detail</h1>
+    <p class="mono" style="color:var(--text-dim); word-break:break-all; margin-bottom:20px">
+      ${tx.tx_hash}
+      <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.85em; margin-left:8px">etherscan</a>
+      <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${tx.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.85em; margin-left:8px">gas profiler</a>
+    </p>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:24px;">
+      <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
+        <h5 style="margin-top:0">Transaction Info</h5>
+        <strong>Block:</strong> ${tx.block_number.toLocaleString()} (index ${tx.tx_index})<br>
+        <strong>From:</strong> <span class="mono">${tx.sender}</span><br>
+        <strong>To:</strong> <a href="/affected/${tx.recipient}">${escHtml(tx.recipient_name)}</a>
+        <span class="mono" style="color:var(--text-dim)">${(tx.recipient || '').slice(0, 12)}...</span>
+      </div>
+      <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
+        <h5 style="margin-top:0">Gas Comparison</h5>
+        <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
+        <strong>Baseline:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}%) —
+          <span style="color:var(--green); font-weight:600">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
+        <strong>Schedule:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}%) —
+          <span style="color:var(--red); font-weight:600">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
+        <strong>Delta:</strong> ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}${
+          tx.baseline_success && !tx.schedule_success
+            ? ' <span style="color:var(--orange); font-size:0.85em">(all gas consumed on OOG)</span>' : ''}
+      </div>
+    </div>
+
+    ${tx.divergence ? `
+    <div style="margin-bottom:12px; padding:10px 12px; background:var(--orange-bg); border:1px solid var(--orange-border); border-radius:var(--radius-sm); font-size:0.88em;">
+      <strong>Divergence:</strong>
+      <code>${escHtml(tx.divergence.opcode)}</code> at depth ${tx.divergence.call_depth ?? '?'}
+      in ${escHtml(tx.divergence.contract)}
+    </div>` : ''}
+
+    ${tx.oog ? `
+    <div style="margin-bottom:12px; padding:10px 12px; background:var(--red-bg); border:1px solid var(--red-border); border-radius:var(--radius-sm); font-size:0.88em;">
+      <strong>Out of Gas:</strong>
+      <code>${escHtml(tx.oog.opcode)}</code> at depth ${tx.oog.call_depth ?? '?'}
+      in ${escHtml(tx.oog.contract)}
+      — <code>${escHtml(tx.oog.pattern)}</code>,
+      gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
+    </div>` : ''}
+
+    ${breakdownHtml}
+
+    ${tx.op_counts ? `
+    <p style="margin:16px 0 0; font-size:0.88em; color:var(--text-muted)">
+      ${tx.op_counts.total.toLocaleString()} total ops,
+      ${tx.op_counts.sload} SLOADs, ${tx.op_counts.sstore} SSTOREs,
+      ${tx.op_counts.call} CALLs, ${tx.op_counts.log} LOGs
+    </p>` : ''}
+
+    <h2>Gas Flow</h2>
+    <div id="txSankey"></div>
+
+    <h2>Call Stack</h2>
+    <div style="overflow-x:auto;">
+      ${renderCallStack(tx.call_stack)}
+    </div>
+  `;
+
+  if (tx.call_stack && tx.call_stack.length > 0) {
+    setTimeout(() => renderCallSankey('txSankey', tx.call_stack), 0);
+  }
+})();
+</script>
+{% endblock %}
