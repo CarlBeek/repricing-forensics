@@ -339,45 +339,38 @@ async function showTxDetail(txHash, rowEl) {
         const overBy = repricingCost - postRefundHeadroom;
         return `
         <h5>Gas Delta Breakdown by Repriced Opcode</h5>
-        <table style="font-size:0.9em; max-width:550px;">
-          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th><th style="text-align:right">Per Op</th></tr></thead>
+        <table style="font-size:0.9em; max-width:450px;">
+          <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th></tr></thead>
           <tbody>
-            ${tx.gas_breakdown.map(b => `<tr>
+            ${tx.gas_breakdown.filter(b => b.gas_delta !== 0).map(b => `<tr>
               <td><code>${b.opcode}</code></td>
               <td style="text-align:right">${b.count.toLocaleString()}</td>
               <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
-              <td style="text-align:right">${b.count > 0 ? (b.gas_delta / b.count).toFixed(1) : '-'}</td>
             </tr>`).join('')}
             <tr style="font-weight:bold; border-top:2px solid var(--text-dim)">
               <td>Repricing Cost</td>
               <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
               <td style="text-align:right; color:var(--red)">+${fmtGas(repricingCost)}</td>
-              <td></td>
             </tr>
             ${refundInduced ? `
             <tr style="color:var(--text-muted)">
               <td>Headroom (post-refund)</td>
               <td></td>
               <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-              <td></td>
             </tr>
             <tr style="color:var(--orange)">
-              <td>Pre-refund headroom</td>
-              <td></td>
+              <td colspan="2">Pre-refund headroom</td>
               <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
-              <td style="font-size:0.85em; color:var(--orange)">SSTORE refunds</td>
             </tr>` : `
             <tr style="color:var(--text-muted)">
               <td>Headroom</td>
               <td></td>
               <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-              <td></td>
             </tr>`}
             ${overBy > 0 ? `<tr style="font-weight:bold; color:var(--red)">
               <td>Over Limit By</td>
               <td></td>
               <td style="text-align:right">+${fmtGas(overBy)}</td>
-              <td></td>
             </tr>` : ''}
           </tbody>
         </table>
