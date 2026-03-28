@@ -1,6 +1,7 @@
 """FastAPI application for the EIP-7904 analysis web server."""
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from .routes_api import router as api_router
 from .routes_pages import router as pages_router
 
 _WEB_DIR = Path(__file__).resolve().parent
+_CACHE_BUST = str(int(time.time()))
 
 
 @asynccontextmanager
@@ -25,10 +27,12 @@ async def lifespan(app: FastAPI):
     close_conn()
 
 
-app = FastAPI(title="EIP-7904 Repricing Analysis", lifespan=lifespan)
+app = FastAPI(title="EIP-7904 Impact Analysis", lifespan=lifespan)
 
-# Templates and static files
-app.state.templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+# Templates and static files — inject cache_bust into all template contexts
+templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+templates.env.globals["cache_bust"] = _CACHE_BUST
+app.state.templates = templates
 app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
 
 # Routers — API first (more specific prefix), then pages (catch-all)
