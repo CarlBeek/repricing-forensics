@@ -84,14 +84,14 @@ function renderCallStack(stack) {
 function renderCallSankey(divId, stack) {
   if (!stack || stack.length < 1) return;
   const nodeLabels = [stack[0].from];
-  const nodeColors = ['rgba(255,184,48,0.6)'];
+  const nodeColors = ['rgba(255,184,48,0.7)'];
   const frameToNode = new Map();
 
   stack.forEach((f, i) => {
     const sig = _sigCache[f.selector];
     const fnName = sig ? sig.split('(')[0] : (f.selector || '');
     nodeLabels.push(`${f.to}\n${fnName}`);
-    nodeColors.push(f.success ? 'rgba(127,255,80,0.45)' : 'rgba(255,107,53,0.45)');
+    nodeColors.push(f.success ? 'rgba(255,208,112,0.4)' : 'rgba(138,112,48,0.4)');
     frameToNode.set(i, nodeLabels.length - 1);
   });
 
@@ -104,7 +104,7 @@ function renderCallSankey(divId, stack) {
     sources.push(parentNode);
     targets.push(nodeIdx);
     values.push(Math.max(f.gas_used, 1));
-    linkColors.push(f.success ? 'rgba(127,255,80,0.1)' : 'rgba(255,107,53,0.2)');
+    linkColors.push(f.success ? 'rgba(255,208,112,0.1)' : 'rgba(138,112,48,0.15)');
     linkLabels.push(`${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0}%)`);
     depthStack[f.depth + 1] = nodeIdx;
   });

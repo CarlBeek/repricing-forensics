@@ -1,15 +1,15 @@
 /* EIP-7904 Analysis — Client-side rendering */
 
 const COLORS = {
-  broken: '#ff6b35',
-  changed: '#ffb830',
-  saved: '#7fff50',
+  broken: '#ffb830',
+  changed: '#cc9020',
+  saved: '#ffd070',
   neutral: '#5a4a20',
-  call_tree: '#50b8ff',
-  event_logs: '#ffb830',
+  call_tree: '#cc9020',
+  event_logs: '#8a7030',
 };
-const PIE_COLORS = ['#ff6b35', '#50b8ff', '#7fff50', '#ffb830', '#c090ff', '#50ffd0'];
-const SANKEY_PALETTE = ['#ffb830', '#ff6b35', '#7fff50', '#50b8ff', '#c090ff'];
+const PIE_COLORS = ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20', '#e6a828'];
+const SANKEY_PALETTE = ['#ffb830', '#cc9020', '#ffd070', '#8a7030', '#5a4a20'];
 
 const LAYOUT_DEFAULTS = {
   template: 'plotly_dark',
