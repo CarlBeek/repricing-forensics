@@ -275,6 +275,37 @@ a:hover { color: #fbbf24; }
   border-color: var(--accent) !important;
 }
 
+/* ── Call stack tree ─────────────────────────────────────────────────── */
+.call-frame {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px 14px; margin: 6px 0;
+  transition: border-color 0.12s;
+}
+.call-frame:hover { border-color: var(--border-light); }
+.call-frame-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 4px;
+}
+.call-frame-type {
+  font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-muted); font-weight: 600;
+}
+.call-frame-target { margin-bottom: 2px; }
+.call-frame-target strong { font-size: 0.92em; }
+.call-frame-fn { margin: 4px 0 8px; font-size: 0.88em; }
+.call-frame-gas { display: flex; align-items: center; gap: 10px; }
+.call-frame-gas-bar {
+  flex: 1; height: 6px; background: var(--bg-inset);
+  border-radius: 3px; overflow: hidden; max-width: 200px;
+}
+.call-frame-gas-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.call-frame-gas-label {
+  font-size: 0.78em; color: var(--text-muted); white-space: nowrap;
+}
+
 /* ── Alert boxes ────────────────────────────────────────────────────── */
 [style*="background:var(--orange-bg)"],
 [style*="background:var(--red-bg)"] {

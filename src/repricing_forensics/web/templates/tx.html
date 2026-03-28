@@ -17,27 +17,70 @@
 <script>
 const TX_HASH = "{{ tx_hash }}";
 
-function renderCallStack(stack) {
-  if (!stack || !stack.length) return '<p class="note">No call stack data available.</p>';
-  return `<table style="font-size:0.85em">
-    <thead><tr><th>Depth</th><th>Type</th><th>From</th><th>To</th><th>Selector</th><th>Gas</th><th>Used</th><th>Result</th></tr></thead>
-    <tbody>${stack.map(f => {
-      const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
-      const indent = '\u00A0\u00A0'.repeat(f.depth);
-      return `<tr style="${!f.success ? 'background:var(--red-bg)' : ''}">
-        <td>${indent}${f.depth}</td>
-        <td>${escHtml(f.call_type)}</td>
-        <td title="${f.from_address}">${escHtml(f.from)}</td>
-        <td title="${f.to_address}">${escHtml(f.to)}</td>
-        <td class="mono">${f.selector || '-'}</td>
-        <td style="text-align:right">${fmtGas(f.gas_provided)}</td>
-        <td style="text-align:right">${fmtGas(f.gas_used)} (${pct}%)</td>
-        <td style="color:${f.success ? 'var(--green)' : 'var(--red)'};font-weight:bold">${f.success ? 'OK' : 'FAIL'}</td>
-      </tr>`;
-    }).join('')}</tbody>
-  </table>`;
+// ── Function signature resolution ───────────────────────────────────
+const _sigCache = {};
+async function resolveSelectors(selectors) {
+  const unknown = selectors.filter(s => s && s.length === 10 && !(s in _sigCache));
+  if (unknown.length) {
+    try {
+      const hex = unknown.join(',');
+      const resp = await fetch(`https://api.openchain.xyz/signature-database/v1/lookup?function=${encodeURIComponent(hex)}`);
+      const data = await resp.json();
+      if (data.ok && data.result && data.result.function) {
+        for (const [sel, matches] of Object.entries(data.result.function)) {
+          if (matches && matches.length > 0) {
+            _sigCache[sel] = matches[0].name; // e.g. "transferFrom(address,address,uint256)"
+          }
+        }
+      }
+    } catch (e) { /* signature lookup is best-effort */ }
+  }
+  // Mark unknowns so we don't retry
+  for (const s of unknown) { if (!(s in _sigCache)) _sigCache[s] = null; }
 }
 
+function fmtSelector(selector) {
+  if (!selector) return '';
+  const sig = _sigCache[selector];
+  if (sig) {
+    // Show short name, full sig on hover
+    const name = sig.split('(')[0];
+    return `<span title="${escHtml(sig)}" style="color:var(--accent)">${escHtml(name)}</span><span class="mono" style="color:var(--text-dim); margin-left:4px">${selector}</span>`;
+  }
+  return `<span class="mono" style="color:var(--text-dim)">${selector}</span>`;
+}
+
+// ── Call stack tree rendering ────────────────────────────────────────
+function renderCallStack(stack) {
+  if (!stack || !stack.length) return '<p class="note">No call stack data available.</p>';
+  return stack.map(f => {
+    const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
+    const barWidth = Math.min(pct, 100);
+    const barColor = f.success ? 'var(--green)' : 'var(--red)';
+    const statusLabel = f.success ? 'OK' : 'FAIL';
+    const indent = f.depth * 24;
+    return `
+      <div class="call-frame" style="margin-left:${indent}px; ${!f.success ? 'border-color:var(--red);' : ''}">
+        <div class="call-frame-header">
+          <span class="call-frame-type">${escHtml(f.call_type)}</span>
+          <span style="color:${barColor}; font-weight:600; font-size:0.82em">${statusLabel}</span>
+        </div>
+        <div class="call-frame-target">
+          <strong>${escHtml(f.to)}</strong>
+          <span class="mono" title="${f.to_address}" style="color:var(--text-dim); font-size:0.8em; margin-left:6px">${(f.to_address || '').slice(0, 10)}...</span>
+        </div>
+        ${f.selector ? `<div class="call-frame-fn">${fmtSelector(f.selector)}</div>` : ''}
+        <div class="call-frame-gas">
+          <div class="call-frame-gas-bar">
+            <div class="call-frame-gas-fill" style="width:${barWidth}%; background:${barColor}"></div>
+          </div>
+          <span class="call-frame-gas-label">${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${pct}%)</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ── Sankey ───────────────────────────────────────────────────────────
 function renderCallSankey(divId, stack) {
   if (!stack || stack.length < 1) return;
   const nodeLabels = [stack[0].from];
@@ -45,7 +88,9 @@ function renderCallSankey(divId, stack) {
   const frameToNode = new Map();
 
   stack.forEach((f, i) => {
-    nodeLabels.push(`${f.to}\n${f.selector || ''}`);
+    const sig = _sigCache[f.selector];
+    const fnName = sig ? sig.split('(')[0] : (f.selector || '');
+    nodeLabels.push(`${f.to}\n${fnName}`);
     nodeColors.push(f.success ? 'rgba(74,222,128,0.45)' : 'rgba(248,113,113,0.45)');
     frameToNode.set(i, nodeLabels.length - 1);
   });
@@ -232,13 +277,15 @@ function renderCallSankey(divId, stack) {
     <div id="txSankey"></div>
 
     <h2>Call Stack</h2>
-    <div style="overflow-x:auto;">
-      ${renderCallStack(tx.call_stack)}
-    </div>
+    <div id="callStackContainer"></div>
   `;
 
+  // Resolve function signatures, then render call stack + Sankey
   if (tx.call_stack && tx.call_stack.length > 0) {
-    setTimeout(() => renderCallSankey('txSankey', tx.call_stack), 0);
+    const selectors = [...new Set(tx.call_stack.map(f => f.selector).filter(Boolean))];
+    await resolveSelectors(selectors);
+    document.getElementById('callStackContainer').innerHTML = renderCallStack(tx.call_stack);
+    renderCallSankey('txSankey', tx.call_stack);
   }
 })();
 </script>
