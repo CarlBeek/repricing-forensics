@@ -172,9 +172,9 @@ function renderCallStack(stack) {
     <tbody>${stack.map(f => {
       const pct = f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0;
       const indent = '\u00A0\u00A0'.repeat(f.depth);
-      const statusColor = f.success ? '#27ae60' : '#e74c3c';
+      const statusColor = f.success ? 'var(--green)' : 'var(--red)';
       const statusText = f.success ? 'OK' : 'FAIL';
-      return `<tr style="${!f.success ? 'background:rgba(231,76,60,0.08)' : ''}">
+      return `<tr style="${!f.success ? 'background:var(--red-bg)' : ''}">
         <td>${indent}${f.depth}</td>
         <td>${escHtml(f.call_type)}</td>
         <td title="${f.from_address}">${escHtml(f.from)}</td>
@@ -186,6 +186,87 @@ function renderCallStack(stack) {
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+function renderCallSankey(divId, stack) {
+  if (!stack || stack.length < 1) return;
+
+  // Build node list: each unique (address, label) pair at a given depth.
+  // For Sankey, we create one node per call frame "to" contract (the callee),
+  // disambiguated by call_index so repeated calls to the same contract get separate nodes.
+  const nodeLabels = [];
+  const nodeColors = [];
+  const frameToNode = new Map();
+
+  // Node for the EOA sender (from of depth-0 frame)
+  if (stack.length > 0) {
+    nodeLabels.push(stack[0].from);
+    nodeColors.push('rgba(108,140,255,0.6)');
+  }
+
+  stack.forEach((f, i) => {
+    const label = `${f.to}\n${f.selector || ''}`;
+    nodeLabels.push(label);
+    nodeColors.push(f.success ? 'rgba(80,200,120,0.5)' : 'rgba(255,92,92,0.5)');
+    frameToNode.set(i, nodeLabels.length - 1);
+  });
+
+  // Build links: each frame links from its parent to itself.
+  // The parent of a frame at depth D is the most recent frame at depth D-1.
+  const sources = [];
+  const targets = [];
+  const values = [];
+  const linkColors = [];
+  const linkLabels = [];
+
+  // Track the most recent node at each depth
+  const depthStack = [0]; // depth 0's parent is the EOA node (index 0)
+
+  stack.forEach((f, i) => {
+    const nodeIdx = frameToNode.get(i);
+    const gasVal = Math.max(f.gas_used, 1); // Sankey needs positive values
+
+    // Find parent: the most recent node at depth - 1
+    // For depth 0, parent is the EOA sender (node 0)
+    let parentNode;
+    if (f.depth === 0) {
+      parentNode = 0;
+    } else {
+      parentNode = depthStack[f.depth] || depthStack[depthStack.length - 1] || 0;
+    }
+
+    sources.push(parentNode);
+    targets.push(nodeIdx);
+    values.push(gasVal);
+    linkColors.push(f.success ? 'rgba(80,200,120,0.15)' : 'rgba(255,92,92,0.25)');
+    linkLabels.push(`${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0}%)`);
+
+    // Update depth stack
+    depthStack[f.depth + 1] = nodeIdx;
+  });
+
+  Plotly.newPlot(divId, [{
+    type: 'sankey',
+    orientation: 'h',
+    node: {
+      label: nodeLabels,
+      color: nodeColors,
+      pad: 20,
+      thickness: 20,
+      line: { width: 0 },
+    },
+    link: {
+      source: sources,
+      target: targets,
+      value: values,
+      color: linkColors,
+      customdata: linkLabels,
+      hovertemplate: '%{customdata}<extra></extra>',
+    },
+  }], layout({
+    title: { text: 'Gas Flow Through Call Stack' },
+    height: Math.max(300, stack.length * 50 + 100),
+  }), { responsive: true });
 }
 
 async function showTxDetail(txHash, rowEl) {
@@ -318,12 +399,18 @@ async function showTxDetail(txHash, rowEl) {
         </p>
       ` : ''}
 
+      <div id="txSankey"></div>
+
       <h5>Call Stack (schedule re-execution)</h5>
       <div style="overflow-x:auto; max-height:500px; overflow-y:auto;">
         ${renderCallStack(tx.call_stack)}
       </div>
     </div>
   `;
+  // Render Sankey after DOM is updated
+  if (tx.call_stack && tx.call_stack.length > 0) {
+    setTimeout(() => renderCallSankey('txSankey', tx.call_stack), 0);
+  }
 }
 
 (async function() {
