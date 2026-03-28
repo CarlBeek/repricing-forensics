@@ -62,22 +62,20 @@
   document.getElementById('subtitle').textContent =
     `${fmtCount(overview.broken_txs)} broken transactions analyzed in depth`;
 
-  // 1. Status change CDF — cumulative broken txs over blocks
-  const totalBroken = ts.reduce((s, r) => s + r.broken, 0) || 1;
-  let cumBroken = 0;
-  const cumCounts = ts.map(r => { cumBroken += r.broken; return cumBroken; });
-  const tsCdf = cumCounts.map(c => c / totalBroken * 100);
+  // 1. Status change CDF — distribution of % broken per block
+  const pcts = ts.filter(r => r.total_txs > 0).map(r => r.broken_pct).sort((a, b) => a - b);
+  const cdfY = pcts.map((_, i) => (i + 1) / pcts.length * 100);
   Plotly.newPlot('timeChart', [{
-    x: ts.map(r => r.block_group),
-    y: tsCdf,
+    x: pcts,
+    y: cdfY,
     mode: 'lines',
     line: { color: '#e74c3c', width: 2 },
-    hovertext: ts.map((r, i) => `Block ~${r.block_group.toLocaleString()}<br>${cumCounts[i].toLocaleString()} / ${totalBroken.toLocaleString()} broken txs`),
+    hovertext: pcts.map((p, i) => `${p.toFixed(2)}% broken<br>${cdfY[i].toFixed(1)}% of blocks`),
     hoverinfo: 'text',
   }], layout({
-    title: { text: 'Cumulative Broken Transactions Over Blocks' },
-    xaxis: { title: 'Block Number', tickformat: ',' },
-    yaxis: { title: 'Cumulative %', ticksuffix: '%', range: [0, 105] },
+    title: { text: 'CDF: % of Transactions Broken per Block' },
+    xaxis: { title: '% Transactions Broken in Block', ticksuffix: '%' },
+    yaxis: { title: 'Cumulative % of Blocks', ticksuffix: '%', range: [0, 105] },
     height: 380,
   }), { responsive: true });
 
