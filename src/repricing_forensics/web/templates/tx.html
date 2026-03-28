@@ -3,7 +3,14 @@
 
 {% block content %}
 <p style="margin-bottom:16px"><a id="backLink" href="/affected">&larr; Back</a></p>
-<div id="txDetail"><p class="loading">Loading transaction details...</p></div>
+<div id="txDetail">
+  <div class="skeleton skeleton-text" style="width:50%;height:24px;margin-bottom:12px"></div>
+  <div class="skeleton skeleton-text" style="width:90%;margin-bottom:20px"></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div class="skeleton" style="height:120px;border-radius:var(--radius)"></div>
+    <div class="skeleton" style="height:120px;border-radius:var(--radius)"></div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -34,7 +41,7 @@ function renderCallStack(stack) {
 function renderCallSankey(divId, stack) {
   if (!stack || stack.length < 1) return;
   const nodeLabels = [stack[0].from];
-  const nodeColors = ['rgba(129,140,248,0.6)'];
+  const nodeColors = ['rgba(245,158,11,0.6)'];
   const frameToNode = new Map();
 
   stack.forEach((f, i) => {
@@ -137,8 +144,38 @@ function renderCallSankey(divId, stack) {
       </div>` : ''}`;
   }
 
+  // Build verdict banner
+  let verdictHtml = '';
+  if (tx.gas_breakdown && tx.gas_breakdown.length) {
+    const repCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
+    const headroom = tx.gas_limit - tx.baseline_gas_used;
+    const statusFlipped = tx.baseline_success && !tx.schedule_success;
+    const refundCase = statusFlipped && repCost < headroom;
+
+    if (tx.oog && refundCase) {
+      verdictHtml = `<div class="verdict-banner verdict-red">
+        <strong>Verdict:</strong> This transaction fails because SSTORE refunds mask the true gas headroom.
+        The repricing cost of +${fmtGas(repCost)} is small, but the pre-refund headroom was even smaller.
+      </div>`;
+    } else if (tx.oog) {
+      verdictHtml = `<div class="verdict-banner verdict-red">
+        <strong>Verdict:</strong> This transaction fails because repriced opcodes add +${fmtGas(repCost)} gas,
+        exceeding the available headroom of ${fmtGas(headroom)}.
+      </div>`;
+    } else if (statusFlipped) {
+      verdictHtml = `<div class="verdict-banner verdict-orange">
+        <strong>Verdict:</strong> This transaction's status changed from success to failure under the new gas schedule.
+      </div>`;
+    } else {
+      verdictHtml = `<div class="verdict-banner verdict-green">
+        <strong>Verdict:</strong> This transaction's gas usage increased but it still succeeds.
+      </div>`;
+    }
+  }
+
   el.innerHTML = `
     <h1>Transaction Detail</h1>
+    ${verdictHtml}
     <p class="mono" style="color:var(--text-dim); word-break:break-all; margin-bottom:20px">
       ${tx.tx_hash}
       <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.85em; margin-left:8px">etherscan</a>

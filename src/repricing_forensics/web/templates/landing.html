@@ -15,6 +15,10 @@
       <div class="number" id="statContracts">--</div>
       <div class="label">unique contracts affected</div>
     </div>
+    <div class="hero-stat">
+      <div class="number" id="statBlocks" style="font-size:1.6em">--</div>
+      <div class="label">Analyzing blocks <span id="blockMin">...</span> &rarr; <span id="blockMax" class="pulse">...</span> and counting</div>
+    </div>
   </div>
 
   <div class="hero-actions">
@@ -26,18 +30,38 @@
 <h2>What is EIP-7904?</h2>
 <p>Several computational opcodes have been underpriced since the Frontier release. Their gas costs no longer reflect the actual CPU time they consume relative to other operations. EIP-7904 corrects this by raising the gas cost of eight opcodes:</p>
 
-<table class="opcode-table">
-  <thead><tr><th>Opcode</th><th>Current</th><th>Proposed</th></tr></thead>
-  <tbody>
-    <tr><td><code>DIV</code></td><td>5</td><td>15</td></tr>
-    <tr><td><code>SDIV</code></td><td>5</td><td>20</td></tr>
-    <tr><td><code>MOD</code></td><td>5</td><td>12</td></tr>
-    <tr><td><code>SMOD</code></td><td>5</td><td>5</td></tr>
-    <tr><td><code>ADDMOD</code></td><td>8</td><td>8</td></tr>
-    <tr><td><code>MULMOD</code></td><td>8</td><td>11</td></tr>
-    <tr><td><code>KECCAK256</code></td><td>30</td><td>45</td></tr>
-  </tbody>
-</table>
+<div class="opcode-cards">
+  <div class="opcode-card">
+    <div class="opcode-name">DIV</div>
+    <div class="opcode-costs"><span class="old">5</span><span class="arrow">&rarr;</span><span class="new">15</span></div>
+    <div class="opcode-bar-track"><div class="opcode-bar-fill" style="width: 67%"></div></div>
+    <div class="opcode-pct">+200%</div>
+  </div>
+  <div class="opcode-card">
+    <div class="opcode-name">SDIV</div>
+    <div class="opcode-costs"><span class="old">5</span><span class="arrow">&rarr;</span><span class="new">20</span></div>
+    <div class="opcode-bar-track"><div class="opcode-bar-fill" style="width: 100%"></div></div>
+    <div class="opcode-pct">+300%</div>
+  </div>
+  <div class="opcode-card">
+    <div class="opcode-name">MOD</div>
+    <div class="opcode-costs"><span class="old">5</span><span class="arrow">&rarr;</span><span class="new">12</span></div>
+    <div class="opcode-bar-track"><div class="opcode-bar-fill" style="width: 47%"></div></div>
+    <div class="opcode-pct">+140%</div>
+  </div>
+  <div class="opcode-card">
+    <div class="opcode-name">MULMOD</div>
+    <div class="opcode-costs"><span class="old">8</span><span class="arrow">&rarr;</span><span class="new">11</span></div>
+    <div class="opcode-bar-track"><div class="opcode-bar-fill" style="width: 12%"></div></div>
+    <div class="opcode-pct">+37.5%</div>
+  </div>
+  <div class="opcode-card">
+    <div class="opcode-name">KECCAK256</div>
+    <div class="opcode-costs"><span class="old">30</span><span class="arrow">&rarr;</span><span class="new">45</span></div>
+    <div class="opcode-bar-track"><div class="opcode-bar-fill" style="width: 17%"></div></div>
+    <div class="opcode-pct">+50%</div>
+  </div>
+</div>
 
 <p>Most transactions absorb the extra cost. A small fraction break. This tool quantifies exactly which ones.</p>
 
@@ -70,6 +94,9 @@
   Promise.all([fetchJSON('/api/overview'), fetchJSON('/api/metadata')]).then(([ov, meta]) => {
     document.getElementById('statBrokenTxs').textContent = fmtCount(ov.contract_broken_txs);
     document.getElementById('statContracts').textContent = fmtCount(meta.total_contracts_affected);
+    document.getElementById('blockMin').textContent = meta.min_block.toLocaleString();
+    document.getElementById('blockMax').textContent = meta.max_block.toLocaleString();
+    document.getElementById('statBlocks').textContent = (meta.max_block - meta.min_block).toLocaleString();
   }).catch(() => {});
 </script>
 {% endblock %}

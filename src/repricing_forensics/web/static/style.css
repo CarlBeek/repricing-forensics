@@ -15,8 +15,8 @@
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
   --text-dim: #52525b;
-  --accent: #818cf8;
-  --accent-glow: rgba(129, 140, 248, 0.15);
+  --accent: #f59e0b;
+  --accent-glow: rgba(245, 158, 11, 0.15);
   --red: #f87171;
   --red-bg: rgba(248, 113, 113, 0.08);
   --red-border: rgba(248, 113, 113, 0.2);
@@ -223,7 +223,7 @@ summary {
 summary:hover { background: var(--bg-hover); color: var(--text); }
 .detail-content { padding: 12px 16px; }
 a { color: var(--accent); text-decoration: none; }
-a:hover { color: #a5b4fc; }
+a:hover { color: #fbbf24; }
 .subtitle { color: var(--text-muted); font-size: 0.92em; margin: 0 0 8px; }
 .note { color: var(--text-dim); font-size: 0.82em; }
 .loading { color: var(--text-muted); font-style: italic; font-size: 0.88em; }
@@ -278,8 +278,8 @@ a:hover { color: #a5b4fc; }
 
 /* ── CTA banner ─────────────────────────────────────────────────────── */
 .cta-banner {
-  background: linear-gradient(135deg, rgba(129,140,248,0.1), rgba(248,113,113,0.08));
-  border: 1px solid rgba(129,140,248,0.2);
+  background: linear-gradient(135deg, rgba(245,158,11,0.1), rgba(248,113,113,0.08));
+  border: 1px solid rgba(245,158,11,0.2);
   border-radius: var(--radius); padding: 20px 24px;
   margin: 24px 0; display: flex; align-items: center;
   justify-content: space-between; gap: 16px;
@@ -292,7 +292,7 @@ a:hover { color: #a5b4fc; }
   font-weight: 600; font-size: 0.88em; white-space: nowrap;
   text-decoration: none; transition: background 0.15s;
 }
-.cta-btn:hover { background: #a5b4fc; color: #fff; text-decoration: none; }
+.cta-btn:hover { background: #fbbf24; color: #111; text-decoration: none; }
 
 /* ── Landing page hero ──────────────────────────────────────────────── */
 .hero {
@@ -377,6 +377,95 @@ a:hover { color: #a5b4fc; }
 /* ── Footer ─────────────────────────────────────────────────────────── */
 footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12px; }
 
+/* ── Opcode cards ──────────────────────────────────────────────────── */
+.opcode-cards {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 20px 0;
+}
+.opcode-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 16px;
+  transition: border-color 0.15s;
+}
+.opcode-card:hover { border-color: var(--border-light); }
+.opcode-card .opcode-name {
+  font-family: 'JetBrains Mono', monospace; font-size: 1.1em;
+  font-weight: 600; color: var(--text); margin-bottom: 8px;
+}
+.opcode-card .opcode-costs {
+  font-size: 0.85em; color: var(--text-secondary); margin-bottom: 10px;
+}
+.opcode-card .opcode-costs .old { color: var(--text-muted); }
+.opcode-card .opcode-costs .arrow { color: var(--text-dim); margin: 0 4px; }
+.opcode-card .opcode-costs .new { color: var(--accent); font-weight: 600; }
+.opcode-card .opcode-bar-track {
+  height: 6px; background: var(--bg-inset); border-radius: 3px; overflow: hidden;
+}
+.opcode-card .opcode-bar-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--orange));
+  transition: width 0.6s ease;
+}
+.opcode-card .opcode-pct {
+  font-size: 0.78em; color: var(--text-muted); margin-top: 6px; text-align: right;
+}
+
+/* ── Verdict banner ────────────────────────────────────────────────── */
+.verdict-banner {
+  padding: 14px 18px; border-radius: var(--radius); margin-bottom: 20px;
+  font-size: 0.92em; line-height: 1.55; border: 1px solid;
+}
+.verdict-banner.verdict-red {
+  background: var(--red-bg); border-color: var(--red-border); color: var(--text-secondary);
+}
+.verdict-banner.verdict-orange {
+  background: var(--orange-bg); border-color: var(--orange-border); color: var(--text-secondary);
+}
+.verdict-banner.verdict-green {
+  background: var(--green-bg); border-color: rgba(74, 222, 128, 0.2); color: var(--text-secondary);
+}
+.verdict-banner strong { margin-right: 6px; }
+.verdict-banner.verdict-red strong { color: var(--red); }
+.verdict-banner.verdict-orange strong { color: var(--orange); }
+.verdict-banner.verdict-green strong { color: var(--green); }
+
+/* ── Remediation tags ──────────────────────────────────────────────── */
+.tag-action { font-size: 0.75em; padding: 2px 7px; border-radius: 3px; font-weight: 600; }
+
+/* ── Skeleton shimmer ──────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-hover) 50%, var(--bg-card) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-sm);
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton-text { height: 14px; margin: 8px 0; }
+.skeleton-number { height: 36px; width: 80px; margin: 0 auto 8px; }
+.skeleton-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px 16px; text-align: center;
+}
+
+/* ── Not-affected message ──────────────────────────────────────────── */
+.not-affected {
+  background: var(--green-bg); border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: var(--radius); padding: 20px 24px; margin: 20px 0;
+}
+.not-affected h1 { color: var(--green); font-size: 1.3em; margin-bottom: 8px; }
+.not-affected p { color: var(--text-secondary); }
+
+/* ── Pulse animation ───────────────────────────────────────────────── */
+.pulse {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────── */
 @media (max-width: 800px) {
   body { padding: 0 16px 32px; font-size: 13px; }
@@ -386,4 +475,5 @@ footer hr { border: none; border-top: 1px solid var(--border); margin: 48px 0 12
   .hero-stats { flex-direction: column; gap: 16px; }
   .hero-actions { flex-direction: column; align-items: center; }
   .site-features { grid-template-columns: 1fr; }
+  .opcode-cards { grid-template-columns: repeat(2, 1fr); }
 }

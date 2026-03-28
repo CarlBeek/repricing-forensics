@@ -3,7 +3,16 @@
 
 {% block content %}
 <p style="margin-bottom:16px"><a href="/affected">&larr; Back to affected parties</a></p>
-<div id="contractDetail"><p class="loading">Loading contract details...</p></div>
+<div id="contractDetail">
+  <div class="skeleton skeleton-text" style="width:40%;height:24px;margin-bottom:12px"></div>
+  <div class="skeleton skeleton-text" style="width:70%;margin-bottom:20px"></div>
+  <div class="poster-grid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -16,9 +25,11 @@ const ADDRESS = "{{ address }}";
 
   if (!data.found) {
     el.innerHTML = `
-      <h1>Not Found</h1>
-      <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> is not affected by EIP-7904 repricing
-         (or is wallet-fixable and filtered from this view).</p>`;
+      <div class="not-affected">
+        <h1>Good news -- this contract is not affected by EIP-7904 repricing.</h1>
+        <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> has no broken transactions under the proposed gas schedule
+           (or any breakages are wallet-fixable and filtered from this view).</p>
+      </div>`;
     return;
   }
 

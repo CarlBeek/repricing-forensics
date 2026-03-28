@@ -13,7 +13,9 @@
 </div>
 
 <div class="poster-grid" id="summaryCards" style="grid-template-columns: repeat(3, 1fr);">
-  <p class="loading">Loading...</p>
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
 </div>
 
 <h2>Most Affected Contracts</h2>
@@ -29,8 +31,9 @@
       <th>Broken Txs</th>
       <th>Avg Gas Δ</th>
       <th>Total Gas Δ</th>
+      <th>Action</th>
     </tr></thead>
-    <tbody id="contractBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+    <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
   </table>
 </div>
 <div id="pagination" class="pagination"></div>
@@ -41,6 +44,13 @@
 let currentPage = 1;
 const perPage = 100;
 
+function remediationTag(r) {
+  if (r === 'admin_upgrade_possible') return '<span class="tag tag-green tag-action">Upgradeable</span>';
+  if (r === 'integration_update') return '<span class="tag tag-orange tag-action">Integration fix</span>';
+  if (r === 'immutable_contract_or_migration') return '<span class="tag tag-red tag-action">Needs migration</span>';
+  return '';
+}
+
 function renderTable(items, page) {
   const startRank = (page - 1) * perPage;
   document.getElementById('contractBody').innerHTML = items.map((c, i) =>
@@ -50,6 +60,7 @@ function renderTable(items, page) {
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
       <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
       <td style="text-align:right">${fmtGas(c.total_delta)}</td>
+      <td>${remediationTag(c.remediation)}</td>
     </tr>`
   ).join('');
 }
@@ -74,7 +85,7 @@ function renderPagination(total, totalPages, page) {
 
 async function loadPage(page) {
   currentPage = page;
-  document.getElementById('contractBody').innerHTML = '<tr><td colspan="5" class="loading">Loading...</td></tr>';
+  document.getElementById('contractBody').innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
   const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);
