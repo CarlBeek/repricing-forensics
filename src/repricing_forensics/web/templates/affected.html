@@ -223,7 +223,9 @@ async function showTxDetail(txHash, rowEl) {
           <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
           <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:#27ae60; font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
           <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:#e74c3c; font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
-          <strong>Headroom Was:</strong> ${fmtGas(tx.gas_limit - tx.baseline_gas_used)} (${100 - gasUsedPct}% of limit)
+          <strong>Gas Delta:</strong> ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}${
+            tx.baseline_success && !tx.schedule_success ? ' <span style="color:#e67e22; font-size:0.85em">(all gas consumed on OOG)</span>' : ''
+          }
         </div>
       </div>
 
@@ -250,8 +252,10 @@ async function showTxDetail(txHash, rowEl) {
 
       ${tx.gas_breakdown && tx.gas_breakdown.length ? (() => {
         const repricingCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
-        const headroom = tx.gas_limit - tx.baseline_gas_used;
-        const overBy = repricingCost - headroom;
+        const postRefundHeadroom = tx.gas_limit - tx.baseline_gas_used;
+        const statusChanged = tx.baseline_success && !tx.schedule_success;
+        const refundInduced = statusChanged && repricingCost < postRefundHeadroom;
+        const overBy = repricingCost - postRefundHeadroom;
         return `
         <h5>Gas Delta Breakdown by Repriced Opcode</h5>
         <table style="font-size:0.9em; max-width:550px;">
@@ -269,12 +273,25 @@ async function showTxDetail(txHash, rowEl) {
               <td style="text-align:right; color:#e74c3c">+${fmtGas(repricingCost)}</td>
               <td></td>
             </tr>
+            ${refundInduced ? `
             <tr style="color:#666">
-              <td>Headroom Was</td>
+              <td>Headroom (post-refund)</td>
               <td></td>
-              <td style="text-align:right">${fmtGas(headroom)}</td>
+              <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
               <td></td>
             </tr>
+            <tr style="color:#e67e22">
+              <td>Pre-refund headroom</td>
+              <td></td>
+              <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
+              <td style="font-size:0.85em; color:#e67e22">SSTORE refunds</td>
+            </tr>` : `
+            <tr style="color:#666">
+              <td>Headroom</td>
+              <td></td>
+              <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
+              <td></td>
+            </tr>`}
             ${overBy > 0 ? `<tr style="font-weight:bold; color:#e74c3c">
               <td>Over Limit By</td>
               <td></td>
@@ -282,7 +299,13 @@ async function showTxDetail(txHash, rowEl) {
               <td></td>
             </tr>` : ''}
           </tbody>
-        </table>`;
+        </table>
+        ${refundInduced ? `
+        <div style="margin:8px 0; padding:8px; background:#fff3cd; border-radius:4px; font-size:0.88em;">
+          SSTORE gas refunds (${tx.op_counts ? tx.op_counts.sstore : '?'} SSTOREs) are only applied after successful execution.
+          The baseline barely fit within the gas limit before refunds were applied.
+          Adding +${fmtGas(repricingCost)} from repricing tipped it over, causing OOG and consuming all ${fmtGas(tx.gas_limit)} gas.
+        </div>` : ''}`;
       })() : ''}
 
       ${tx.op_counts ? `
