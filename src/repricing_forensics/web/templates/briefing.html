@@ -59,9 +59,9 @@
   // 1. Headlines
   renderPosterCards('headlines', [
     { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
-    { value: fmtCount(overview.divergent_txs), label: 'Divergent Txs' },
-    { value: fmtCount(overview.broken_txs), label: 'Broken Txs<br>(success→fail)' },
-    { value: fmtPct(overview.breakage_rate), label: 'Breakage Rate<br>(of all analyzed)' },
+    { value: fmtCount(overview.broken_txs), label: 'All Broken Txs' },
+    { value: fmtCount(overview.wallet_fixable_txs), label: 'Wallet-Fixable<br>(auto-resolved by gas estimate)' },
+    { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
   ]);
 
   // 2. Funnel — scaled to total analyzed, showing raw count + fraction

@@ -14,6 +14,12 @@ from .db import (
 
 router = APIRouter(prefix="/api")
 
+# Filter clause to exclude wallet-fixable breakages (depth ≤ 1, no subcalls).
+# These are just tight gas estimates that wallets auto-fix via eth_estimateGas.
+NOT_WALLET_FIXABLE = """
+    AND divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+"""
+
 FORENSIC_OPCODE_NAMES = {
     "0x04": "DIV",
     "0x05": "SDIV",
@@ -32,12 +38,20 @@ FORENSIC_OPCODE_NAMES = {
 def overview():
     total_divergent = query_scalar("SELECT count(*) FROM hot_7904")
     broken = query_scalar("SELECT count(*) FROM hot_7904 WHERE status_changed")
+    wallet_fixable = query_scalar(
+        f"SELECT count(*) FROM hot_7904 WHERE status_changed"
+        f" AND divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)"
+    )
     total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_7904")
+    contract_broken = broken - (wallet_fixable or 0)
     return {
         "total_analyzed": int(total_analyzed),
         "divergent_txs": int(total_divergent),
         "broken_txs": int(broken),
+        "wallet_fixable_txs": int(wallet_fixable or 0),
+        "contract_broken_txs": int(contract_broken),
         "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
+        "contract_breakage_rate": round(contract_broken / total_analyzed * 100, 2) if total_analyzed else 0,
     }
 
 
@@ -121,9 +135,9 @@ def gas_overhead():
 
 @router.get("/concentration")
 def concentration():
-    df = query_df("""
+    df = query_df(f"""
         SELECT recipient, count(*) as broken_txs
-        FROM hot_7904 WHERE status_changed
+        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
         GROUP BY recipient ORDER BY broken_txs DESC
     """)
     df["cumulative"] = df["broken_txs"].cumsum()
@@ -146,7 +160,7 @@ def top_contracts(limit: int = Query(default=10, le=500)):
     rows = query(f"""
         SELECT recipient, count(*) as broken_txs,
                avg(gas_delta) as avg_delta, sum(gas_delta) as total_delta
-        FROM hot_7904 WHERE status_changed
+        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
         GROUP BY recipient ORDER BY broken_txs DESC LIMIT {int(limit)}
     """)
     return [
@@ -204,7 +218,7 @@ def forensics_time_series():
 
 @router.get("/forensics/gas-delta")
 def forensics_gas_delta():
-    stats = query("""
+    stats = query(f"""
         SELECT
             median(gas_delta) as median_delta,
             avg(gas_delta) as mean_delta,
@@ -213,16 +227,16 @@ def forensics_gas_delta():
             percentile_cont(0.90) WITHIN GROUP (ORDER BY gas_delta) as p90,
             percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95,
             percentile_cont(0.99) WITHIN GROUP (ORDER BY gas_delta) as p99
-        FROM hot_7904 WHERE status_changed
+        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
     """)[0]
-    histogram = query("""
+    histogram = query(f"""
         WITH bucketed AS (
             SELECT
                 CASE WHEN gas_delta <= 0 THEN 0
                      ELSE floor(log2(gas_delta))::int
                 END AS log_bin,
                 count(*) AS cnt
-            FROM hot_7904 WHERE status_changed
+            FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
             GROUP BY 1
         )
         SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
@@ -370,7 +384,7 @@ def affected(
     """Paginated affected contracts, ordered by broken_txs desc."""
     offset = (page - 1) * per_page
     total_count = query_scalar(
-        "SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed",
+        f"SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}",
         default=0,
     )
     rows = query(f"""
@@ -381,7 +395,7 @@ def affected(
                min(block_number) as min_block,
                max(block_number) as max_block
         FROM hot_7904
-        WHERE status_changed
+        WHERE status_changed {NOT_WALLET_FIXABLE}
         GROUP BY recipient
         ORDER BY broken_txs DESC
         LIMIT {int(per_page)} OFFSET {int(offset)}
@@ -431,7 +445,7 @@ def affected_detail(address: str):
                min(block_number) as min_block,
                max(block_number) as max_block
         FROM hot_7904
-        WHERE status_changed AND lower(recipient) = '{addr}'
+        WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
     """)
     if not stats or stats[0]["broken_txs"] == 0:
         return {"found": False, "address": address}
@@ -440,7 +454,7 @@ def affected_detail(address: str):
     txs = query(f"""
         SELECT tx_hash, block_number, gas_delta
         FROM hot_7904
-        WHERE status_changed AND lower(recipient) = '{addr}'
+        WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
         ORDER BY gas_delta DESC
         LIMIT 50
     """)
@@ -616,7 +630,7 @@ def search(q: str = Query(default="")):
     rows = query(f"""
         SELECT recipient, count(*) as broken_txs
         FROM hot_7904
-        WHERE status_changed
+        WHERE status_changed {NOT_WALLET_FIXABLE}
         GROUP BY recipient
         ORDER BY broken_txs DESC
     """)
@@ -640,7 +654,7 @@ def metadata():
     block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM hot_7904")
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
     affected_count = query_scalar(
-        "SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed"
+        f"SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}"
     )
     return {
         "min_block": int(br["mn"]) if br["mn"] else 0,

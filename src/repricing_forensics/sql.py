@@ -49,3 +49,16 @@ GROUP BY 1
 ORDER BY divergent_txs DESC
 """
 
+# Wallet-fixable = divergence at depth ≤ 1 with no internal calls.
+# These are just tight gas estimates that wallets will auto-fix via
+# eth_estimateGas against the new schedule. We filter them from the
+# detailed forensics/affected views to focus on real contract breakage.
+WALLET_FIXABLE_SQL = """
+CREATE OR REPLACE TABLE wallet_fixable_ids AS
+SELECT nf.divergence_id
+FROM normalized_forensics nf
+WHERE nf.divergence_call_depth IS NOT NULL
+  AND nf.divergence_call_depth <= 1
+  AND coalesce(nf.call_count, 0) = 0
+"""
+
