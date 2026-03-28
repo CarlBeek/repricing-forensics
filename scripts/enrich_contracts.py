@@ -25,7 +25,7 @@ def _fetch_one(address: str, cache_dir):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch Sourcify metadata for impacted contracts")
-    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--limit", type=int, default=1024)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument(
         "--address-source",
@@ -70,7 +70,7 @@ def main() -> None:
             ORDER BY divergent_txs DESC
             LIMIT ?
         """
-    rows = conn.execute(query, [args.limit]).fetchall()
+    all_rows = conn.execute(query, [args.limit * 10]).fetchall()
     conn.close()
 
     out_path = paths.cache_dir / "contract_classification.csv"
@@ -81,13 +81,18 @@ def main() -> None:
             for row in csv.DictReader(handle):
                 existing[row["address"].lower()] = row
 
-    # Split into cached (instant) vs uncached (need HTTP fetch)
-    tx_counts = {addr.lower(): txs for addr, txs in rows}
-    uncached = [
-        addr for addr, _ in rows
-        if not contract_cache_path(paths.cache_dir, addr).exists()
-    ]
-    cached = [addr for addr, _ in rows if addr not in uncached]
+    # Split into cached (instant) vs uncached (need HTTP fetch).
+    # Take ALL cached addresses but only up to --limit uncached ones,
+    # so each CI run labels a fresh batch while preserving existing data.
+    cached = []
+    uncached = []
+    tx_counts: dict[str, int] = {}
+    for addr, txs in all_rows:
+        tx_counts[addr.lower()] = txs
+        if contract_cache_path(paths.cache_dir, addr).exists():
+            cached.append(addr)
+        elif len(uncached) < args.limit:
+            uncached.append(addr)
 
     print(f"{len(cached)} cached, {len(uncached)} to fetch ({args.workers} workers)")
 

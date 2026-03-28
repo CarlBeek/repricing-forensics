@@ -48,7 +48,7 @@ jobs:
       - name: Enrich contracts (Sourcify)
         run: |
           . .venv/bin/activate
-          python scripts/enrich_contracts.py --limit 200 --address-source union
+          python scripts/enrich_contracts.py --address-source union
 
       - name: Build contract labels
         run: |
