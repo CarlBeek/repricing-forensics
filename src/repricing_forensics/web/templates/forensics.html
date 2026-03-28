@@ -69,7 +69,7 @@
     x: pcts,
     y: cdfY,
     mode: 'lines',
-    line: { color: '#e74c3c', width: 2 },
+    line: { color: COLORS.broken, width: 2 },
     hovertext: pcts.map((p, i) => `${p.toFixed(2)}% broken<br>${cdfY[i].toFixed(1)}% of blocks`),
     hoverinfo: 'text',
   }], layout({
@@ -119,7 +119,7 @@
     renderBar('depthChart',
       depth.map(r => ({ label: r.divergence_call_depth >= 0 ? `Depth ${r.divergence_call_depth}` : 'Unknown', count: r.divergent_txs })),
       'label', 'count',
-      { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: '#3498db', yaxis: { tickformat: ',' } }
+      { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: COLORS.call_tree, yaxis: { tickformat: ',' } }
     );
   }
 
@@ -128,7 +128,7 @@
     x: top20.map(c => c.broken_txs),
     y: top20.map(c => c.name.length > 30 ? c.name.slice(0, 28) + '…' : c.name),
     type: 'bar', orientation: 'h',
-    marker: { color: '#e74c3c' },
+    marker: { color: COLORS.broken },
   }], layout({
     title: { text: 'Top 20 Contracts by Broken Tx Count' },
     xaxis: { title: 'Broken Txs', tickformat: ',' },

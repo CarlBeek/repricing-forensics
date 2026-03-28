@@ -95,7 +95,7 @@ function renderPagination(total, totalPages, page) {
   const end = Math.min(totalPages, page + 3);
   if (start > 1) buttons.push('<span>...</span>');
   for (let p = start; p <= end; p++) {
-    buttons.push(`<button ${p === page ? 'style="background:#e74c3c;color:white;border-color:#e74c3c"' : ''}
+    buttons.push(`<button ${p === page ? 'style="background:#e74c3c;color:white;border-color:var(--red)"' : ''}
       onclick="loadPage(${p})">${p}</button>`);
   }
   if (end < totalPages) buttons.push(`<span>...</span>`);
@@ -145,7 +145,7 @@ async function showDetail(address) {
     <h3>${escHtml(data.name)}
       <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')">copy address</button>
     </h3>
-    <p class="mono" style="color:#999">${data.address}</p>
+    <p class="mono" style="color:var(--text-dim)">${data.address}</p>
     <div class="stat-row">
       <div class="stat"><div class="val">${fmtCount(data.broken_txs)}</div><div class="lbl">Broken Txs</div></div>
       <div class="stat"><div class="val">${fmtGas(data.avg_delta)}</div><div class="lbl">Avg Gas Δ</div></div>
@@ -205,42 +205,42 @@ async function showTxDetail(txHash, rowEl) {
   const schedUsedPct = tx.gas_limit > 0 ? Math.round(tx.schedule_gas_used / tx.gas_limit * 100) : 0;
 
   panel.innerHTML = `
-    <div style="border:1px solid #ddd; border-radius:8px; padding:16px; margin-top:16px; background:#fafafa;">
+    <div style="border:1px solid var(--border); border-radius:8px; padding:16px; margin-top:16px; background:var(--bg-card);">
       <h4 style="margin-top:0">
         Transaction Detail
         <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${tx.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.8em; margin-left:8px">gas profiler</a>
         <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.8em; margin-left:8px">etherscan</a>
       </h4>
-      <p class="mono" style="font-size:0.85em; color:#666; word-break:break-all">${tx.tx_hash}</p>
+      <p class="mono" style="font-size:0.85em; color:var(--text-muted); word-break:break-all">${tx.tx_hash}</p>
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0;">
         <div>
           <strong>Block:</strong> ${tx.block_number.toLocaleString()} (index ${tx.tx_index})<br>
           <strong>From:</strong> <span class="mono" style="font-size:0.85em">${tx.sender}</span><br>
-          <strong>To:</strong> ${escHtml(tx.recipient_name)} <span class="mono" style="font-size:0.85em; color:#999">${(tx.recipient || '').slice(0, 12)}...</span>
+          <strong>To:</strong> ${escHtml(tx.recipient_name)} <span class="mono" style="font-size:0.85em; color:var(--text-dim)">${(tx.recipient || '').slice(0, 12)}...</span>
         </div>
         <div>
           <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
-          <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:#27ae60; font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
-          <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:#e74c3c; font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
+          <strong>Baseline Gas:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}% of limit) — <span style="color:var(--green); font-weight:bold">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
+          <strong>Schedule Gas:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}% of limit) — <span style="color:var(--red); font-weight:bold">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
           <strong>Gas Delta:</strong> ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}${
-            tx.baseline_success && !tx.schedule_success ? ' <span style="color:#e67e22; font-size:0.85em">(all gas consumed on OOG)</span>' : ''
+            tx.baseline_success && !tx.schedule_success ? ' <span style="color:var(--orange); font-size:0.85em">(all gas consumed on OOG)</span>' : ''
           }
         </div>
       </div>
 
       ${tx.divergence ? `
-        <div style="margin:12px 0; padding:8px; background:#fff3cd; border-radius:4px;">
+        <div style="margin:12px 0; padding:8px; background:var(--orange-bg); border-radius:4px;">
           <strong>Divergence Point:</strong>
           Opcode <code>${escHtml(tx.divergence.opcode)}</code>
           at depth ${tx.divergence.call_depth ?? '?'}
           in ${escHtml(tx.divergence.contract)}
-          <span class="mono" style="font-size:0.8em; color:#999">${(tx.divergence.contract_address || '').slice(0, 12)}...</span>
+          <span class="mono" style="font-size:0.8em; color:var(--text-dim)">${(tx.divergence.contract_address || '').slice(0, 12)}...</span>
         </div>
       ` : ''}
 
       ${tx.oog ? `
-        <div style="margin:12px 0; padding:8px; background:#f8d7da; border-radius:4px;">
+        <div style="margin:12px 0; padding:8px; background:var(--red-bg); border-radius:4px;">
           <strong>Out of Gas:</strong>
           <code>${escHtml(tx.oog.opcode)}</code>
           at depth ${tx.oog.call_depth ?? '?'}
@@ -267,32 +267,32 @@ async function showTxDetail(txHash, rowEl) {
               <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
               <td style="text-align:right">${b.count > 0 ? (b.gas_delta / b.count).toFixed(1) : '-'}</td>
             </tr>`).join('')}
-            <tr style="font-weight:bold; border-top:2px solid #333">
+            <tr style="font-weight:bold; border-top:2px solid var(--text-dim)">
               <td>Repricing Cost</td>
               <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
-              <td style="text-align:right; color:#e74c3c">+${fmtGas(repricingCost)}</td>
+              <td style="text-align:right; color:var(--red)">+${fmtGas(repricingCost)}</td>
               <td></td>
             </tr>
             ${refundInduced ? `
-            <tr style="color:#666">
+            <tr style="color:var(--text-muted)">
               <td>Headroom (post-refund)</td>
               <td></td>
               <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
               <td></td>
             </tr>
-            <tr style="color:#e67e22">
+            <tr style="color:var(--orange)">
               <td>Pre-refund headroom</td>
               <td></td>
               <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
-              <td style="font-size:0.85em; color:#e67e22">SSTORE refunds</td>
+              <td style="font-size:0.85em; color:var(--orange)">SSTORE refunds</td>
             </tr>` : `
-            <tr style="color:#666">
+            <tr style="color:var(--text-muted)">
               <td>Headroom</td>
               <td></td>
               <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
               <td></td>
             </tr>`}
-            ${overBy > 0 ? `<tr style="font-weight:bold; color:#e74c3c">
+            ${overBy > 0 ? `<tr style="font-weight:bold; color:var(--red)">
               <td>Over Limit By</td>
               <td></td>
               <td style="text-align:right">+${fmtGas(overBy)}</td>
@@ -301,7 +301,7 @@ async function showTxDetail(txHash, rowEl) {
           </tbody>
         </table>
         ${refundInduced ? `
-        <div style="margin:8px 0; padding:8px; background:#fff3cd; border-radius:4px; font-size:0.88em;">
+        <div style="margin:8px 0; padding:8px; background:var(--orange-bg); border-radius:4px; font-size:0.88em;">
           SSTORE gas refunds (${tx.op_counts ? tx.op_counts.sstore : '?'} SSTOREs) are only applied after successful execution.
           The baseline barely fit within the gas limit before refunds were applied.
           Adding +${fmtGas(repricingCost)} from repricing tipped it over, causing OOG and consuming all ${fmtGas(tx.gas_limit)} gas.
@@ -309,7 +309,7 @@ async function showTxDetail(txHash, rowEl) {
       })() : ''}
 
       ${tx.op_counts ? `
-        <p style="margin:8px 0; font-size:0.9em; color:#666">
+        <p style="margin:8px 0; font-size:0.9em; color:var(--text-muted)">
           ${tx.op_counts.total.toLocaleString()} total ops,
           ${tx.op_counts.sload} SLOADs,
           ${tx.op_counts.sstore} SSTOREs,

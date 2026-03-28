@@ -67,11 +67,11 @@
   // 2. Funnel — scaled to total analyzed, showing raw count + fraction
   const totalAnalyzed = overview.total_analyzed;
   const funnelData = [
-    { label: 'Total analyzed', count: totalAnalyzed, color: '#95a5a6' },
-    { label: 'Divergent (any gas change)', count: funnel.divergent_txs, color: '#e67e22' },
-    { label: 'Cost-only change', count: funnel.cost_only, color: '#27ae60' },
-    { label: 'Event logs also changed', count: funnel.event_log_changed, color: '#f39c12' },
-    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: '#e74c3c' },
+    { label: 'Total analyzed', count: totalAnalyzed, color: COLORS.neutral },
+    { label: 'Divergent (any gas change)', count: funnel.divergent_txs, color: COLORS.changed },
+    { label: 'Cost-only change', count: funnel.cost_only, color: COLORS.saved },
+    { label: 'Event logs also changed', count: funnel.event_log_changed, color: COLORS.event_logs },
+    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: COLORS.broken },
   ];
   document.getElementById('funnel').innerHTML = funnelData.map(f => {
     const pct = totalAnalyzed ? f.count / totalAnalyzed * 100 : 0;
@@ -93,10 +93,10 @@
   // 4. Gas overhead
   const s = gas.stats;
   renderPosterCards('gasCards', [
-    { value: fmtGas(s.median_delta), label: 'Median Extra Gas', color: '#e67e22' },
-    { value: fmtGas(s.mean_delta), label: 'Mean Extra Gas', color: '#e67e22' },
-    { value: fmtGas(s.p95), label: '95th Percentile', color: '#e67e22' },
-    { value: fmtGas(s.p99), label: '99th Percentile', color: '#e67e22' },
+    { value: fmtGas(s.median_delta), label: 'Median Extra Gas', color: COLORS.changed },
+    { value: fmtGas(s.mean_delta), label: 'Mean Extra Gas', color: COLORS.changed },
+    { value: fmtGas(s.p95), label: '95th Percentile', color: COLORS.changed },
+    { value: fmtGas(s.p99), label: '99th Percentile', color: COLORS.changed },
   ]);
   // CDF with log x-axis
   let gasCum = 0;
@@ -105,8 +105,8 @@
     x: gas.histogram.map(b => b.bin_start || 1),
     y: gasCmf,
     mode: 'lines+markers',
-    marker: { size: 5, color: '#e67e22' },
-    line: { color: '#e67e22', width: 2 },
+    marker: { size: 5, color: COLORS.changed },
+    line: { color: COLORS.changed, width: 2 },
     hovertext: gas.histogram.map((b, i) => `${b.label} gas: ${fmtCount(b.count)} txs (${gasCmf[i].toFixed(1)}%)`),
     hoverinfo: 'text',
   }], layout({
@@ -134,14 +134,14 @@
     xaxis: { title: 'Number of Contracts (ranked by breakage)' },
     yaxis: { title: 'Cumulative % of Broken Txs', ticksuffix: '%' },
     height: 420,
-    shapes: [{ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 95, y1: 95, line: { dash: 'dash', color: '#95a5a6' } }],
+    shapes: [{ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 95, y1: 95, line: { dash: 'dash', color: COLORS.neutral } }],
   }), { responsive: true });
 
   // 6. Top 10
   document.getElementById('top10Body').innerHTML = top10.map((c, i) => `
     <tr>
       <td>${i + 1}</td>
-      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:#999">${c.recipient.slice(0, 10)}...</span></td>
+      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:var(--text-dim)">${c.recipient.slice(0, 10)}...</span></td>
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
       <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
       <td style="text-align:right">${fmtGas(c.total_delta)}</td>

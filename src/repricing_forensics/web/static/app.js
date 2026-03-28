@@ -1,20 +1,24 @@
 /* EIP-7904 Analysis — Client-side rendering */
 
 const COLORS = {
-  broken: '#e74c3c',
-  changed: '#e67e22',
-  saved: '#27ae60',
-  neutral: '#95a5a6',
-  call_tree: '#3498db',
-  event_logs: '#f39c12',
+  broken: '#ff5c5c',
+  changed: '#f0a050',
+  saved: '#50c878',
+  neutral: '#5c6070',
+  call_tree: '#5b9cf6',
+  event_logs: '#f0a050',
 };
-const PIE_COLORS = ['#e74c3c', '#3498db', '#27ae60', '#f39c12', '#8e44ad', '#1abc9c'];
-const SANKEY_PALETTE = ['#3498db', '#e67e22', '#27ae60', '#8e44ad', '#e74c3c'];
+const PIE_COLORS = ['#ff5c5c', '#5b9cf6', '#50c878', '#f0a050', '#a78bfa', '#5eead4'];
+const SANKEY_PALETTE = ['#5b9cf6', '#f0a050', '#50c878', '#a78bfa', '#ff5c5c'];
 
 const LAYOUT_DEFAULTS = {
-  template: 'plotly_white',
-  font: { size: 13 },
+  template: 'plotly_dark',
+  font: { size: 13, color: '#8b8fa3' },
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor: 'rgba(0,0,0,0)',
   margin: { l: 80, r: 20, t: 50, b: 70 },
+  xaxis: { gridcolor: '#2a2d37', zerolinecolor: '#2a2d37' },
+  yaxis: { gridcolor: '#2a2d37', zerolinecolor: '#2a2d37' },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
