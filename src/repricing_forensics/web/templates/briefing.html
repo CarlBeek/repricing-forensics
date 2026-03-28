@@ -64,26 +64,48 @@
     { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
   ]);
 
-  // 2. Funnel — scaled to total analyzed, showing raw count + fraction
+  // 2. Funnel — Sankey: Total → Divergent/Unchanged → subtypes → broken split
   const totalAnalyzed = overview.total_analyzed;
-  const funnelData = [
-    { label: 'Total analyzed', count: totalAnalyzed, color: COLORS.neutral },
-    { label: 'Divergent (any gas change)', count: funnel.divergent_txs, color: COLORS.changed },
-    { label: 'Cost-only change', count: funnel.cost_only, color: COLORS.saved },
-    { label: 'Event logs also changed', count: funnel.event_log_changed, color: COLORS.event_logs },
-    { label: '<strong>Broken (success → fail)</strong>', count: funnel.broken_txs, color: COLORS.broken },
+  const unchanged = totalAnalyzed - funnel.divergent_txs;
+  const walletFixable = overview.wallet_fixable_txs;
+  const contractBroken = overview.contract_broken_txs;
+
+  const labels = [
+    `All Analyzed\n${fmtCount(totalAnalyzed)}`,         // 0
+    `Unchanged\n${fmtCount(unchanged)}`,                 // 1
+    `Divergent\n${fmtCount(funnel.divergent_txs)}`,      // 2
+    `Gas-Only Change\n${fmtCount(funnel.cost_only)}`,    // 3
+    `Event Logs Changed\n${fmtCount(funnel.event_log_changed)}`, // 4
+    `Broken\n${fmtCount(funnel.broken_txs)}`,            // 5
+    `Wallet-Fixable\n${fmtCount(walletFixable)}`,        // 6
+    `Contract-Broken\n${fmtCount(contractBroken)}`,      // 7
   ];
-  document.getElementById('funnel').innerHTML = funnelData.map(f => {
-    const pct = totalAnalyzed ? f.count / totalAnalyzed * 100 : 0;
-    const barWidth = Math.max(2, pct);
-    return `
-      <div class="funnel-step">
-        <div class="funnel-label">${f.label}</div>
-        <div class="funnel-bar" style="width:${barWidth}%; background:${f.color}">
-          ${fmtCount(f.count)} (${fmtPct(pct)})
-        </div>
-      </div>`;
-  }).join('');
+  const nodeColors = [
+    COLORS.neutral,    // All Analyzed
+    '#3f3f46',         // Unchanged
+    COLORS.changed,    // Divergent
+    COLORS.saved,      // Gas-only
+    COLORS.event_logs, // Event logs
+    COLORS.broken,     // Broken
+    COLORS.call_tree,  // Wallet-fixable
+    COLORS.broken,     // Contract-broken
+  ];
+
+  renderSankey('funnel', {
+    labels,
+    sources:     [0, 0, 2, 2, 2, 5, 5],
+    targets:     [1, 2, 3, 4, 5, 6, 7],
+    values:      [unchanged, funnel.divergent_txs, funnel.cost_only, funnel.event_log_changed, funnel.broken_txs, walletFixable, contractBroken],
+    link_colors: [
+      'rgba(63,63,70,0.2)',       // → Unchanged
+      'rgba(251,146,60,0.15)',    // → Divergent
+      'rgba(74,222,128,0.15)',    // → Gas-only
+      'rgba(251,146,60,0.15)',    // → Event logs
+      'rgba(248,113,113,0.2)',    // → Broken
+      'rgba(96,165,250,0.15)',    // → Wallet-fixable
+      'rgba(248,113,113,0.25)',   // → Contract-broken
+    ],
+  }, { height: 400 });
 
   // 3. Opcodes
   document.getElementById('opcodeBody').innerHTML = opcodes.map(o =>
