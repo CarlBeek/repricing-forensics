@@ -95,7 +95,7 @@ function renderPagination(total, totalPages, page) {
   const end = Math.min(totalPages, page + 3);
   if (start > 1) buttons.push('<span>...</span>');
   for (let p = start; p <= end; p++) {
-    buttons.push(`<button ${p === page ? 'style="background:#e74c3c;color:white;border-color:var(--red)"' : ''}
+    buttons.push(`<button ${p === page ? 'class="active"' : ''}
       onclick="loadPage(${p})">${p}</button>`);
   }
   if (end < totalPages) buttons.push(`<span>...</span>`);
@@ -201,13 +201,13 @@ function renderCallSankey(divId, stack) {
   // Node for the EOA sender (from of depth-0 frame)
   if (stack.length > 0) {
     nodeLabels.push(stack[0].from);
-    nodeColors.push('rgba(108,140,255,0.6)');
+    nodeColors.push('rgba(129,140,248,0.6)');
   }
 
   stack.forEach((f, i) => {
     const label = `${f.to}\n${f.selector || ''}`;
     nodeLabels.push(label);
-    nodeColors.push(f.success ? 'rgba(80,200,120,0.5)' : 'rgba(255,92,92,0.5)');
+    nodeColors.push(f.success ? 'rgba(74,222,128,0.45)' : 'rgba(248,113,113,0.45)');
     frameToNode.set(i, nodeLabels.length - 1);
   });
 
@@ -238,7 +238,7 @@ function renderCallSankey(divId, stack) {
     sources.push(parentNode);
     targets.push(nodeIdx);
     values.push(gasVal);
-    linkColors.push(f.success ? 'rgba(80,200,120,0.15)' : 'rgba(255,92,92,0.25)');
+    linkColors.push(f.success ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.2)');
     linkLabels.push(`${fmtGas(f.gas_used)} / ${fmtGas(f.gas_provided)} gas (${f.gas_provided > 0 ? Math.round(f.gas_used / f.gas_provided * 100) : 0}%)`);
 
     // Update depth stack

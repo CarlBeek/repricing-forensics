@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}EIP-7904 Analysis{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
 </head>
@@ -23,14 +25,14 @@
 
   <footer>
     <hr>
-    <p class="note">EIP-7904 Advanced Repricing Analysis &mdash; <span id="lastUpdated"></span></p>
+    <p class="note">EIP-7904 Advanced Repricing Analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
   </footer>
 
   <script src="/static/app.js"></script>
   <script>
     fetchJSON('/api/metadata').then(m => {
       document.getElementById('lastUpdated').textContent =
-        'Last updated: ' + new Date(m.last_updated).toLocaleString();
+        'Updated ' + new Date(m.last_updated).toLocaleString();
     });
   </script>
   {% block scripts %}{% endblock %}

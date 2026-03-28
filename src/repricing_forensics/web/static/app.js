@@ -1,24 +1,25 @@
 /* EIP-7904 Analysis — Client-side rendering */
 
 const COLORS = {
-  broken: '#ff5c5c',
-  changed: '#f0a050',
-  saved: '#50c878',
-  neutral: '#5c6070',
-  call_tree: '#5b9cf6',
-  event_logs: '#f0a050',
+  broken: '#f87171',
+  changed: '#fb923c',
+  saved: '#4ade80',
+  neutral: '#52525b',
+  call_tree: '#60a5fa',
+  event_logs: '#fb923c',
 };
-const PIE_COLORS = ['#ff5c5c', '#5b9cf6', '#50c878', '#f0a050', '#a78bfa', '#5eead4'];
-const SANKEY_PALETTE = ['#5b9cf6', '#f0a050', '#50c878', '#a78bfa', '#ff5c5c'];
+const PIE_COLORS = ['#f87171', '#60a5fa', '#4ade80', '#fb923c', '#a78bfa', '#5eead4'];
+const SANKEY_PALETTE = ['#60a5fa', '#fb923c', '#4ade80', '#a78bfa', '#f87171'];
 
 const LAYOUT_DEFAULTS = {
   template: 'plotly_dark',
-  font: { size: 13, color: '#8b8fa3' },
+  font: { family: 'Inter, system-ui, sans-serif', size: 12, color: '#a1a1aa' },
   paper_bgcolor: 'rgba(0,0,0,0)',
   plot_bgcolor: 'rgba(0,0,0,0)',
-  margin: { l: 80, r: 20, t: 50, b: 70 },
-  xaxis: { gridcolor: '#2a2d37', zerolinecolor: '#2a2d37' },
-  yaxis: { gridcolor: '#2a2d37', zerolinecolor: '#2a2d37' },
+  margin: { l: 70, r: 16, t: 44, b: 60 },
+  xaxis: { gridcolor: '#27272a', zerolinecolor: '#27272a', gridwidth: 1 },
+  yaxis: { gridcolor: '#27272a', zerolinecolor: '#27272a', gridwidth: 1 },
+  title: { font: { size: 14, color: '#a1a1aa' } },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -127,7 +128,7 @@ function renderScatter(divId, data, xKey, yKey, opts = {}) {
   }];
   const shapes = (opts.hlines || []).map(h => ({
     type: 'line', x0: 0, x1: 1, xref: 'paper', y0: h.y, y1: h.y,
-    line: { dash: 'dash', color: '#95a5a6' },
+    line: { dash: 'dash', color: COLORS.neutral },
   }));
   Plotly.newPlot(divId, traces, layout({
     title: { text: opts.title || '' },
@@ -147,7 +148,7 @@ function renderSankey(divId, data, opts = {}) {
       source: data.sources,
       target: data.targets,
       value: data.values,
-      color: data.link_colors || data.values.map(() => 'rgba(52,152,219,0.3)'),
+      color: data.link_colors || data.values.map(() => 'rgba(96,165,250,0.2)'),
     },
   }], layout({
     title: { text: opts.title || '' },
