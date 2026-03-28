@@ -73,10 +73,11 @@ def funnel():
 
 @router.get("/opcode-impact")
 def opcode_impact():
-    rows = query("""
+    rows = query(f"""
         SELECT divergence_opcode_name as opcode, count(*) as cnt
         FROM normalized_forensics
         WHERE divergence_opcode_name IS NOT NULL
+          AND divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
         GROUP BY 1 ORDER BY cnt DESC
     """)
     total = sum(r["cnt"] for r in rows)
@@ -193,6 +194,7 @@ def forensics_time_series():
                 count(*) AS broken
             FROM hot_7904 h, buckets b
             WHERE h.status_changed
+              AND h.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
             GROUP BY block_group
         ),
         total_per_bucket AS (
@@ -258,10 +260,16 @@ def forensics_gas_delta():
 
 @router.get("/forensics/call-depth")
 def forensics_call_depth():
-    df = read_csv("call_depth_distribution.csv")
-    if df.empty:
-        return []
-    return df.to_dict(orient="records")
+    return query(f"""
+        SELECT
+            coalesce(nf.divergence_call_depth, -1) AS divergence_call_depth,
+            count(*) AS divergent_txs
+        FROM normalized_forensics nf
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed
+          AND h.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+        GROUP BY 1 ORDER BY 1
+    """)
 
 
 @router.get("/forensics/failure-motifs")
