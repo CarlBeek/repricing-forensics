@@ -55,6 +55,41 @@ def main() -> None:
             ORDER BY abs(gas_delta) DESC
             LIMIT 1000
         """,
+        "eip8037_original_limit_risk.csv": """
+            SELECT
+                tx_hash,
+                block_number,
+                tx_index,
+                target_address,
+                tx_gas_limit,
+                schedule_gas_used,
+                min_multiplier_to_succeed,
+                extra_gas_needed,
+                schedule_state_gas_spent,
+                runtime_state_gas,
+                schedule_initial_reservoir,
+                runtime_state_gas_spillover,
+                state_gas_category,
+                status_changed,
+                schedule_success
+            FROM eip8037_tx_impact
+            WHERE original_limit_failure
+               OR status_changed
+               OR reservoir_exhausted
+            ORDER BY
+                original_limit_failure DESC,
+                coalesce(min_multiplier_to_succeed, 999999) DESC,
+                schedule_state_gas_spent DESC
+            LIMIT 5000
+        """,
+        "eip8037_contract_impact.csv": """
+            SELECT *
+            FROM eip8037_contract_impact
+            ORDER BY original_limit_failures DESC,
+                     total_state_gas_spent DESC,
+                     status_changed_txs DESC
+            LIMIT 5000
+        """,
         "status_failure_call_pairs.csv": """
             SELECT
                 caller,

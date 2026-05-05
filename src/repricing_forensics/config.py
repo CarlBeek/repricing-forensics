@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+DEFAULT_SCHEDULE_NAME = "eip-8037"
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -23,6 +25,10 @@ def _env_path(var: str, default: Path) -> Path:
     return Path(val).expanduser().resolve() if val else default
 
 
+def default_schedule_name() -> str:
+    return os.environ.get("SCHEDULE_NAME", DEFAULT_SCHEDULE_NAME)
+
+
 def default_paths(repo_root: Path | None = None) -> Paths:
     root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
     research_lake = _env_path("RESEARCH_LAKE_PATH", root / "research_lake")
@@ -32,7 +38,7 @@ def default_paths(repo_root: Path | None = None) -> Paths:
         sqlite_db=_env_path("DIVERGENCE_DB_PATH", root / "divergences.db"),
         research_lake=research_lake,
         duckdb_dir=duckdb_dir,
-        duckdb_path=_env_path("DUCKDB_PATH", duckdb_dir / "eip7904.duckdb"),
+        duckdb_path=_env_path("DUCKDB_PATH", duckdb_dir / "repricing.duckdb"),
         cache_dir=_env_path("CACHE_DIR", root / "cache"),
         artifacts_dir=_env_path("ARTIFACTS_DIR", root / "artifacts"),
         notebooks_dir=root / "notebooks",

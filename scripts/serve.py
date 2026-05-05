@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point for the EIP-7904 analysis web server."""
+"""Entry point for the gas repricing analysis web server."""
 from __future__ import annotations
 
 import os

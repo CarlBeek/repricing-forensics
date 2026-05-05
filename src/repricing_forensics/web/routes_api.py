@@ -1,9 +1,12 @@
-"""JSON API endpoints for the EIP-7904 analysis web server."""
+"""JSON API endpoints for the gas repricing analysis web server."""
 from __future__ import annotations
+
+import math
 
 from fastapi import APIRouter, Query
 
 from .db import (
+    SCHEDULE_NAME,
     db_mtime,
     label_address,
     query,
@@ -31,6 +34,26 @@ FORENSIC_OPCODE_NAMES = {
 }
 
 
+def _int(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, float) and math.isnan(value):
+        return 0
+    return int(value)
+
+
+def _float_or_none(value) -> float | None:
+    if value is None:
+        return None
+    value = float(value)
+    return None if math.isnan(value) else value
+
+
+def _float(value) -> float:
+    value = _float_or_none(value)
+    return value if value is not None else 0.0
+
+
 # ── Briefing endpoints ────────────────────────────────────────────────
 
 
@@ -45,7 +68,7 @@ def overview():
     total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_7904")
     contract_broken = broken - (wallet_fixable or 0)
     return {
-        "total_analyzed": int(total_analyzed),
+        "total_analyzed": _int(total_analyzed),
         "divergent_txs": int(total_divergent),
         "broken_txs": int(broken),
         "wallet_fixable_txs": int(wallet_fixable or 0),
@@ -381,6 +404,237 @@ def forensics_remediation():
     }
 
 
+# ── EIP-8037 state-gas endpoints ──────────────────────────────────────
+
+
+@router.get("/eip8037/overview")
+def eip8037_overview():
+    stats = query("""
+        SELECT
+            count(*) AS divergent_txs,
+            sum(CASE WHEN original_limit_failure THEN 1 ELSE 0 END)
+                AS original_limit_failures,
+            sum(CASE WHEN schedule_success AND original_limit_failure THEN 1 ELSE 0 END)
+                AS fixable_with_more_outer_gas,
+            sum(CASE WHEN baseline_success AND NOT schedule_success THEN 1 ELSE 0 END)
+                AS baseline_success_schedule_failures,
+            sum(CASE WHEN NOT schedule_success AND min_multiplier_to_succeed IS NULL THEN 1 ELSE 0 END)
+                AS unresolved_replay_failures,
+            sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END)
+                AS reservoir_exhausted_txs,
+            sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(runtime_state_gas) AS total_runtime_state_gas,
+            sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
+            avg(schedule_state_gas_spent) AS avg_state_gas_spent,
+            max(schedule_state_gas_spent) AS max_state_gas_spent,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
+                AS p50_min_multiplier_to_succeed,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
+                AS p95_min_multiplier_to_succeed,
+            percentile_cont(0.99) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
+                AS p99_min_multiplier_to_succeed,
+            max(min_multiplier_to_succeed) AS max_min_multiplier_to_succeed,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY extra_gas_needed)
+                AS p95_extra_gas_needed,
+            max(extra_gas_needed) AS max_extra_gas_needed
+        FROM eip8037_tx_impact
+    """)[0]
+    total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_schedule", default=0)
+    block_range = query("SELECT min(block_number) AS mn, max(block_number) AS mx FROM coverage_schedule")
+    br = block_range[0] if block_range else {"mn": 0, "mx": 0}
+
+    return {
+        "schedule_name": SCHEDULE_NAME,
+        "total_analyzed": _int(total_analyzed),
+        "min_block": _int(br["mn"]),
+        "max_block": _int(br["mx"]),
+        "divergent_txs": _int(stats["divergent_txs"]),
+        "original_limit_failures": _int(stats["original_limit_failures"]),
+        "fixable_with_more_outer_gas": _int(stats["fixable_with_more_outer_gas"]),
+        "baseline_success_schedule_failures": _int(stats["baseline_success_schedule_failures"]),
+        "unresolved_replay_failures": _int(stats["unresolved_replay_failures"]),
+        "reservoir_exhausted_txs": _int(stats["reservoir_exhausted_txs"]),
+        "total_state_gas_spent": _int(stats["total_state_gas_spent"]),
+        "total_runtime_state_gas": _int(stats["total_runtime_state_gas"]),
+        "total_runtime_state_gas_spillover": _int(stats["total_runtime_state_gas_spillover"]),
+        "avg_state_gas_spent": _float(stats["avg_state_gas_spent"]),
+        "max_state_gas_spent": _int(stats["max_state_gas_spent"]),
+        "p50_min_multiplier_to_succeed": _float_or_none(stats["p50_min_multiplier_to_succeed"]),
+        "p95_min_multiplier_to_succeed": _float_or_none(stats["p95_min_multiplier_to_succeed"]),
+        "p99_min_multiplier_to_succeed": _float_or_none(stats["p99_min_multiplier_to_succeed"]),
+        "max_min_multiplier_to_succeed": _float_or_none(stats["max_min_multiplier_to_succeed"]),
+        "p95_extra_gas_needed": _int(stats["p95_extra_gas_needed"]),
+        "max_extra_gas_needed": _int(stats["max_extra_gas_needed"]),
+    }
+
+
+@router.get("/eip8037/multiplier-histogram")
+def eip8037_multiplier_histogram():
+    rows = query("""
+        WITH bucketed AS (
+            SELECT
+                CASE
+                    WHEN would_fit_in_original_limit THEN 0
+                    WHEN min_multiplier_to_succeed IS NULL THEN 99
+                    WHEN min_multiplier_to_succeed <= 1.25 THEN 1
+                    WHEN min_multiplier_to_succeed <= 1.50 THEN 2
+                    WHEN min_multiplier_to_succeed <= 2.00 THEN 3
+                    WHEN min_multiplier_to_succeed <= 4.00 THEN 4
+                    WHEN min_multiplier_to_succeed <= 8.00 THEN 5
+                    ELSE 6
+                END AS sort_key,
+                CASE
+                    WHEN would_fit_in_original_limit THEN 'fits original'
+                    WHEN min_multiplier_to_succeed IS NULL THEN 'unresolved'
+                    WHEN min_multiplier_to_succeed <= 1.25 THEN '1.00-1.25x'
+                    WHEN min_multiplier_to_succeed <= 1.50 THEN '1.25-1.50x'
+                    WHEN min_multiplier_to_succeed <= 2.00 THEN '1.50-2.00x'
+                    WHEN min_multiplier_to_succeed <= 4.00 THEN '2.00-4.00x'
+                    WHEN min_multiplier_to_succeed <= 8.00 THEN '4.00-8.00x'
+                    ELSE '>8.00x'
+                END AS bucket,
+                count(*) AS txs,
+                sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs,
+                max(min_multiplier_to_succeed) AS max_multiplier
+            FROM eip8037_tx_impact
+            GROUP BY 1, 2
+        )
+        SELECT * FROM bucketed ORDER BY sort_key
+    """)
+    return [
+        {
+            "bucket": r["bucket"],
+            "txs": _int(r["txs"]),
+            "status_changed_txs": _int(r["status_changed_txs"]),
+            "max_multiplier": _float_or_none(r["max_multiplier"]),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/eip8037/state-gas-by-category")
+def eip8037_state_gas_by_category():
+    rows = query("""
+        SELECT
+            state_gas_category,
+            count(*) AS txs,
+            sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            avg(schedule_state_gas_spent) AS avg_state_gas_spent,
+            sum(runtime_state_gas) AS total_runtime_state_gas,
+            sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
+            sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
+            avg(min_multiplier_to_succeed) AS avg_min_multiplier_to_succeed
+        FROM eip8037_tx_impact
+        GROUP BY 1
+        ORDER BY total_state_gas_spent DESC, txs DESC
+    """)
+    return [
+        {
+            "category": r["state_gas_category"],
+            "txs": _int(r["txs"]),
+            "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+            "avg_state_gas_spent": _float(r["avg_state_gas_spent"]),
+            "total_runtime_state_gas": _int(r["total_runtime_state_gas"]),
+            "total_runtime_state_gas_spillover": _int(r["total_runtime_state_gas_spillover"]),
+            "reservoir_exhausted_txs": _int(r["reservoir_exhausted_txs"]),
+            "avg_min_multiplier_to_succeed": _float_or_none(r["avg_min_multiplier_to_succeed"]),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/eip8037/top-contracts")
+def eip8037_top_contracts(limit: int = Query(default=20, le=500)):
+    rows = query(f"""
+        SELECT *
+        FROM eip8037_contract_impact
+        WHERE original_limit_failures > 0
+           OR status_changed_txs > 0
+           OR total_state_gas_spent > 0
+        ORDER BY original_limit_failures DESC,
+                 total_state_gas_spent DESC,
+                 status_changed_txs DESC,
+                 divergent_txs DESC
+        LIMIT {int(limit)}
+    """)
+    return [
+        {
+            "target_address": r["target_address"],
+            "name": label_address(r["target_address"]),
+            "divergent_txs": _int(r["divergent_txs"]),
+            "status_changed_txs": _int(r["status_changed_txs"]),
+            "original_limit_failures": _int(r["original_limit_failures"]),
+            "fixable_with_more_outer_gas": _int(r["fixable_with_more_outer_gas"]),
+            "unresolved_replay_failures": _int(r["unresolved_replay_failures"]),
+            "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+            "total_runtime_state_gas_spillover": _int(r["total_runtime_state_gas_spillover"]),
+            "reservoir_exhausted_txs": _int(r["reservoir_exhausted_txs"]),
+            "p95_min_multiplier_to_succeed": _float_or_none(r["p95_min_multiplier_to_succeed"]),
+            "max_min_multiplier_to_succeed": _float_or_none(r["max_min_multiplier_to_succeed"]),
+            "max_extra_gas_needed": _int(r["max_extra_gas_needed"]),
+            "min_block": _int(r["min_block"]),
+            "max_block": _int(r["max_block"]),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/eip8037/examples")
+def eip8037_examples(limit: int = Query(default=50, le=500)):
+    rows = query(f"""
+        SELECT
+            tx_hash, block_number, tx_index, target_address, tx_gas_limit,
+            baseline_success, schedule_success, status_changed,
+            baseline_gas_used, schedule_gas_used, gas_delta,
+            would_fit_in_original_limit, min_multiplier_to_succeed,
+            extra_gas_needed, estimated_min_gas_limit, state_gas_category,
+            schedule_state_gas_spent, runtime_state_gas,
+            schedule_initial_reservoir, runtime_state_gas_spillover,
+            reservoir_exhausted
+        FROM eip8037_tx_impact
+        WHERE original_limit_failure
+           OR status_changed
+           OR reservoir_exhausted
+        ORDER BY
+            CASE
+                WHEN baseline_success AND NOT schedule_success THEN 0
+                WHEN original_limit_failure THEN 1
+                WHEN reservoir_exhausted THEN 2
+                ELSE 3
+            END,
+            coalesce(min_multiplier_to_succeed, 999999) DESC,
+            schedule_state_gas_spent DESC
+        LIMIT {int(limit)}
+    """)
+    return [
+        {
+            "tx_hash": r["tx_hash"],
+            "block_number": _int(r["block_number"]),
+            "tx_index": _int(r["tx_index"]),
+            "target_address": r["target_address"],
+            "target_name": label_address(r["target_address"]),
+            "tx_gas_limit": _int(r["tx_gas_limit"]),
+            "baseline_success": r["baseline_success"],
+            "schedule_success": r["schedule_success"],
+            "status_changed": r["status_changed"],
+            "baseline_gas_used": _int(r["baseline_gas_used"]),
+            "schedule_gas_used": _int(r["schedule_gas_used"]),
+            "gas_delta": _int(r["gas_delta"]),
+            "would_fit_in_original_limit": r["would_fit_in_original_limit"],
+            "min_multiplier_to_succeed": _float_or_none(r["min_multiplier_to_succeed"]),
+            "extra_gas_needed": _int(r["extra_gas_needed"]),
+            "estimated_min_gas_limit": _int(r["estimated_min_gas_limit"]),
+            "state_gas_category": r["state_gas_category"],
+            "schedule_state_gas_spent": _int(r["schedule_state_gas_spent"]),
+            "runtime_state_gas": _int(r["runtime_state_gas"]),
+            "schedule_initial_reservoir": _int(r["schedule_initial_reservoir"]),
+            "runtime_state_gas_spillover": _int(r["runtime_state_gas_spillover"]),
+            "reservoir_exhausted": r["reservoir_exhausted"],
+        }
+        for r in rows
+    ]
+
+
 # ── Affected parties endpoints ────────────────────────────────────────
 
 
@@ -511,8 +765,17 @@ def tx_detail(tx_hash: str):
         SELECT h.divergence_id, h.block_number, h.tx_index, h.tx_hash,
                h.baseline_success, h.schedule_success,
                h.baseline_gas_used, h.schedule_gas_used, h.gas_delta,
-               h.tx_gas_limit, h.sender, h.recipient
+               h.tx_gas_limit, h.sender, h.recipient,
+               e.would_fit_in_original_limit, e.min_multiplier_to_succeed,
+               e.extra_gas_needed, e.estimated_min_gas_limit,
+               e.schedule_total_gas_spent, e.schedule_state_gas_spent,
+               e.schedule_initial_state_gas, e.runtime_state_gas,
+               e.schedule_initial_reservoir, e.runtime_state_gas_spillover,
+               e.schedule_floor_gas, e.schedule_gas_refunded,
+               e.baseline_total_gas_spent, e.baseline_gas_refunded,
+               e.state_gas_category, e.reservoir_exhausted
         FROM hot_7904 h
+        LEFT JOIN eip8037_tx_impact e USING (divergence_id)
         WHERE lower(h.tx_hash) = '{tx_hash}'
         LIMIT 1
     """)
@@ -624,6 +887,24 @@ def tx_detail(tx_hash: str):
             "log": f.get("log_count", 0),
             "total": f.get("total_ops", 0),
         } if f else None,
+        "eip8037": {
+            "would_fit_in_original_limit": h.get("would_fit_in_original_limit"),
+            "min_multiplier_to_succeed": _float_or_none(h.get("min_multiplier_to_succeed")),
+            "extra_gas_needed": _int(h.get("extra_gas_needed")),
+            "estimated_min_gas_limit": _int(h.get("estimated_min_gas_limit")),
+            "schedule_total_gas_spent": _int(h.get("schedule_total_gas_spent")),
+            "schedule_state_gas_spent": _int(h.get("schedule_state_gas_spent")),
+            "schedule_initial_state_gas": _int(h.get("schedule_initial_state_gas")),
+            "runtime_state_gas": _int(h.get("runtime_state_gas")),
+            "schedule_initial_reservoir": _int(h.get("schedule_initial_reservoir")),
+            "runtime_state_gas_spillover": _int(h.get("runtime_state_gas_spillover")),
+            "schedule_floor_gas": _int(h.get("schedule_floor_gas")),
+            "schedule_gas_refunded": _int(h.get("schedule_gas_refunded")),
+            "baseline_total_gas_spent": _int(h.get("baseline_total_gas_spent")),
+            "baseline_gas_refunded": _int(h.get("baseline_gas_refunded")),
+            "state_gas_category": h.get("state_gas_category"),
+            "reservoir_exhausted": h.get("reservoir_exhausted"),
+        },
         "call_stack": call_stack,
         "gas_breakdown": gas_breakdown,
     }
@@ -665,8 +946,9 @@ def metadata():
         f"SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}"
     )
     return {
+        "schedule_name": SCHEDULE_NAME,
         "min_block": int(br["mn"]) if br["mn"] else 0,
         "max_block": int(br["mx"]) if br["mx"] else 0,
         "last_updated": db_mtime().isoformat(),
-        "total_contracts_affected": int(affected_count),
+        "total_contracts_affected": _int(affected_count),
     }

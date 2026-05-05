@@ -1,2 +1,1 @@
-"""Utilities for analyzing EIP-7904 divergence data."""
-
+"""Utilities for analyzing gas repricing divergence data."""

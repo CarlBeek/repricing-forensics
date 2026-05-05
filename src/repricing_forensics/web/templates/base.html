@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}EIP-7904 Impact Analysis{% endblock %}</title>
+  <title>{% block title %}Gas Repricing Impact Analysis{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="/static/style.css?v={{ cache_bust }}">
@@ -11,11 +11,12 @@
 </head>
 <body>
   <nav>
-    <a href="/" class="nav-brand">EIP-7904</a>
+    <a href="/" class="nav-brand">Repricing</a>
     <div class="nav-links">
       <a href="/" {% if active == "home" %}class="active"{% endif %}>Home</a>
       <a href="/overview" {% if active == "overview" %}class="active"{% endif %}>Overview</a>
       <a href="/forensics" {% if active == "forensics" %}class="active"{% endif %}>Forensics</a>
+      <a href="/eip8037" {% if active == "eip8037" %}class="active"{% endif %}>EIP-8037</a>
       <a href="/affected" {% if active == "affected" %}class="active"{% endif %}>Affected Parties</a>
       <a href="/about" {% if active == "about" %}class="active"{% endif %}>About</a>
     </div>
@@ -28,7 +29,7 @@
 
   <footer>
     <hr>
-    <p class="note">EIP-7904 Advanced Repricing Analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
+    <p class="note">Gas repricing analysis <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="activeSchedule"></span> <span style="margin:0 6px; opacity:0.3">&middot;</span> <span id="lastUpdated"></span></p>
   </footer>
 
   <script>
@@ -54,6 +55,7 @@
   <script src="/static/app.js?v={{ cache_bust }}"></script>
   <script>
     fetchJSON('/api/metadata').then(m => {
+      document.getElementById('activeSchedule').textContent = m.schedule_name || '';
       document.getElementById('lastUpdated').textContent =
         'Updated ' + new Date(m.last_updated).toLocaleString();
     });

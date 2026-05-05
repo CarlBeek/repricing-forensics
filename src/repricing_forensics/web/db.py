@@ -10,11 +10,11 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-from repricing_forensics.config import default_paths
+from repricing_forensics.config import default_paths, default_schedule_name
 from repricing_forensics.labels import ADDRESS_PROJECT_LABELS
 from repricing_forensics.sql import create_views_sql
 
-SCHEDULE_NAME = os.environ.get("SCHEDULE_NAME", "7904-prelim")
+SCHEDULE_NAME = default_schedule_name()
 
 _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None

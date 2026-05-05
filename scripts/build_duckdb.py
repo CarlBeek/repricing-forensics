@@ -6,13 +6,13 @@ import os
 import tempfile
 from pathlib import Path
 
-from repricing_forensics.config import default_paths
+from repricing_forensics.config import default_paths, default_schedule_name
 from repricing_forensics.pipeline import build_normalized_forensics, initialize_duckdb
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize DuckDB views and derived tables")
-    parser.add_argument("--schedule-name", default="7904-prelim")
+    parser.add_argument("--schedule-name", default=default_schedule_name())
     parser.add_argument("--include-call-frames", action="store_true")
     args = parser.parse_args()
 
