@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}EIP-8037 State Gas Analysis{% endblock %}
+
+{% block content %}
+<h1>EIP-8037 State Gas Analysis</h1>
+<p class="subtitle" id="subtitle">Loading...</p>
+
+<h2>1. Original Limit Fit</h2>
+<p>Transactions here were replayed with the native EIP-8037 state-gas schedule. The fit metrics answer whether the original transaction gas limit still works, and how much more outer gas would be needed when it does not.</p>
+<div class="poster-grid" id="fitCards"><p class="loading">Loading...</p></div>
+
+<h2>2. State Gas and Reservoir</h2>
+<p>Runtime state gas is the state-gas component after subtracting state gas charged at transaction start. Spillover means runtime state gas exceeded the initial reservoir and had to be paid from regular gas.</p>
+<div class="poster-grid" id="stateCards"><p class="loading">Loading...</p></div>
+
+<h2>3. Minimum Gas-Limit Multiplier</h2>
+<p>For transactions that need more outer gas, this buckets the minimum multiplier observed in replay. "Unresolved" means the replay still failed or halted for a non-gas reason at the configured inflated limit.</p>
+<div id="multiplierChart"><p class="loading">Loading chart...</p></div>
+
+<h2>4. State Gas Categories</h2>
+<div id="categoryChart"><p class="loading">Loading chart...</p></div>
+<table>
+  <thead><tr><th>Category</th><th>Txs</th><th>Total State Gas</th><th>Runtime State Gas</th><th>Spillover</th><th>Reservoir Exhausted</th></tr></thead>
+  <tbody id="categoryBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+</table>
+
+<h2>5. Top Contracts by Original-Limit Risk</h2>
+<table>
+  <thead><tr><th>Contract</th><th>Original-Limit Failures</th><th>Status Changes</th><th>State Gas</th><th>p95 Multiplier</th><th>Max Extra Gas</th></tr></thead>
+  <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+</table>
+
+<h2>6. Highest-Risk Transactions</h2>
+<table>
+  <thead><tr><th>Tx</th><th>Target</th><th>Gas Limit</th><th>Schedule Used</th><th>Multiplier</th><th>State Gas</th><th>Spillover</th></tr></thead>
+  <tbody id="exampleBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function fmtMultiplier(n) {
+  return n == null ? 'n/a' : `${Number(n).toFixed(3)}x`;
+}
+
+(async function() {
+  const [overview, buckets, categories, contracts, examples] = await Promise.all([
+    fetchJSON('/api/eip8037/overview'),
+    fetchJSON('/api/eip8037/multiplier-histogram'),
+    fetchJSON('/api/eip8037/state-gas-by-category'),
+    fetchJSON('/api/eip8037/top-contracts?limit=20'),
+    fetchJSON('/api/eip8037/examples?limit=50'),
+  ]);
+
+  document.getElementById('subtitle').textContent =
+    `${overview.schedule_name} across blocks ${overview.min_block.toLocaleString()}-${overview.max_block.toLocaleString()}`;
+
+  renderPosterCards('fitCards', [
+    { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
+    { value: fmtCount(overview.original_limit_failures), label: 'Need More Outer Gas', color: COLORS.changed },
+    { value: fmtMultiplier(overview.p95_min_multiplier_to_succeed), label: 'p95 Minimum Multiplier', color: COLORS.changed },
+    { value: fmtCount(overview.unresolved_replay_failures), label: 'Unresolved Replay Failures', color: COLORS.broken },
+  ]);
+
+  renderPosterCards('stateCards', [
+    { value: fmtGas(overview.total_state_gas_spent), label: 'Total State Gas' },
+    { value: fmtGas(overview.total_runtime_state_gas), label: 'Runtime State Gas' },
+    { value: fmtGas(overview.total_runtime_state_gas_spillover), label: 'Runtime Spillover', color: COLORS.broken },
+    { value: fmtCount(overview.reservoir_exhausted_txs), label: 'Reservoir Exhausted Txs', color: COLORS.broken },
+  ]);
+
+  Plotly.newPlot('multiplierChart', [{
+    x: buckets.map(b => b.bucket),
+    y: buckets.map(b => b.txs),
+    type: 'bar',
+    marker: { color: buckets.map(b => b.bucket === 'unresolved' ? COLORS.broken : COLORS.changed) },
+    hovertext: buckets.map(b => `${b.bucket}: ${fmtCount(b.txs)} txs<br>${fmtCount(b.status_changed_txs)} status changes`),
+    hoverinfo: 'text',
+  }], layout({
+    title: { text: 'Minimum Gas-Limit Multiplier Buckets' },
+    xaxis: { title: 'Multiplier Bucket' },
+    yaxis: { title: 'Divergent Txs', tickformat: ',' },
+    height: 400,
+  }), { responsive: true });
+
+  Plotly.newPlot('categoryChart', [{
+    x: categories.map(c => c.category),
+    y: categories.map(c => c.total_state_gas_spent),
+    type: 'bar',
+    marker: { color: COLORS.changed },
+    hovertext: categories.map(c => `${c.category}<br>${fmtCount(c.txs)} txs<br>${fmtGas(c.total_state_gas_spent)} state gas`),
+    hoverinfo: 'text',
+  }], layout({
+    title: { text: 'State Gas by Category' },
+    xaxis: { title: 'Category' },
+    yaxis: { title: 'Total State Gas', tickformat: ',' },
+    height: 420,
+  }), { responsive: true });
+
+  document.getElementById('categoryBody').innerHTML = categories.map(c => `
+    <tr>
+      <td><strong>${escHtml(c.category)}</strong></td>
+      <td style="text-align:right">${fmtCount(c.txs)}</td>
+      <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
+      <td style="text-align:right">${fmtGas(c.total_runtime_state_gas)}</td>
+      <td style="text-align:right">${fmtGas(c.total_runtime_state_gas_spillover)}</td>
+      <td style="text-align:right">${fmtCount(c.reservoir_exhausted_txs)}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('contractBody').innerHTML = contracts.map(c => `
+    <tr onclick="location.href='/affected/${encodeURIComponent(c.target_address)}'">
+      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:var(--text-dim)">${(c.target_address || '').slice(0, 12)}...</span></td>
+      <td style="text-align:right">${fmtCount(c.original_limit_failures)}</td>
+      <td style="text-align:right">${fmtCount(c.status_changed_txs)}</td>
+      <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
+      <td style="text-align:right">${fmtMultiplier(c.p95_min_multiplier_to_succeed)}</td>
+      <td style="text-align:right">${fmtGas(c.max_extra_gas_needed)}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('exampleBody').innerHTML = examples.map(e => `
+    <tr onclick="location.href='/tx/${encodeURIComponent(e.tx_hash)}'">
+      <td><span class="mono">${e.tx_hash.slice(0, 12)}...</span><br><span class="note">block ${e.block_number.toLocaleString()}</span></td>
+      <td><strong>${escHtml(e.target_name)}</strong></td>
+      <td style="text-align:right">${fmtGas(e.tx_gas_limit)}</td>
+      <td style="text-align:right">${fmtGas(e.schedule_gas_used)}</td>
+      <td style="text-align:right">${fmtMultiplier(e.min_multiplier_to_succeed)}</td>
+      <td style="text-align:right">${fmtGas(e.schedule_state_gas_spent)}</td>
+      <td style="text-align:right">${fmtGas(e.runtime_state_gas_spillover)}</td>
+    </tr>
+  `).join('');
+})();
+</script>
+{% endblock %}

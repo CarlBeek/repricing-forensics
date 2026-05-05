@@ -4,7 +4,13 @@ from pathlib import Path
 
 from .config import Paths, ensure_workspace_dirs
 from .duckdb_utils import connect
-from .sql import DERIVED_INCIDENTS_SQL, WALLET_FIXABLE_SQL, create_views_sql
+from .sql import (
+    DERIVED_INCIDENTS_SQL,
+    EIP8037_CONTRACT_IMPACT_SQL,
+    EIP8037_TX_IMPACT_SQL,
+    WALLET_FIXABLE_SQL,
+    create_views_sql,
+)
 
 
 def initialize_duckdb(paths: Paths, schedule_name: str, db_path: Path | None = None) -> None:
@@ -14,6 +20,8 @@ def initialize_duckdb(paths: Paths, schedule_name: str, db_path: Path | None = N
         for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
         conn.execute(DERIVED_INCIDENTS_SQL)
+        conn.execute(EIP8037_TX_IMPACT_SQL)
+        conn.execute(EIP8037_CONTRACT_IMPACT_SQL)
     finally:
         conn.close()
 
@@ -121,6 +129,8 @@ def build_normalized_forensics(
 
         conn.execute(NORMALIZED_FORENSICS_SQL)
         conn.execute(WALLET_FIXABLE_SQL)
+        conn.execute(EIP8037_TX_IMPACT_SQL)
+        conn.execute(EIP8037_CONTRACT_IMPACT_SQL)
 
         if include_call_frames:
             conn.execute(NORMALIZED_CALL_FRAMES_SQL)

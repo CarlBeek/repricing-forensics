@@ -1,4 +1,4 @@
-"""FastAPI application for the EIP-7904 analysis web server."""
+"""FastAPI application for the gas repricing analysis web server."""
 from __future__ import annotations
 
 import time
@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     close_conn()
 
 
-app = FastAPI(title="EIP-7904 Impact Analysis", lifespan=lifespan)
+app = FastAPI(title="Gas Repricing Impact Analysis", lifespan=lifespan)
 
 # Templates and static files — inject cache_bust into all template contexts
 templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))

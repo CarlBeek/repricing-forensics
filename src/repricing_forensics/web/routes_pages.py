@@ -1,4 +1,4 @@
-"""HTML page routes for the EIP-7904 analysis web server."""
+"""HTML page routes for the gas repricing analysis web server."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
@@ -25,6 +25,13 @@ async def briefing(request: Request):
 async def forensics(request: Request):
     return request.app.state.templates.TemplateResponse(
         request=request, name="forensics.html", context={"active": "forensics"}
+    )
+
+
+@router.get("/eip8037", response_class=HTMLResponse)
+async def eip8037(request: Request):
+    return request.app.state.templates.TemplateResponse(
+        request=request, name="eip8037.html", context={"active": "eip8037"}
     )
 
 

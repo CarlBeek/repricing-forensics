@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Transaction — EIP-7904 Impact Analysis{% endblock %}
+{% block title %}Transaction — Gas Repricing Impact Analysis{% endblock %}
 
 {% block content %}
 <p style="margin-bottom:16px"><a id="backLink" href="/affected">&larr; Back</a></p>
@@ -218,6 +218,30 @@ function renderCallSankey(divId, stack) {
     }
   }
 
+  let eip8037Html = '';
+  if (tx.eip8037 && (tx.eip8037.schedule_state_gas_spent > 0 || tx.eip8037.min_multiplier_to_succeed != null || tx.eip8037.reservoir_exhausted)) {
+    const s = tx.eip8037;
+    const multiplier = s.min_multiplier_to_succeed == null ? 'n/a' : `${Number(s.min_multiplier_to_succeed).toFixed(3)}x`;
+    eip8037Html = `
+      <h2>EIP-8037 State Gas</h2>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:16px;">
+        <div class="poster-card"><div class="number">${fmtGas(s.schedule_state_gas_spent)}</div><div class="label">State Gas</div></div>
+        <div class="poster-card"><div class="number">${fmtGas(s.runtime_state_gas)}</div><div class="label">Runtime State Gas</div></div>
+        <div class="poster-card"><div class="number">${fmtGas(s.runtime_state_gas_spillover)}</div><div class="label">Reservoir Spillover</div></div>
+        <div class="poster-card"><div class="number">${multiplier}</div><div class="label">Min Multiplier</div></div>
+      </div>
+      <table style="max-width:620px">
+        <tbody>
+          <tr><td>Category</td><td style="text-align:right"><code>${escHtml(s.state_gas_category || '')}</code></td></tr>
+          <tr><td>Initial state gas</td><td style="text-align:right">${fmtGas(s.schedule_initial_state_gas)}</td></tr>
+          <tr><td>Initial reservoir</td><td style="text-align:right">${fmtGas(s.schedule_initial_reservoir)}</td></tr>
+          <tr><td>Estimated min gas limit</td><td style="text-align:right">${s.estimated_min_gas_limit ? fmtGas(s.estimated_min_gas_limit) : 'n/a'}</td></tr>
+          <tr><td>Extra gas needed above original limit</td><td style="text-align:right">${s.extra_gas_needed ? fmtGas(s.extra_gas_needed) : 'n/a'}</td></tr>
+          <tr><td>Schedule refund</td><td style="text-align:right">${fmtGas(s.schedule_gas_refunded)}</td></tr>
+        </tbody>
+      </table>`;
+  }
+
   el.innerHTML = `
     <h1>Transaction Detail</h1>
     ${verdictHtml}
@@ -247,6 +271,8 @@ function renderCallSankey(divId, stack) {
             ? ' <span style="color:var(--orange); font-size:0.85em">(all gas consumed on OOG)</span>' : ''}
       </div>
     </div>
+
+    ${eip8037Html}
 
     ${tx.divergence ? `
     <div style="margin-bottom:12px; padding:10px 12px; background:var(--orange-bg); border:1px solid var(--orange-border); border-radius:var(--radius-sm); font-size:0.88em;">

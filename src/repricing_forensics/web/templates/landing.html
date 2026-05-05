@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}EIP-7904 Impact Analysis{% endblock %}
+{% block title %}Gas Repricing Impact Analysis{% endblock %}
 
 {% block content %}
 <div class="hero">
-  <h1>EIP-7904 changes gas costs for 8 EVM opcodes. We re-executed every mainnet transaction to find out what breaks.</h1>
-  <p class="lead">A modified reth node replays historical blocks under the proposed gas schedule, comparing execution outcomes instruction-by-instruction.</p>
+  <h1>We re-execute mainnet transactions under candidate gas schedules to find out what breaks.</h1>
+  <p class="lead">A modified reth node replays historical blocks under proposed schedules, comparing baseline and repriced execution outcomes transaction by transaction.</p>
 
   <div class="hero-stats">
     <div class="hero-stat">
@@ -27,56 +27,56 @@
   </div>
 </div>
 
-<h2>What is EIP-7904?</h2>
-<p>Several computational opcodes have been underpriced since the Frontier release. Their gas costs no longer reflect the actual CPU time they consume relative to other operations. EIP-7904 corrects this by raising the gas cost of eight opcodes:</p>
+<h2>Current Focus: EIP-8037</h2>
+<p>EIP-8037 introduces static cost-per-state-byte accounting for new state, with a per-transaction state-gas reservoir. This dashboard surfaces whether historical transactions still fit their original gas limits, how much extra outer gas they need when they do not, and whether runtime state gas spills beyond the reservoir.</p>
 
 <div class="opcode-cards">
   <div class="opcode-card">
-    <div class="opcode-name">DIV</div>
+    <div class="opcode-name">CPSB</div>
     <div class="opcode-bar-stacked">
-      <div class="opcode-bar-old" style="flex:5">5</div>
-      <div class="opcode-bar-new" style="flex:10">+10</div>
+      <div class="opcode-bar-new" style="flex:1">1174</div>
     </div>
-    <div class="opcode-total">15 gas</div>
+    <div class="opcode-total">gas per state byte</div>
   </div>
   <div class="opcode-card">
-    <div class="opcode-name">SDIV</div>
+    <div class="opcode-name">SSTORE SET</div>
     <div class="opcode-bar-stacked">
-      <div class="opcode-bar-old" style="flex:5">5</div>
-      <div class="opcode-bar-new" style="flex:15">+15</div>
+      <div class="opcode-bar-new" style="flex:1">37.6K</div>
     </div>
-    <div class="opcode-total">20 gas</div>
+    <div class="opcode-total">32 state bytes</div>
   </div>
   <div class="opcode-card">
-    <div class="opcode-name">MOD</div>
+    <div class="opcode-name">NEW ACCOUNT</div>
     <div class="opcode-bar-stacked">
-      <div class="opcode-bar-old" style="flex:5">5</div>
-      <div class="opcode-bar-new" style="flex:7">+7</div>
+      <div class="opcode-bar-new" style="flex:1">131K</div>
     </div>
-    <div class="opcode-total">12 gas</div>
+    <div class="opcode-total">112 state bytes</div>
   </div>
   <div class="opcode-card">
-    <div class="opcode-name">MULMOD</div>
+    <div class="opcode-name">AUTH</div>
     <div class="opcode-bar-stacked">
-      <div class="opcode-bar-old" style="flex:8">8</div>
-      <div class="opcode-bar-new" style="flex:3">+3</div>
+      <div class="opcode-bar-new" style="flex:1">158K</div>
     </div>
-    <div class="opcode-total">11 gas</div>
+    <div class="opcode-total">135 state bytes</div>
   </div>
   <div class="opcode-card">
-    <div class="opcode-name">KECCAK256</div>
+    <div class="opcode-name">CREATE</div>
     <div class="opcode-bar-stacked">
-      <div class="opcode-bar-old" style="flex:30">30</div>
-      <div class="opcode-bar-new" style="flex:15">+15</div>
+      <div class="opcode-bar-new" style="flex:1">9K + state</div>
     </div>
-    <div class="opcode-total">45 gas</div>
+    <div class="opcode-total">regular gas plus account state gas</div>
   </div>
 </div>
 
-<p>Most transactions absorb the extra cost. A small fraction break. This tool quantifies exactly which ones.</p>
+<p>The static CPSB value can be changed in a small future fork if state growth is too fast before a more complete state-growth solution exists.</p>
 
 <h2>What this site does</h2>
 <div class="site-features">
+  <div class="feature-card">
+    <h3>EIP-8037</h3>
+    <p>State-gas reservoir fit, minimum gas-limit multipliers, spillover, and high-risk transactions.</p>
+    <a href="/eip8037">Analyze state gas</a>
+  </div>
   <div class="feature-card">
     <h3>Overview</h3>
     <p>Headline numbers, gas overhead distributions, and opcode-level impact across the entire sample.</p>
@@ -86,11 +86,6 @@
     <h3>Forensics</h3>
     <p>Drill into divergent transactions: where they fail, why they fail, and how the call stack changes.</p>
     <a href="/forensics">Explore forensics</a>
-  </div>
-  <div class="feature-card">
-    <h3>Affected Parties</h3>
-    <p>Search by contract address or project name to see every transaction that would break under the new schedule.</p>
-    <a href="/affected">Search affected contracts</a>
   </div>
 </div>
 

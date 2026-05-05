@@ -1,4 +1,4 @@
-/* EIP-7904 Analysis — Client-side rendering */
+/* Gas repricing analysis - client-side rendering */
 
 // Theme-aware color palettes
 const THEMES = {

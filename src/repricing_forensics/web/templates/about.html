@@ -1,9 +1,24 @@
 {% extends "base.html" %}
-{% block title %}About — EIP-7904 Impact Analysis{% endblock %}
+{% block title %}About — Gas Repricing Impact Analysis{% endblock %}
 
 {% block content %}
 <div class="prose">
   <h1>About this analysis</h1>
+
+  <h2>What is EIP-8037?</h2>
+  <p>
+    EIP-8037 introduces native state creation gas: new state is charged by a static
+    cost per state byte (CPSB), currently 1174 gas per byte in the research branch.
+    The replay uses revm's native Amsterdam/EIP-8037 accounting path, including
+    state gas, the per-transaction reservoir, EIP-7702 authorization effects, and
+    EIP-7623 floor gas.
+  </p>
+  <p>
+    This analysis records whether a transaction still fits its original gas limit,
+    the minimum gas-limit multiplier needed when it does not, state gas spent,
+    initial reservoir size, runtime state gas, spillover beyond the reservoir, and
+    baseline vs schedule refund details.
+  </p>
 
   <h2>What is EIP-7904?</h2>
   <p>
@@ -40,7 +55,7 @@
   <p>For every transaction in the sample, the analysis records:</p>
   <ul>
     <li><strong>Baseline gas used</strong> -- gas consumed under the current schedule.</li>
-    <li><strong>Schedule gas used</strong> -- gas consumed under the EIP-7904 schedule.</li>
+    <li><strong>Schedule gas used</strong> -- gas consumed under the active repricing schedule.</li>
     <li><strong>Status change</strong> -- whether the transaction flips from success to revert (or vice versa).</li>
     <li><strong>Divergence location</strong> -- the program counter and call depth where execution first diverges.</li>
     <li><strong>Call stack snapshot</strong> -- the full call chain at the point of divergence, including contract addresses and function selectors.</li>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Contract — EIP-7904 Impact Analysis{% endblock %}
+{% block title %}Contract — Gas Repricing Impact Analysis{% endblock %}
 
 {% block content %}
 <p style="margin-bottom:16px"><a href="/affected">&larr; Back to affected parties</a></p>
@@ -26,7 +26,7 @@ const ADDRESS = "{{ address }}";
   if (!data.found) {
     el.innerHTML = `
       <div class="not-affected">
-        <h1>Good news -- this contract is not affected by EIP-7904 repricing.</h1>
+        <h1>Good news -- this contract is not affected by the active repricing schedule.</h1>
         <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> has no broken transactions under the proposed gas schedule
            (or any breakages are wallet-fixable and filtered from this view).</p>
       </div>`;
