@@ -100,8 +100,10 @@ def main() -> None:
         writer.writeheader()
 
         for row in rows.to_dict(orient="records"):
-            recipient = (row["recipient"] or "").lower() or None
-            divergence_contract = (row["divergence_contract"] or "").lower() or None
+            recipient_raw = row["recipient"]
+            divergence_raw = row["divergence_contract"]
+            recipient = recipient_raw.lower() if isinstance(recipient_raw, str) and recipient_raw else None
+            divergence_contract = divergence_raw.lower() if isinstance(divergence_raw, str) and divergence_raw else None
             recipient_class = classification_by_address.get(recipient or "")
             divergence_class = classification_by_address.get(divergence_contract or "")
             recipient_project = infer_project_label(
