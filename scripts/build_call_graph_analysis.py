@@ -31,11 +31,12 @@ def load_classification(cache_path: Path) -> dict[str, dict[str, str]]:
 
 
 def label_address(address: str | None, classification: dict[str, dict[str, str]]) -> str:
-    if not address:
+    if not isinstance(address, str) or not address:
         return "unknown"
-    row = classification.get(address.lower())
+    addr = address.lower()
+    row = classification.get(addr)
     return infer_project_label(
-        address.lower(),
+        addr,
         compiled_name=None if row is None else row.get("name"),
         classification=None if row is None else row.get("classification"),
         source_hint=None if row is None else row.get("source_hint"),
