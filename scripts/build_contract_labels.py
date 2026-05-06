@@ -251,7 +251,7 @@ def main():
         print(f"  Phase 3: Fetching names from Blockscout for top {len(unlabeled_top)} unlabeled contracts...")
         for i, (_, row) in enumerate(unlabeled_top.iterrows()):
             addr = row["address"]
-            if addr is None:
+            if not isinstance(addr, str):
                 continue
             addr_lower = addr.lower()
 
@@ -294,7 +294,7 @@ def main():
             print(f"  Phase 3b: Fetching names from Etherscan for top {len(unlabeled_top)} remaining unlabeled...")
             for i, (_, row) in enumerate(unlabeled_top.iterrows()):
                 addr = row["address"]
-                if addr is None:
+                if not isinstance(addr, str):
                     continue
                 addr_lower = addr.lower()
 
