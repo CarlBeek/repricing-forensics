@@ -39,10 +39,18 @@ ADDRESS_PROJECT_LABELS = {
 }
 
 
+def _as_str(value) -> Optional[str]:
+    """Coerce a value to a string, treating None and pandas NaN floats as None."""
+    if isinstance(value, str):
+        return value
+    return None
+
+
 def normalize_address(address: Optional[str]) -> Optional[str]:
-    if address is None:
+    s = _as_str(address)
+    if s is None:
         return None
-    return address.lower()
+    return s.lower()
 
 
 def infer_project_label(
@@ -54,6 +62,10 @@ def infer_project_label(
     norm = normalize_address(address)
     if norm in ADDRESS_PROJECT_LABELS:
         return ADDRESS_PROJECT_LABELS[norm]
+
+    compiled_name = _as_str(compiled_name)
+    classification = _as_str(classification)
+    source_hint = _as_str(source_hint)
 
     name = " ".join(filter(None, [(compiled_name or "").lower(), (source_hint or "").lower()]))
     if "entrypoint" in name:
