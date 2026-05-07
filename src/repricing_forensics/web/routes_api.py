@@ -638,28 +638,65 @@ def eip8037_examples(limit: int = Query(default=50, le=500)):
 # ── Affected parties endpoints ────────────────────────────────────────
 
 
+_AFFECTED_BASE_CTE = f"""
+    WITH e7904 AS (
+        SELECT lower(recipient) AS addr,
+               count(*) AS broken_txs_7904,
+               avg(gas_delta) AS avg_delta_7904,
+               sum(gas_delta) AS total_delta_7904,
+               min(block_number) AS min_block_7904,
+               max(block_number) AS max_block_7904
+        FROM hot_7904
+        WHERE status_changed {NOT_WALLET_FIXABLE}
+        GROUP BY lower(recipient)
+    ),
+    e8037 AS (
+        SELECT lower(target_address) AS addr,
+               original_limit_failures AS need_higher_limit_8037,
+               reservoir_exhausted_txs AS reservoir_exhausted_8037,
+               status_changed_txs AS status_changed_8037,
+               p95_min_multiplier_to_succeed AS p95_multiplier_8037,
+               min_block AS min_block_8037,
+               max_block AS max_block_8037
+        FROM eip8037_contract_impact
+        WHERE original_limit_failures > 0
+           OR status_changed_txs > 0
+           OR reservoir_exhausted_txs > 0
+    ),
+    affected_combined AS (
+        SELECT
+            coalesce(e7.addr, e8.addr) AS addr,
+            coalesce(e7.broken_txs_7904, 0) AS broken_txs_7904,
+            coalesce(e7.avg_delta_7904, 0) AS avg_delta_7904,
+            coalesce(e7.total_delta_7904, 0) AS total_delta_7904,
+            coalesce(e8.need_higher_limit_8037, 0) AS need_higher_limit_8037,
+            coalesce(e8.reservoir_exhausted_8037, 0) AS reservoir_exhausted_8037,
+            coalesce(e8.status_changed_8037, 0) AS status_changed_8037,
+            e8.p95_multiplier_8037,
+            least(coalesce(e7.min_block_7904, 99999999999),
+                  coalesce(e8.min_block_8037, 99999999999)) AS min_block,
+            greatest(coalesce(e7.max_block_7904, 0),
+                     coalesce(e8.max_block_8037, 0)) AS max_block
+        FROM e7904 e7
+        FULL OUTER JOIN e8037 e8 USING (addr)
+    )
+"""
+
+
 @router.get("/affected")
 def affected(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
 ):
-    """Paginated affected contracts, ordered by broken_txs desc."""
+    """Paginated affected contracts across EIP-7904 and EIP-8037."""
     offset = (page - 1) * per_page
     total_count = query_scalar(
-        f"SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}",
+        _AFFECTED_BASE_CTE + " SELECT count(*) FROM affected_combined",
         default=0,
     )
-    rows = query(f"""
-        SELECT recipient,
-               count(*) as broken_txs,
-               avg(gas_delta) as avg_delta,
-               sum(gas_delta) as total_delta,
-               min(block_number) as min_block,
-               max(block_number) as max_block
-        FROM hot_7904
-        WHERE status_changed {NOT_WALLET_FIXABLE}
-        GROUP BY recipient
-        ORDER BY broken_txs DESC
+    rows = query(_AFFECTED_BASE_CTE + f"""
+        SELECT * FROM affected_combined
+        ORDER BY broken_txs_7904 DESC, need_higher_limit_8037 DESC
         LIMIT {int(per_page)} OFFSET {int(offset)}
     """)
 
@@ -674,14 +711,19 @@ def affected(
 
     items = []
     for r in rows:
-        name = label_address(r["recipient"])
+        addr = r["addr"]
+        name = label_address(addr)
         info = outreach_dict.get(name, {})
         items.append({
-            "recipient": r["recipient"],
+            "recipient": addr,
             "name": name,
-            "broken_txs": _int(r["broken_txs"]),
-            "avg_delta": _float(r["avg_delta"]),
-            "total_delta": _float(r["total_delta"]),
+            "broken_txs_7904": _int(r["broken_txs_7904"]),
+            "avg_delta_7904": _float(r["avg_delta_7904"]),
+            "total_delta_7904": _float(r["total_delta_7904"]),
+            "need_higher_limit_8037": _int(r["need_higher_limit_8037"]),
+            "reservoir_exhausted_8037": _int(r["reservoir_exhausted_8037"]),
+            "status_changed_8037": _int(r["status_changed_8037"]),
+            "p95_multiplier_8037": _float_or_none(r["p95_multiplier_8037"]),
             "min_block": _int(r["min_block"]),
             "max_block": _int(r["max_block"]),
             "owner": info.get("owner_buckets", ""),
@@ -696,30 +738,90 @@ def affected(
     }
 
 
+def _with_shares(rows: list[dict], count_key: str = "count") -> list[dict]:
+    total = sum(r[count_key] for r in rows) or 1
+    return [{**r, "share": round(r[count_key] / total * 100, 1)} for r in rows]
+
+
 @router.get("/affected/{address}")
 def affected_detail(address: str):
-    """Single contract detail with sample transactions."""
+    """Single contract detail with EIP-7904 and EIP-8037 diagnostics."""
     addr = address.lower()
-    stats = query(f"""
+
+    # ── EIP-7904 stats ──
+    eip7904_stats = query(f"""
         SELECT count(*) as broken_txs,
                avg(gas_delta) as avg_delta,
                sum(gas_delta) as total_delta,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95_delta,
                min(block_number) as min_block,
                max(block_number) as max_block
         FROM hot_7904
         WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
+    """)[0]
+    eip7904_wallet = query_scalar(f"""
+        SELECT count(*) FROM hot_7904
+        WHERE status_changed
+          AND divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)
+          AND lower(recipient) = '{addr}'
+    """, default=0)
+    opcodes_raw = query(f"""
+        SELECT n.divergence_opcode_name as op, count(*) as cnt
+        FROM normalized_forensics n
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed
+          AND n.divergence_opcode_name IS NOT NULL
+          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+          AND lower(h.recipient) = '{addr}'
+        GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
-    if not stats or stats[0]["broken_txs"] == 0:
-        return {"found": False, "address": address}
-
-    s = stats[0]
-    txs = query(f"""
+    depths_raw = query(f"""
+        SELECT coalesce(n.divergence_call_depth, -1) as depth, count(*) as cnt
+        FROM normalized_forensics n
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed
+          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+          AND lower(h.recipient) = '{addr}'
+        GROUP BY 1 ORDER BY cnt DESC LIMIT 6
+    """)
+    eip7904_txs = query(f"""
         SELECT tx_hash, block_number, gas_delta
         FROM hot_7904
         WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
-        ORDER BY gas_delta DESC
-        LIMIT 50
+        ORDER BY gas_delta DESC LIMIT 20
     """)
+
+    # ── EIP-8037 stats ──
+    eip8037_rows = query(f"""
+        SELECT * FROM eip8037_contract_impact
+        WHERE lower(target_address) = '{addr}'
+    """)
+    eip8037_row = eip8037_rows[0] if eip8037_rows else None
+    categories_raw = query(f"""
+        SELECT coalesce(state_gas_category, 'uncategorized') as cat, count(*) as cnt
+        FROM eip8037_tx_impact
+        WHERE lower(target_address) = '{addr}'
+        GROUP BY 1 ORDER BY cnt DESC LIMIT 6
+    """)
+    eip8037_txs = query(f"""
+        SELECT tx_hash, block_number, tx_gas_limit, min_multiplier_to_succeed,
+               reservoir_exhausted, state_gas_category,
+               runtime_state_gas_spillover, schedule_state_gas_spent
+        FROM eip8037_tx_impact
+        WHERE lower(target_address) = '{addr}'
+          AND (original_limit_failure OR status_changed OR reservoir_exhausted)
+        ORDER BY
+            CASE WHEN baseline_success AND NOT schedule_success THEN 0
+                 WHEN original_limit_failure THEN 1
+                 WHEN reservoir_exhausted THEN 2 ELSE 3 END,
+            coalesce(min_multiplier_to_succeed, 999999) DESC
+        LIMIT 20
+    """)
+
+    eip7904_broken = _int(eip7904_stats["broken_txs"])
+    eip7904_wallet_n = _int(eip7904_wallet)
+    eip8037_div = _int(eip8037_row["divergent_txs"]) if eip8037_row else 0
+    found = eip7904_broken > 0 or eip7904_wallet_n > 0 or eip8037_div > 0
 
     name = label_address(addr)
     outreach = read_csv("outreach_priority.csv")
@@ -734,24 +836,64 @@ def affected_detail(address: str):
             }
 
     return {
-        "found": True,
+        "found": found,
         "address": addr,
         "name": name,
-        "broken_txs": int(s["broken_txs"]),
-        "avg_delta": float(s["avg_delta"]),
-        "total_delta": float(s["total_delta"]),
-        "min_block": int(s["min_block"]),
-        "max_block": int(s["max_block"]),
         "owner": info.get("owner_buckets", ""),
         "remediation": info.get("remediation_buckets", ""),
-        "transactions": [
-            {
-                "tx_hash": t["tx_hash"],
-                "block_number": int(t["block_number"]),
-                "gas_delta": float(t["gas_delta"]),
-            }
-            for t in txs
-        ],
+        "eip7904": {
+            "broken_txs": eip7904_broken,
+            "wallet_fixable_txs": eip7904_wallet_n,
+            "avg_delta": _float(eip7904_stats["avg_delta"]),
+            "total_delta": _float(eip7904_stats["total_delta"]),
+            "p95_delta": _float(eip7904_stats["p95_delta"]),
+            "min_block": _int(eip7904_stats["min_block"]),
+            "max_block": _int(eip7904_stats["max_block"]),
+            "opcodes": _with_shares([
+                {"name": FORENSIC_OPCODE_NAMES.get(r["op"], r["op"]), "count": _int(r["cnt"])}
+                for r in opcodes_raw
+            ]),
+            "depths": _with_shares([
+                {"depth": _int(r["depth"]), "count": _int(r["cnt"])}
+                for r in depths_raw
+            ]),
+            "transactions": [
+                {
+                    "tx_hash": t["tx_hash"],
+                    "block_number": _int(t["block_number"]),
+                    "gas_delta": _float(t["gas_delta"]),
+                }
+                for t in eip7904_txs
+            ],
+        },
+        "eip8037": {
+            "divergent_txs": _int(eip8037_row["divergent_txs"]) if eip8037_row else 0,
+            "status_changed_txs": _int(eip8037_row["status_changed_txs"]) if eip8037_row else 0,
+            "original_limit_failures": _int(eip8037_row["original_limit_failures"]) if eip8037_row else 0,
+            "fixable_with_more_outer_gas": _int(eip8037_row["fixable_with_more_outer_gas"]) if eip8037_row else 0,
+            "reservoir_exhausted_txs": _int(eip8037_row["reservoir_exhausted_txs"]) if eip8037_row else 0,
+            "total_state_gas_spent": _int(eip8037_row["total_state_gas_spent"]) if eip8037_row else 0,
+            "p95_min_multiplier_to_succeed": _float_or_none(eip8037_row["p95_min_multiplier_to_succeed"]) if eip8037_row else None,
+            "max_min_multiplier_to_succeed": _float_or_none(eip8037_row["max_min_multiplier_to_succeed"]) if eip8037_row else None,
+            "max_extra_gas_needed": _int(eip8037_row["max_extra_gas_needed"]) if eip8037_row else 0,
+            "categories": _with_shares([
+                {"category": r["cat"], "count": _int(r["cnt"])}
+                for r in categories_raw
+            ]),
+            "transactions": [
+                {
+                    "tx_hash": t["tx_hash"],
+                    "block_number": _int(t["block_number"]),
+                    "tx_gas_limit": _int(t["tx_gas_limit"]),
+                    "min_multiplier_to_succeed": _float_or_none(t["min_multiplier_to_succeed"]),
+                    "reservoir_exhausted": bool(t["reservoir_exhausted"]),
+                    "state_gas_category": t["state_gas_category"],
+                    "runtime_state_gas_spillover": _int(t["runtime_state_gas_spillover"]),
+                    "schedule_state_gas_spent": _int(t["schedule_state_gas_spent"]),
+                }
+                for t in eip8037_txs
+            ],
+        },
     }
 
 
@@ -912,26 +1054,30 @@ def tx_detail(tx_hash: str):
 
 @router.get("/search")
 def search(q: str = Query(default="")):
-    """Search contracts by address prefix or project name."""
+    """Search affected contracts (EIP-7904 ∪ EIP-8037) by address prefix or name."""
     if not q or len(q) < 2:
         return []
     term = q.lower()
-    rows = query(f"""
-        SELECT recipient, count(*) as broken_txs
-        FROM hot_7904
-        WHERE status_changed {NOT_WALLET_FIXABLE}
-        GROUP BY recipient
-        ORDER BY broken_txs DESC
+    rows = query(_AFFECTED_BASE_CTE + """
+        SELECT addr, broken_txs_7904,
+               need_higher_limit_8037, reservoir_exhausted_8037, status_changed_8037
+        FROM affected_combined
+        ORDER BY broken_txs_7904 DESC, need_higher_limit_8037 DESC
     """)
     results = []
     for r in rows:
-        addr = (r["recipient"] or "").lower()
-        name = label_address(addr).lower()
-        if term in addr or term in name:
+        addr = (r["addr"] or "").lower()
+        name_lc = label_address(addr).lower()
+        if term in addr or term in name_lc:
             results.append({
-                "recipient": r["recipient"],
-                "name": label_address(r["recipient"]),
-                "broken_txs": int(r["broken_txs"]),
+                "recipient": addr,
+                "name": label_address(addr),
+                "broken_txs_7904": int(r["broken_txs_7904"]),
+                "impact_8037": max(
+                    int(r["need_higher_limit_8037"]),
+                    int(r["reservoir_exhausted_8037"]),
+                    int(r["status_changed_8037"]),
+                ),
             })
             if len(results) >= 20:
                 break
@@ -943,7 +1089,8 @@ def metadata():
     block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM hot_7904")
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
     affected_count = query_scalar(
-        f"SELECT count(DISTINCT recipient) FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}"
+        _AFFECTED_BASE_CTE + " SELECT count(*) FROM affected_combined",
+        default=0,
     )
     return {
         "schedule_name": SCHEDULE_NAME,

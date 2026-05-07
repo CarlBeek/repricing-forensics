@@ -6,11 +6,9 @@
 <div id="contractDetail">
   <div class="skeleton skeleton-text" style="width:40%;height:24px;margin-bottom:12px"></div>
   <div class="skeleton skeleton-text" style="width:70%;margin-bottom:20px"></div>
-  <div class="poster-grid" style="grid-template-columns: repeat(4, 1fr);">
-    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
-    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
-    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
-    <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 16px 0;">
+    <div class="skeleton-card" style="height:140px"></div>
+    <div class="skeleton-card" style="height:140px"></div>
   </div>
 </div>
 {% endblock %}
@@ -19,6 +17,86 @@
 <script>
 const ADDRESS = "{{ address }}";
 
+function fmtMultiplier(n) {
+  return n == null ? 'n/a' : `${Number(n).toFixed(2)}x`;
+}
+
+function depthLabel(d) {
+  return d < 0 ? 'unknown' : `depth ${d}`;
+}
+
+function shareList(items, labelFn) {
+  if (!items.length) return '<p class="note">No data.</p>';
+  return `<ul style="list-style:none; padding-left:0; margin:6px 0;">` +
+    items.map(it => `
+      <li style="display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid var(--border);">
+        <span>${escHtml(labelFn(it))}</span>
+        <span class="mono" style="color:var(--text-muted)">${fmtCount(it.count)} (${it.share}%)</span>
+      </li>`).join('') +
+    `</ul>`;
+}
+
+function summaryCard(title, statLabel, headlineNumber, headlineLabel, headlineColor, statRows, exploreHref) {
+  return `
+    <div style="background: var(--bg-card); border: 1px solid var(--border); padding: 20px;">
+      <h2 style="margin-top:0">${title}</h2>
+      <div style="display:flex; align-items:baseline; gap:12px; margin: 8px 0 14px;">
+        <div class="number" style="font-size:2em; color:${headlineColor || 'var(--text)'}">${headlineNumber}</div>
+        <div class="label" style="font-size:0.78em; color:var(--text-muted)">${headlineLabel}</div>
+      </div>
+      ${statRows.map(([k, v]) =>
+        `<div style="display:flex; justify-content:space-between; padding:3px 0; font-size:0.85em;">
+           <span style="color:var(--text-muted)">${k}</span>
+           <span class="mono">${v}</span>
+         </div>`).join('')}
+      <p style="margin-top:14px"><a href="${exploreHref}">Explore ${statLabel} impact &rarr;</a></p>
+    </div>`;
+}
+
+function notAffectedCard(title, body) {
+  return `
+    <div style="background: var(--bg-card); border: 1px solid var(--border); padding: 20px; opacity: 0.6;">
+      <h2 style="margin-top:0">${title}</h2>
+      <p class="note" style="margin-top:14px">${body}</p>
+    </div>`;
+}
+
+function txTable7904(txs) {
+  if (!txs.length) return '<p class="note">No sample transactions.</p>';
+  return `
+    <table>
+      <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
+      <tbody>${txs.map((t, i) =>
+        `<tr onclick="location.href='/tx/${t.tx_hash}'">
+          <td>${i + 1}</td>
+          <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
+          <td style="text-align:right">${t.block_number.toLocaleString()}</td>
+          <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+function txTable8037(txs) {
+  if (!txs.length) return '<p class="note">No sample transactions.</p>';
+  return `
+    <table>
+      <thead><tr>
+        <th>#</th><th>Transaction</th><th>Block</th><th>Gas Limit</th>
+        <th>Multiplier</th><th>Spillover</th><th>Category</th>
+      </tr></thead>
+      <tbody>${txs.map((t, i) =>
+        `<tr onclick="location.href='/tx/${t.tx_hash}'">
+          <td>${i + 1}</td>
+          <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
+          <td style="text-align:right">${t.block_number.toLocaleString()}</td>
+          <td style="text-align:right">${fmtGas(t.tx_gas_limit)}</td>
+          <td style="text-align:right">${fmtMultiplier(t.min_multiplier_to_succeed)}</td>
+          <td style="text-align:right">${fmtGas(t.runtime_state_gas_spillover)}</td>
+          <td>${escHtml(t.state_gas_category || '-')}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+}
+
 (async function() {
   const data = await fetchJSON(`/api/affected/${encodeURIComponent(ADDRESS)}`);
   const el = document.getElementById('contractDetail');
@@ -26,49 +104,122 @@ const ADDRESS = "{{ address }}";
   if (!data.found) {
     el.innerHTML = `
       <div class="not-affected">
-        <h1>Good news -- this contract is not affected by the active repricing schedule.</h1>
-        <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> has no broken transactions under the proposed gas schedule
-           (or any breakages are wallet-fixable and filtered from this view).</p>
+        <h1>Good news — this contract is not affected.</h1>
+        <p>Contract <span class="mono">${escHtml(ADDRESS)}</span> has no broken or divergent transactions
+           under either EIP-7904 or EIP-8037 in the analyzed block range.</p>
       </div>`;
     return;
   }
 
-  const txRows = (data.transactions || []).map((t, i) =>
-    `<tr onclick="location.href='/tx/${t.tx_hash}'">
-      <td>${i + 1}</td>
-      <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
-      <td style="text-align:right">${t.block_number.toLocaleString()}</td>
-      <td style="text-align:right">${fmtGas(t.gas_delta)}</td>
-    </tr>`
-  ).join('');
+  const e7 = data.eip7904, e8 = data.eip8037;
+  const hit7 = e7.broken_txs > 0 || e7.wallet_fixable_txs > 0;
+  const hit8 = e8.divergent_txs > 0;
 
-  el.innerHTML = `
+  const card7 = hit7
+    ? summaryCard(
+        'EIP-7904 — Opcode repricing',
+        'EIP-7904',
+        fmtCount(e7.broken_txs),
+        'contract-broken txs',
+        'var(--red)',
+        [
+          ['Wallet-fixable txs', fmtCount(e7.wallet_fixable_txs)],
+          ['p95 gas Δ', fmtGas(e7.p95_delta)],
+          ['Total gas Δ', fmtGas(e7.total_delta)],
+          ['Block range', `${e7.min_block.toLocaleString()}–${e7.max_block.toLocaleString()}`],
+        ],
+        '/eip7904')
+    : notAffectedCard('EIP-7904 — Opcode repricing',
+        'No transactions to this contract diverge under EIP-7904.');
+
+  const card8 = hit8
+    ? summaryCard(
+        'EIP-8037 — Native state gas',
+        'EIP-8037',
+        fmtCount(e8.original_limit_failures),
+        'txs needing higher limit',
+        'var(--orange)',
+        [
+          ['Reservoir exhausted', fmtCount(e8.reservoir_exhausted_txs)],
+          ['p95 multiplier', fmtMultiplier(e8.p95_min_multiplier_to_succeed)],
+          ['Max multiplier', fmtMultiplier(e8.max_min_multiplier_to_succeed)],
+          ['Max extra gas needed', fmtGas(e8.max_extra_gas_needed)],
+        ],
+        '/eip8037')
+    : notAffectedCard('EIP-8037 — Native state gas',
+        'No transactions to this contract diverge under EIP-8037.');
+
+  let html = `
     <h1>${escHtml(data.name)}</h1>
-    <p class="mono" style="color:var(--text-dim); margin-bottom:20px">${data.address}
+    <p class="mono" style="color:var(--text-dim); margin-bottom:12px">${data.address}
       <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')" style="margin-left:8px">copy</button>
     </p>
+    ${data.owner ? `<p style="margin:6px 0"><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
+    ${data.remediation ? `<p style="margin:6px 0"><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
 
-    <div class="poster-grid" style="grid-template-columns: repeat(4, 1fr);">
-      <div class="poster-card"><div class="number">${fmtCount(data.broken_txs)}</div><div class="label">Broken Txs</div></div>
-      <div class="poster-card"><div class="number">${fmtGas(data.avg_delta)}</div><div class="label">Avg Gas Δ</div></div>
-      <div class="poster-card"><div class="number">${fmtGas(data.total_delta)}</div><div class="label">Total Gas Δ</div></div>
-      <div class="poster-card"><div class="number" style="font-size:1.2em">${data.min_block.toLocaleString()}–${data.max_block.toLocaleString()}</div><div class="label">Block Range</div></div>
-    </div>
+    <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0;">
+      ${card7}
+      ${card8}
+    </div>`;
 
-    ${data.owner ? `<p style="margin:12px 0"><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
-    ${data.remediation ? `<p style="margin:12px 0"><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
+  if (hit7) {
+    html += `
+      <h2>Diagnosis — EIP-7904</h2>
+      <p>Where breakage happens for this contract under the proposed opcode repricing.</p>
+      <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 12px 0;">
+        <div>
+          <h3 style="font-size:0.92em; margin-bottom:4px">Opcode at divergence point</h3>
+          ${shareList(e7.opcodes, o => o.name)}
+        </div>
+        <div>
+          <h3 style="font-size:0.92em; margin-bottom:4px">Call depth at divergence</h3>
+          ${shareList(e7.depths, d => depthLabel(d.depth))}
+        </div>
+      </div>
+      <p class="note">Divergence at depth 2+ usually means the contract hardcodes gas in an inner <code>CALL</code> or
+        relies on the 2300 transfer stipend — see <a href="/about#6364-rule">the 63/64 rule</a>.</p>
 
-    <h2>Example Transactions</h2>
-    <p style="color:var(--text-muted); font-size:0.88em; margin-bottom:12px">
-      Click a transaction to see the full gas breakdown and call stack analysis.
-    </p>
-    <div style="overflow-x:auto;">
-      <table>
-        <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
-        <tbody>${txRows || '<tr><td colspan="4">No transactions</td></tr>'}</tbody>
-      </table>
-    </div>
-  `;
+      <h2>Sample EIP-7904 broken transactions</h2>
+      ${txTable7904(e7.transactions)}`;
+  }
+
+  if (hit8) {
+    html += `
+      <h2>Diagnosis — EIP-8037</h2>
+      <p>Where state-gas comes from for this contract, and how much extra gas-limit headroom is required.</p>
+      <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 12px 0;">
+        <div>
+          <h3 style="font-size:0.92em; margin-bottom:4px">State-gas category</h3>
+          ${shareList(e8.categories, c => c.category)}
+        </div>
+        <div>
+          <h3 style="font-size:0.92em; margin-bottom:4px">Severity</h3>
+          <ul style="list-style:none; padding-left:0; margin:6px 0;">
+            <li style="display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid var(--border);">
+              <span>Need higher gas limit</span>
+              <span class="mono">${fmtCount(e8.original_limit_failures)} txs</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid var(--border);">
+              <span>Reservoir exhausted</span>
+              <span class="mono">${fmtCount(e8.reservoir_exhausted_txs)} txs</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid var(--border);">
+              <span>Status flipped (success → revert)</span>
+              <span class="mono">${fmtCount(e8.status_changed_txs)} txs</span>
+            </li>
+            <li style="display:flex; justify-content:space-between; padding:3px 0;">
+              <span>Total state gas spent</span>
+              <span class="mono">${fmtGas(e8.total_state_gas_spent)}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <h2>Sample EIP-8037 affected transactions</h2>
+      ${txTable8037(e8.transactions)}`;
+  }
+
+  el.innerHTML = html;
 })();
 </script>
 {% endblock %}

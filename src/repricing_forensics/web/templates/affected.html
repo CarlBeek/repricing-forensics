@@ -3,7 +3,7 @@
 
 {% block content %}
 <h1>Is Your Contract Affected?</h1>
-<p class="subtitle">Check if the active gas repricing schedule will break transactions to your contract</p>
+<p class="subtitle">Check if either Glamsterdam EIP (7904 or 8037) will break transactions to your contract.</p>
 
 <div class="search-wrapper" style="margin-top:24px">
   <input type="text" class="search-box" id="contractSearch"
@@ -12,7 +12,8 @@
   <div id="autocompleteList" class="autocomplete-list"></div>
 </div>
 
-<div class="poster-grid" id="summaryCards" style="grid-template-columns: repeat(3, 1fr);">
+<div class="poster-grid" id="summaryCards" style="grid-template-columns: repeat(4, 1fr);">
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
   <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
   <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
   <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
@@ -20,20 +21,21 @@
 
 <h2>Most Affected Contracts</h2>
 <p style="color:var(--text-muted); font-size:0.88em; margin-bottom:12px">
-  Click any row to see transaction-level details and gas flow analysis.
-  Only showing contracts with breakages that require code changes (wallet-fixable excluded).
+  Combined ranking across EIP-7904 and EIP-8037. Click any row to see per-EIP diagnostics and sample transactions.
+  Wallet-fixable EIP-7904 breakages are excluded; EIP-8037 rows include any contract with status flips, original-limit failures, or reservoir spillover.
 </p>
 <div style="overflow-x: auto;">
   <table id="contractTable">
     <thead><tr>
       <th>Rank</th>
       <th>Project</th>
-      <th>Broken Txs</th>
-      <th>Avg Gas Δ</th>
-      <th>Total Gas Δ</th>
+      <th>EIP-7904 Broken</th>
+      <th>EIP-7904 Avg Δ</th>
+      <th>EIP-8037 Need ↑ Limit</th>
+      <th>EIP-8037 Reservoir</th>
       <th>Action</th>
     </tr></thead>
-    <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+    <tbody id="contractBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
   </table>
 </div>
 <div id="pagination" class="pagination"></div>
@@ -51,15 +53,20 @@ function remediationTag(r) {
   return '';
 }
 
+function dashIfZero(n, fmt = fmtCount) {
+  return n > 0 ? fmt(n) : '<span style="color:var(--text-dim)">—</span>';
+}
+
 function renderTable(items, page) {
   const startRank = (page - 1) * perPage;
   document.getElementById('contractBody').innerHTML = items.map((c, i) =>
     `<tr onclick="location.href='/affected/${encodeURIComponent(c.recipient)}'">
       <td>${startRank + i + 1}</td>
       <td><strong>${escHtml(c.name)}</strong></td>
-      <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
-      <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
-      <td style="text-align:right">${fmtGas(c.total_delta)}</td>
+      <td style="text-align:right">${dashIfZero(c.broken_txs_7904)}</td>
+      <td style="text-align:right">${dashIfZero(c.avg_delta_7904, fmtGas)}</td>
+      <td style="text-align:right">${dashIfZero(c.need_higher_limit_8037)}</td>
+      <td style="text-align:right">${dashIfZero(c.reservoir_exhausted_8037)}</td>
       <td>${remediationTag(c.remediation)}</td>
     </tr>`
   ).join('');
@@ -85,25 +92,41 @@ function renderPagination(total, totalPages, page) {
 
 async function loadPage(page) {
   currentPage = page;
-  document.getElementById('contractBody').innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
+  document.getElementById('contractBody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
   const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);
 }
 
+function fmtMultiplier(n) {
+  return n == null ? 'n/a' : `${Number(n).toFixed(2)}x`;
+}
+
 (async function() {
-  const [overview, meta] = await Promise.all([
+  const [overview, meta, ov8037] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/metadata'),
+    fetchJSON('/api/eip8037/overview'),
   ]);
   renderPosterCards('summaryCards', [
-    { value: fmtCount(overview.contract_broken_txs), label: 'Broken Transactions', color: COLORS.broken },
-    { value: fmtCount(meta.total_contracts_affected), label: 'Contracts Affected' },
-    { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block Range Analyzed' },
+    { value: fmtCount(overview.contract_broken_txs), label: 'EIP-7904 broken txs', color: COLORS.broken },
+    { value: fmtCount(ov8037.original_limit_failures), label: 'EIP-8037 need higher limit', color: COLORS.changed },
+    { value: fmtCount(meta.total_contracts_affected), label: 'Contracts affected (combined)' },
+    { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block range analyzed' },
   ]);
   await loadPage(1);
   initSearch('contractSearch', 'autocompleteList', addr => {
     location.href = `/affected/${encodeURIComponent(addr)}`;
+  });
+  // Allow direct address input — even for contracts not in the 7904-indexed search
+  // (e.g. EIP-8037-only). If the user pastes a valid 0x address and presses Enter,
+  // route straight to the detail page.
+  document.getElementById('contractSearch').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const v = e.target.value.trim();
+    if (/^0x[a-fA-F0-9]{40}$/.test(v)) {
+      location.href = `/affected/${v.toLowerCase()}`;
+    }
   });
 })();
 </script>

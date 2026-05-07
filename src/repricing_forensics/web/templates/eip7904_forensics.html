@@ -1,50 +1,40 @@
 {% extends "base.html" %}
-{% block title %}Forensics — Gas Repricing Impact Analysis{% endblock %}
+{% block title %}EIP-7904 Forensics — Gas Repricing Analysis{% endblock %}
 
 {% block content %}
-<h1>Breakage Forensics</h1>
+<p style="margin-bottom:16px"><a href="/eip7904">&larr; EIP-7904 impact</a></p>
+<h1>EIP-7904 Forensics</h1>
 <p class="subtitle" id="subtitle">Loading...</p>
+<p>Detailed diagnosis of where and why transactions break under EIP-7904. The opcode and call-depth
+distributions point at the most common failure mechanisms — hardcoded gas in inner <code>CALL</code>s,
+the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 
-<!-- 1. Status change overview -->
-<h2>1. Per-Block Breakage Rate</h2>
-<p>Distribution of breakage rates across blocks. Most blocks have zero breakage; the right tail shows blocks where high-frequency affected contracts were active. Only contract-broken transactions are counted (wallet-fixable excluded).</p>
-<div id="timeChart"><p class="loading">Loading chart...</p></div>
-
-<!-- 2. Gas delta distribution -->
-<h2>2. Gas Delta Distribution</h2>
-<p>For broken transactions, the "gas delta" is the difference between new-schedule and baseline gas usage. When a transaction OOGs, it consumes its entire gas limit, so the delta reflects both the repricing cost and wasted headroom. See <a href="/about#sstore-refunds">SSTORE refund complication</a> for details.</p>
-<div id="gasDeltaChart"><p class="loading">Loading chart...</p></div>
-<table style="max-width:300px" id="percentileTable">
-  <thead><tr><th>Percentile</th><th>Gas Delta</th></tr></thead>
-  <tbody id="percentileBody"><tr><td colspan="2" class="loading">Loading...</td></tr></tbody>
-</table>
-
-<!-- 3. Opcode breakdown -->
-<h2>3. Opcode at Divergence Point</h2>
+<!-- 1. Opcode breakdown -->
+<h2>1. Opcode at Divergence Point</h2>
 <p>The repriced opcode executing at the exact EVM step where the new-schedule trace first diverges from baseline.</p>
 <div id="opcodeChart"><p class="loading">Loading chart...</p></div>
 
-<!-- 4. Call depth -->
-<h2>4. Call Depth Distribution</h2>
+<!-- 2. Call depth -->
+<h2>2. Call Depth Distribution</h2>
 <p>Deeper failures (depth 2+) typically involve hardcoded gas in <code>CALL</code> instructions or <a href="/about#6364-rule">63/64 rule</a> forwarding that starves the callee. These require contract upgrades to fix.</p>
 <p id="depthNote"></p>
 <div id="depthChart"><p class="loading">Loading chart...</p></div>
 
-<!-- 5. Top 20 contracts -->
-<h2>5. Top 20 Contracts by Breakage</h2>
+<!-- 3. Top 20 contracts -->
+<h2>3. Top 20 Contracts by Breakage</h2>
 <p>Primary targets for pre-fork outreach. <a href="/affected">Search all affected contracts</a> for full details.</p>
 <div id="top20Chart"><p class="loading">Loading chart...</p></div>
 
-<!-- 6. Failure motifs -->
-<h2>6. Top Failure Motifs</h2>
+<!-- 4. Failure motifs -->
+<h2>4. Top Failure Motifs</h2>
 <p>The most common caller-to-callee patterns at the point of failure. A "motif" captures which project called which project when gas ran out, helping identify systemic patterns.</p>
 <table>
   <thead><tr><th>Pair Motif</th><th>Triple Motif</th><th>Failures</th><th>Avg Gas Provided</th></tr></thead>
   <tbody id="motifsBody"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<!-- 7. Remediation -->
-<h2>7. Remediation Outlook</h2>
+<!-- 5. Remediation -->
+<h2>5. Remediation Outlook</h2>
 <p>For contracts with known ownership, this maps each project to its likely remediation path: upgradeable proxy (admin can fix), integration update (caller needs to change), or immutable (requires migration).</p>
 <div id="remedSankey"></div>
 {% endblock %}
@@ -52,10 +42,8 @@
 {% block scripts %}
 <script>
 (async function() {
-  const [overview, ts, gasDelta, opcodes, depth, top20, motifs, remed] = await Promise.all([
+  const [overview, opcodes, depth, top20, motifs, remed] = await Promise.all([
     fetchJSON('/api/overview'),
-    fetchJSON('/api/forensics/time-series'),
-    fetchJSON('/api/forensics/gas-delta'),
     fetchJSON('/api/opcode-impact'),
     fetchJSON('/api/forensics/call-depth'),
     fetchJSON('/api/top-contracts?limit=20'),
@@ -66,54 +54,12 @@
   document.getElementById('subtitle').textContent =
     `${fmtCount(overview.broken_txs)} broken transactions analyzed in depth`;
 
-  // 1. Status change CDF — distribution of % broken per block
-  const pcts = ts.filter(r => r.total_txs > 0).map(r => r.broken_pct).sort((a, b) => a - b);
-  const cdfY = pcts.map((_, i) => (i + 1) / pcts.length * 100);
-  Plotly.newPlot('timeChart', [{
-    x: pcts,
-    y: cdfY,
-    mode: 'lines',
-    line: { color: COLORS.broken, width: 2 },
-    hovertext: pcts.map((p, i) => `${p.toFixed(2)}% broken<br>${cdfY[i].toFixed(1)}% of blocks`),
-    hoverinfo: 'text',
-  }], layout({
-    title: { text: 'CDF: % of Transactions Broken per Block' },
-    xaxis: { title: '% Transactions Broken in Block', ticksuffix: '%' },
-    yaxis: { title: 'Cumulative % of Blocks', ticksuffix: '%', range: [0, 105] },
-    height: 380,
-  }), { responsive: true });
-
-  // 2. Gas delta — CDF with log x
-  let deltaCum = 0;
-  const deltaCmf = gasDelta.histogram.map(b => { deltaCum += b.density; return deltaCum * 100; });
-  Plotly.newPlot('gasDeltaChart', [{
-    x: gasDelta.histogram.map(b => b.bin_start || 1),
-    y: deltaCmf,
-    mode: 'lines+markers',
-    marker: { size: 5, color: COLORS.broken },
-    line: { color: COLORS.broken, width: 2 },
-    hovertext: gasDelta.histogram.map((b, i) => `${b.label} gas: ${fmtCount(b.count)} txs (${deltaCmf[i].toFixed(1)}%)`),
-    hoverinfo: 'text',
-  }], layout({
-    title: { text: 'Gas Delta CDF (Broken Txs)' },
-    xaxis: { title: 'Gas Delta', type: 'log', tickformat: ',', exponentformat: 'none' },
-    yaxis: { title: 'Cumulative %', range: [0, 105], ticksuffix: '%' },
-    height: 400,
-  }), { responsive: true });
-  const s = gasDelta.stats;
-  document.getElementById('percentileBody').innerHTML = [
-    ['Median', s.median_delta], ['25th', s.p25], ['75th', s.p75],
-    ['90th', s.p90], ['95th', s.p95], ['99th', s.p99],
-  ].map(([label, val]) =>
-    `<tr><td>${label}</td><td style="text-align:right">${fmtGas(val)}</td></tr>`
-  ).join('');
-
-  // 3. Opcodes
+  // 1. Opcodes
   renderPie('opcodeChart', opcodes.map(o => o.name), opcodes.map(o => o.count), {
     title: 'Divergence Point — Opcode at Failure',
   });
 
-  // 4. Call depth
+  // 2. Call depth
   if (depth.length) {
     const total = depth.reduce((s, r) => s + r.divergent_txs, 0);
     const shallow = depth.filter(r => r.divergence_call_depth >= 0 && r.divergence_call_depth <= 1)
@@ -127,7 +73,7 @@
     );
   }
 
-  // 5. Top 20
+  // 3. Top 20
   Plotly.newPlot('top20Chart', [{
     x: top20.map(c => c.broken_txs),
     y: top20.map(c => c.name.length > 30 ? c.name.slice(0, 28) + '…' : c.name),
@@ -140,7 +86,7 @@
     height: 600,
   }), { responsive: true });
 
-  // 6. Motifs
+  // 4. Motifs
   document.getElementById('motifsBody').innerHTML = motifs.map(m => `
     <tr>
       <td>${escHtml(String(m.pair_motif || ''))}</td>
@@ -150,7 +96,7 @@
     </tr>
   `).join('');
 
-  // 7. Remediation — sankey: contracts → owner bucket → remediation bucket
+  // 5. Remediation — sankey: contracts → owner bucket → remediation bucket
   if (remed.labels && remed.labels.length) {
     renderSankey('remedSankey', remed, {
       title: 'Remediation Outlook: Contract → Owner → Remediation',

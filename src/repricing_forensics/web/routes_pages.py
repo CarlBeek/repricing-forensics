@@ -14,17 +14,17 @@ async def landing(request: Request):
     )
 
 
-@router.get("/overview", response_class=HTMLResponse)
-async def briefing(request: Request):
+@router.get("/eip7904", response_class=HTMLResponse)
+async def eip7904(request: Request):
     return request.app.state.templates.TemplateResponse(
-        request=request, name="briefing.html", context={"active": "overview"}
+        request=request, name="eip7904.html", context={"active": "eip7904"}
     )
 
 
-@router.get("/forensics", response_class=HTMLResponse)
-async def forensics(request: Request):
+@router.get("/eip7904/forensics", response_class=HTMLResponse)
+async def eip7904_forensics(request: Request):
     return request.app.state.templates.TemplateResponse(
-        request=request, name="forensics.html", context={"active": "forensics"}
+        request=request, name="eip7904_forensics.html", context={"active": "eip7904"}
     )
 
 

@@ -1,107 +1,74 @@
 {% extends "base.html" %}
-{% block title %}Gas Repricing Impact Analysis{% endblock %}
+{% block title %}Glamsterdam Gas Repricing Impact{% endblock %}
 
 {% block content %}
 <div class="hero">
-  <h1>We re-execute mainnet transactions under candidate gas schedules to find out what breaks.</h1>
-  <p class="lead">A modified reth node replays historical blocks under proposed schedules, comparing baseline and repriced execution outcomes transaction by transaction.</p>
-
-  <div class="hero-stats">
-    <div class="hero-stat">
-      <div class="number" id="statBrokenTxs">--</div>
-      <div class="label">contract-broken transactions</div>
-    </div>
-    <div class="hero-stat">
-      <div class="number" id="statContracts">--</div>
-      <div class="label">unique contracts affected</div>
-    </div>
-    <div class="hero-stat">
-      <div class="number" id="statBlocks" style="font-size:1.6em">--</div>
-      <div class="label">Analyzing blocks <span id="blockMin">...</span> &rarr; <span id="blockMax" class="pulse">...</span> and counting</div>
-    </div>
-  </div>
-
-  <div class="hero-actions">
-    <a href="/affected" class="cta-btn">Check if your contract is affected</a>
-    <a href="/overview" class="btn-secondary">See the full analysis</a>
-  </div>
+  <h1>Glamsterdam ships two gas-schedule changes. Here's what each one breaks.</h1>
+  <p class="lead">EIP-7904 and EIP-8037 are both scheduled for the next Ethereum hard fork (Glamsterdam, later this year). A modified reth node replays historical mainnet blocks under each proposed schedule independently, comparing baseline and repriced execution outcomes transaction by transaction.</p>
+  <p class="note" style="margin-top:14px">
+    Analyzing blocks <span id="blockMin">…</span> &rarr; <span id="blockMax" class="pulse">…</span>
+    (<span id="statBlocks">…</span> blocks and counting)
+  </p>
 </div>
 
-<h2>Current Focus: EIP-8037</h2>
-<p>EIP-8037 introduces static cost-per-state-byte accounting for new state, with a per-transaction state-gas reservoir. This dashboard surfaces whether historical transactions still fit their original gas limits, how much extra outer gas they need when they do not, and whether runtime state gas spills beyond the reservoir.</p>
+<div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 28px 0;">
 
-<div class="opcode-cards">
-  <div class="opcode-card">
-    <div class="opcode-name">CPSB</div>
-    <div class="opcode-bar-stacked">
-      <div class="opcode-bar-new" style="flex:1">1174</div>
+  <div style="background: var(--bg-card); border: 1px solid var(--border); padding: 22px;">
+    <h2 style="margin-top:0">EIP-7904 — Opcode repricing</h2>
+    <p>Raises the gas cost of eight EVM opcodes (<code>KECCAK256</code>, <code>DIV</code>, <code>MOD</code>, <code>EXP</code>, and four siblings) whose prices have not been updated since Frontier. Most breakages occur in contracts that hardcode gas in inner <code>CALL</code>s or rely on the 2300 transfer stipend.</p>
+    <div class="poster-grid" id="stats7904" style="grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0;">
+      <div class="poster-card"><div class="number" id="stat7904Broken">--</div><div class="label">Contract-broken txs</div></div>
+      <div class="poster-card"><div class="number" id="stat7904Wallet">--</div><div class="label">Wallet-fixable txs</div></div>
+      <div class="poster-card"><div class="number" id="stat7904Contracts">--</div><div class="label">Contracts affected</div></div>
     </div>
-    <div class="opcode-total">gas per state byte</div>
+    <a href="/eip7904" class="cta-btn">Explore EIP-7904 impact</a>
   </div>
-  <div class="opcode-card">
-    <div class="opcode-name">SSTORE SET</div>
-    <div class="opcode-bar-stacked">
-      <div class="opcode-bar-new" style="flex:1">37.6K</div>
+
+  <div style="background: var(--bg-card); border: 1px solid var(--border); padding: 22px;">
+    <h2 style="margin-top:0">EIP-8037 — Native state gas</h2>
+    <p>Introduces a static cost-per-state-byte (CPSB, currently 1174) with a per-transaction state-gas reservoir. Mostly affects transactions that <code>SSTORE</code>, <code>CREATE</code>, deploy proxies, or use EIP-7702 authorizations.</p>
+    <div class="poster-grid" id="stats8037" style="grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0;">
+      <div class="poster-card"><div class="number" id="stat8037Multi">--</div><div class="label">Need higher gas limit</div></div>
+      <div class="poster-card"><div class="number" id="stat8037Reservoir">--</div><div class="label">Reservoir exhausted</div></div>
+      <div class="poster-card"><div class="number" id="stat8037P95">--</div><div class="label">p95 multiplier needed</div></div>
     </div>
-    <div class="opcode-total">32 state bytes</div>
+    <a href="/eip8037" class="cta-btn">Explore EIP-8037 impact</a>
   </div>
-  <div class="opcode-card">
-    <div class="opcode-name">NEW ACCOUNT</div>
-    <div class="opcode-bar-stacked">
-      <div class="opcode-bar-new" style="flex:1">131K</div>
-    </div>
-    <div class="opcode-total">112 state bytes</div>
-  </div>
-  <div class="opcode-card">
-    <div class="opcode-name">AUTH</div>
-    <div class="opcode-bar-stacked">
-      <div class="opcode-bar-new" style="flex:1">158K</div>
-    </div>
-    <div class="opcode-total">135 state bytes</div>
-  </div>
-  <div class="opcode-card">
-    <div class="opcode-name">CREATE</div>
-    <div class="opcode-bar-stacked">
-      <div class="opcode-bar-new" style="flex:1">9K + state</div>
-    </div>
-    <div class="opcode-total">regular gas plus account state gas</div>
-  </div>
+
 </div>
 
-<p>The static CPSB value can be changed in a small future fork if state growth is too fast before a more complete state-growth solution exists.</p>
-
-<h2>What this site does</h2>
-<div class="site-features">
-  <div class="feature-card">
-    <h3>EIP-8037</h3>
-    <p>State-gas reservoir fit, minimum gas-limit multipliers, spillover, and high-risk transactions.</p>
-    <a href="/eip8037">Analyze state gas</a>
-  </div>
-  <div class="feature-card">
-    <h3>Overview</h3>
-    <p>Headline numbers, gas overhead distributions, and opcode-level impact across the entire sample.</p>
-    <a href="/overview">View the overview</a>
-  </div>
-  <div class="feature-card">
-    <h3>Forensics</h3>
-    <p>Drill into divergent transactions: where they fail, why they fail, and how the call stack changes.</p>
-    <a href="/forensics">Explore forensics</a>
-  </div>
+<div class="cta-banner">
+  <p><strong>Is your contract affected?</strong> Search by address or project name to see whether either schedule will break your transactions.</p>
+  <a href="/affected" class="cta-btn">Check now</a>
 </div>
 
-<p style="text-align: center; margin-top: 32px;">
+<p style="text-align: center; margin-top: 24px;">
   <a href="/about">Read the full methodology</a>
 </p>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  Promise.all([fetchJSON('/api/overview'), fetchJSON('/api/metadata')]).then(([ov, meta]) => {
-    document.getElementById('statBrokenTxs').textContent = fmtCount(ov.contract_broken_txs);
-    document.getElementById('statContracts').textContent = fmtCount(meta.total_contracts_affected);
+  function fmtMultiplier(n) {
+    return n == null ? 'n/a' : `${Number(n).toFixed(2)}x`;
+  }
+
+  Promise.all([
+    fetchJSON('/api/overview'),
+    fetchJSON('/api/metadata'),
+    fetchJSON('/api/eip8037/overview'),
+  ]).then(([ov, meta, ov8037]) => {
     document.getElementById('blockMin').textContent = meta.min_block.toLocaleString();
     document.getElementById('blockMax').textContent = meta.max_block.toLocaleString();
     document.getElementById('statBlocks').textContent = (meta.max_block - meta.min_block).toLocaleString();
+
+    document.getElementById('stat7904Broken').textContent = fmtCount(ov.contract_broken_txs);
+    document.getElementById('stat7904Wallet').textContent = fmtCount(ov.wallet_fixable_txs);
+    document.getElementById('stat7904Contracts').textContent = fmtCount(meta.total_contracts_affected);
+
+    document.getElementById('stat8037Multi').textContent = fmtCount(ov8037.original_limit_failures);
+    document.getElementById('stat8037Reservoir').textContent = fmtCount(ov8037.reservoir_exhausted_txs);
+    document.getElementById('stat8037P95').textContent = fmtMultiplier(ov8037.p95_min_multiplier_to_succeed);
   }).catch(() => {});
 </script>
 {% endblock %}

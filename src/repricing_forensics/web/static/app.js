@@ -229,13 +229,17 @@ function initSearch(inputId, listId, onSelect) {
     if (q.length < 2) { list.innerHTML = ''; return; }
     debounce = setTimeout(async () => {
       const results = await fetchJSON(`/api/search?q=${encodeURIComponent(q)}`);
-      list.innerHTML = results.map(r => `
+      list.innerHTML = results.map(r => {
+        const tags = [];
+        if (r.broken_txs_7904 > 0) tags.push(`<span class="count">7904: ${fmtCount(r.broken_txs_7904)}</span>`);
+        if (r.impact_8037 > 0) tags.push(`<span class="count" style="color:var(--orange)">8037: ${fmtCount(r.impact_8037)}</span>`);
+        return `
         <div class="autocomplete-item" data-addr="${r.recipient}">
-          <span class="count">${fmtCount(r.broken_txs)} broken</span>
+          ${tags.join(' ')}
           <span class="name">${escHtml(r.name)}</span><br>
           <span class="addr">${r.recipient}</span>
-        </div>
-      `).join('');
+        </div>`;
+      }).join('');
       list.querySelectorAll('.autocomplete-item').forEach(item => {
         item.addEventListener('click', () => {
           list.innerHTML = '';

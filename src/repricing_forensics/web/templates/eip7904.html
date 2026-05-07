@@ -1,12 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Overview — Gas Repricing Impact Analysis{% endblock %}
+{% block title %}EIP-7904 Impact — Gas Repricing Analysis{% endblock %}
 
 {% block content %}
-<h1>Gas Repricing Impact</h1>
+<h1>EIP-7904 — Opcode Repricing Impact</h1>
 <p class="subtitle" id="subtitle">Loading...</p>
 
+<p>EIP-7904 raises the gas cost of eight EVM opcodes whose prices have not been updated since Frontier:
+<code>DIV</code>, <code>SDIV</code>, <code>MOD</code>, <code>SMOD</code>, <code>ADDMOD</code>, <code>MULMOD</code>,
+<code>EXP</code>, <code>KECCAK256</code>. Charts below quantify how many historical mainnet transactions
+break under the proposed schedule and where the breakages concentrate.
+<a href="/eip7904/forensics">See detailed forensics &rarr;</a></p>
+
 <div class="cta-banner">
-  <p><strong>Is your contract affected?</strong> Search by address or project name to see if the active repricing schedule will break your transactions.</p>
+  <p><strong>Is your contract affected?</strong> Search by address or project name to see if EIP-7904 will break your transactions.</p>
   <a href="/affected" class="cta-btn">Check now</a>
 </div>
 
