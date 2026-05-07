@@ -170,10 +170,10 @@ def concentration():
     return [
         {
             "rank": i + 1,
-            "recipient": row["recipient"],
+            "recipient": row["recipient"] if isinstance(row["recipient"], str) else None,
             "name": label_address(row["recipient"]),
-            "broken_txs": int(row["broken_txs"]),
-            "cum_pct": round(float(row["cum_pct"]), 2),
+            "broken_txs": _int(row["broken_txs"]),
+            "cum_pct": round(_float(row["cum_pct"]), 2),
         }
         for i, row in df.head(50).iterrows()
     ]
