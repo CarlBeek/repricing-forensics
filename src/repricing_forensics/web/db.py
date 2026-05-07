@@ -108,7 +108,7 @@ def load_labels() -> dict[str, str]:
 
 def label_address(addr: str | None) -> str:
     """Return project label for an address, or the address itself."""
-    if addr is None:
+    if not isinstance(addr, str) or not addr:
         return "unknown"
     labels = load_labels()
     return labels.get(addr.lower(), addr)
