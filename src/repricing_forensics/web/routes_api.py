@@ -191,9 +191,9 @@ def top_contracts(limit: int = Query(default=10, le=500)):
         {
             "recipient": r["recipient"],
             "name": label_address(r["recipient"]),
-            "broken_txs": int(r["broken_txs"]),
-            "avg_delta": float(r["avg_delta"]),
-            "total_delta": float(r["total_delta"]),
+            "broken_txs": _int(r["broken_txs"]),
+            "avg_delta": _float(r["avg_delta"]),
+            "total_delta": _float(r["total_delta"]),
         }
         for r in rows
     ]
@@ -679,11 +679,11 @@ def affected(
         items.append({
             "recipient": r["recipient"],
             "name": name,
-            "broken_txs": int(r["broken_txs"]),
-            "avg_delta": float(r["avg_delta"]),
-            "total_delta": float(r["total_delta"]),
-            "min_block": int(r["min_block"]),
-            "max_block": int(r["max_block"]),
+            "broken_txs": _int(r["broken_txs"]),
+            "avg_delta": _float(r["avg_delta"]),
+            "total_delta": _float(r["total_delta"]),
+            "min_block": _int(r["min_block"]),
+            "max_block": _int(r["max_block"]),
             "owner": info.get("owner_buckets", ""),
             "remediation": info.get("remediation_buckets", ""),
         })

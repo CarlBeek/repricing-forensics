@@ -60,7 +60,10 @@ def query(sql: str) -> list[dict[str, Any]]:
     """Execute SQL and return a list of dicts."""
     with _db_lock:
         df = get_conn().execute(sql).df()
-    return df.where(df.notna(), None).to_dict(orient="records")
+    # `df.where(df.notna(), None)` does not coerce NaN to None on float columns
+    # (pandas preserves the float dtype, so None round-trips back to NaN). Cast
+    # to object first so None survives `to_dict`.
+    return df.astype(object).where(df.notna(), None).to_dict(orient="records")
 
 
 def query_df(sql: str) -> pd.DataFrame:
