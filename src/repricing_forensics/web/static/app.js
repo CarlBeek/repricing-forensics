@@ -1,5 +1,17 @@
 /* Gas repricing analysis - client-side rendering */
 
+// Plotly.newPlot does not remove non-Plotly children of the target div, so the
+// `<p class="loading">Loading chart...</p>` placeholder stays visible alongside
+// the rendered chart. Strip it before each newPlot call.
+if (window.Plotly && Plotly.newPlot) {
+  const _origNewPlot = Plotly.newPlot;
+  Plotly.newPlot = function (gd, ...rest) {
+    const el = typeof gd === 'string' ? document.getElementById(gd) : gd;
+    if (el) el.querySelectorAll('.loading').forEach(p => p.remove());
+    return _origNewPlot.call(this, gd, ...rest);
+  };
+}
+
 // Theme-aware color palettes
 const THEMES = {
   crt: {
