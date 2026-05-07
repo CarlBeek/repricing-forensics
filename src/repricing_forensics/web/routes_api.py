@@ -30,7 +30,25 @@ FORENSIC_OPCODE_NAMES = {
     "0x07": "SMOD",
     "0x08": "ADDMOD",
     "0x09": "MULMOD",
+    "0x0a": "EXP",
     "0x20": "KECCAK256",
+}
+
+# Same mapping keyed by the numeric opcode value, since the pipeline's
+# named-string column (`divergence_opcode_name`) ends up empty for every
+# row — the Rust Debug output writes `opcode_name: KECCAK256` (no quotes)
+# but the regex looks for a quoted string. The numeric `divergence_opcode`
+# column is extracted with a `\d+` pattern that does match, so we read
+# from there and map int -> name on the Python side.
+EIP7904_OPCODE_INT_NAMES = {
+    0x04: "DIV",
+    0x05: "SDIV",
+    0x06: "MOD",
+    0x07: "SMOD",
+    0x08: "ADDMOD",
+    0x09: "MULMOD",
+    0x0a: "EXP",
+    0x20: "KECCAK256",
 }
 
 
@@ -97,17 +115,17 @@ def funnel():
 @router.get("/opcode-impact")
 def opcode_impact():
     rows = query(f"""
-        SELECT divergence_opcode_name as opcode, count(*) as cnt
+        SELECT divergence_opcode AS opcode_num, count(*) AS cnt
         FROM normalized_forensics
-        WHERE divergence_opcode_name IS NOT NULL
+        WHERE divergence_opcode IS NOT NULL
           AND divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
         GROUP BY 1 ORDER BY cnt DESC
     """)
     total = sum(r["cnt"] for r in rows)
     return [
         {
-            "opcode": r["opcode"],
-            "name": FORENSIC_OPCODE_NAMES.get(r["opcode"], r["opcode"]),
+            "opcode": f"0x{int(r['opcode_num']):02x}",
+            "name": EIP7904_OPCODE_INT_NAMES.get(int(r["opcode_num"]), f"0x{int(r['opcode_num']):02x}"),
             "count": int(r["cnt"]),
             "share": round(r["cnt"] / total * 100, 1) if total else 0,
         }
@@ -766,11 +784,11 @@ def affected_detail(address: str):
           AND lower(recipient) = '{addr}'
     """, default=0)
     opcodes_raw = query(f"""
-        SELECT n.divergence_opcode_name as op, count(*) as cnt
+        SELECT n.divergence_opcode AS op_num, count(*) AS cnt
         FROM normalized_forensics n
         JOIN hot_7904 h USING (divergence_id)
         WHERE h.status_changed
-          AND n.divergence_opcode_name IS NOT NULL
+          AND n.divergence_opcode IS NOT NULL
           AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
           AND lower(h.recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
@@ -850,7 +868,10 @@ def affected_detail(address: str):
             "min_block": _int(eip7904_stats["min_block"]),
             "max_block": _int(eip7904_stats["max_block"]),
             "opcodes": _with_shares([
-                {"name": FORENSIC_OPCODE_NAMES.get(r["op"], r["op"]), "count": _int(r["cnt"])}
+                {
+                    "name": EIP7904_OPCODE_INT_NAMES.get(int(r["op_num"]), f"0x{int(r['op_num']):02x}"),
+                    "count": _int(r["cnt"]),
+                }
                 for r in opcodes_raw
             ]),
             "depths": _with_shares([
@@ -928,7 +949,8 @@ def tx_detail(tx_hash: str):
 
     # Forensic info: divergence location + OOG info
     forensics = query(f"""
-        SELECT divergence_contract, divergence_call_depth, divergence_opcode_name,
+        SELECT divergence_contract, divergence_call_depth, divergence_opcode,
+               divergence_opcode_name,
                oog_contract, oog_call_depth, oog_opcode_name, oog_pattern, oog_gas_remaining,
                sload_count, sstore_count, call_count, log_count, total_ops
         FROM normalized_forensics
@@ -1012,7 +1034,11 @@ def tx_detail(tx_hash: str):
             "contract": label_address(f.get("divergence_contract") or ""),
             "contract_address": f.get("divergence_contract") or "",
             "call_depth": f.get("divergence_call_depth"),
-            "opcode": f.get("divergence_opcode_name") or "",
+            "opcode": (
+                EIP7904_OPCODE_INT_NAMES.get(int(f["divergence_opcode"]), f"0x{int(f['divergence_opcode']):02x}")
+                if f.get("divergence_opcode") is not None
+                else (f.get("divergence_opcode_name") or "")
+            ),
         } if f else None,
         "oog": {
             "contract": label_address(f.get("oog_contract") or ""),
@@ -1082,6 +1108,52 @@ def search(q: str = Query(default="")):
             if len(results) >= 20:
                 break
     return results
+
+
+@router.get("/_debug/divergence-sample")
+def debug_divergence_sample():
+    """Diagnostic: confirm whether the numeric divergence_opcode column
+    is populated and surface a few raw divergence_location strings so we
+    can see the Rust serializer format. Remove once verified."""
+    counts = query("""
+        SELECT
+            count(*) AS rows_total,
+            count(*) FILTER (WHERE divergence_opcode IS NOT NULL) AS with_opcode_int,
+            count(*) FILTER (WHERE divergence_opcode_name <> '' AND divergence_opcode_name IS NOT NULL) AS with_opcode_name,
+            count(*) FILTER (WHERE divergence_call_depth IS NOT NULL) AS with_call_depth
+        FROM normalized_forensics
+    """)[0]
+    samples = query("""
+        SELECT divergence_location, oog_info
+        FROM artifacts_7904
+        WHERE divergence_location IS NOT NULL
+        LIMIT 3
+    """)
+    top_opcodes = query("""
+        SELECT divergence_opcode AS op_num, count(*) AS cnt
+        FROM normalized_forensics
+        WHERE divergence_opcode IS NOT NULL
+        GROUP BY 1 ORDER BY cnt DESC LIMIT 10
+    """)
+    return {
+        "counts": {k: _int(v) for k, v in counts.items()},
+        "samples": [
+            {
+                "divergence_location": s["divergence_location"],
+                "oog_info": s["oog_info"],
+            }
+            for s in samples
+        ],
+        "top_opcodes_int": [
+            {
+                "opcode_int": _int(r["op_num"]),
+                "opcode_hex": f"0x{int(r['op_num']):02x}",
+                "name": EIP7904_OPCODE_INT_NAMES.get(int(r["op_num"]), f"0x{int(r['op_num']):02x}"),
+                "count": _int(r["cnt"]),
+            }
+            for r in top_opcodes
+        ],
+    }
 
 
 @router.get("/metadata")
