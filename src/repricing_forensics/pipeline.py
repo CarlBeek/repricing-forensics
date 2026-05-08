@@ -28,50 +28,82 @@ def initialize_duckdb(paths: Paths, schedule_name: str, db_path: Path | None = N
 
 # ── Pure-SQL normalized forensics ────────────────────────────────────
 
-NORMALIZED_FORENSICS_SQL = """
+# Producer-side OOG chain-walk classifier columns. Live on the hot parquet,
+# added by reth-research after the wallet-fixable misclassification fix
+# (docs/oog-classifier-fix.md). Older lakes don't have them; we detect that
+# at runtime and fill the columns with NULL so the schema of
+# normalized_forensics stays stable for downstream queries.
+_OOG_CHAIN_COLUMNS = (
+    "oog_chain_proportional",
+    "oog_bottleneck_depth",
+    "oog_bottleneck_kind",
+)
+
+
+def _hot_has_oog_chain_columns(conn) -> bool:
+    cols = {row[0] for row in conn.execute("DESCRIBE hot_7904").fetchall()}
+    return all(c in cols for c in _OOG_CHAIN_COLUMNS)
+
+
+def _normalized_forensics_sql(*, include_oog_chain: bool) -> str:
+    if include_oog_chain:
+        oog_chain_select = """    h.oog_chain_proportional,
+    h.oog_bottleneck_depth,
+    h.oog_bottleneck_kind,"""
+        join_clause = "LEFT JOIN hot_7904 h USING (divergence_id)"
+    else:
+        oog_chain_select = """    CAST(NULL AS BOOLEAN) AS oog_chain_proportional,
+    CAST(NULL AS INTEGER) AS oog_bottleneck_depth,
+    CAST(NULL AS VARCHAR) AS oog_bottleneck_kind,"""
+        join_clause = ""
+    return f"""
 CREATE OR REPLACE TABLE normalized_forensics AS
 SELECT
-    divergence_id,
-    block_number,
-    tx_index,
-    tx_hash,
+    a.divergence_id,
+    a.block_number,
+    a.tx_index,
+    a.tx_hash,
 
     -- divergence location fields (regex on Rust debug string)
-    lower(regexp_extract(divergence_location, 'contract:\\s*(0x[a-fA-F0-9]+)', 1))
+    lower(regexp_extract(a.divergence_location, 'contract:\\s*(0x[a-fA-F0-9]+)', 1))
         AS divergence_contract,
-    TRY_CAST(regexp_extract(divergence_location, 'pc:\\s*(\\d+)', 1) AS INTEGER)
+    TRY_CAST(regexp_extract(a.divergence_location, 'pc:\\s*(\\d+)', 1) AS INTEGER)
         AS divergence_pc,
-    TRY_CAST(regexp_extract(divergence_location, 'call_depth:\\s*(\\d+)', 1) AS INTEGER)
+    TRY_CAST(regexp_extract(a.divergence_location, 'call_depth:\\s*(\\d+)', 1) AS INTEGER)
         AS divergence_call_depth,
-    TRY_CAST(regexp_extract(divergence_location, 'opcode:\\s*(\\d+)', 1) AS INTEGER)
+    TRY_CAST(regexp_extract(a.divergence_location, 'opcode:\\s*(\\d+)', 1) AS INTEGER)
         AS divergence_opcode,
-    regexp_extract(divergence_location, 'opcode_name:\\s*"([^"]+)"', 1)
+    regexp_extract(a.divergence_location, 'opcode_name:\\s*"([^"]+)"', 1)
         AS divergence_opcode_name,
 
     -- oog fields
-    lower(regexp_extract(oog_info, 'contract:\\s*(0x[a-fA-F0-9]+)', 1))
+    lower(regexp_extract(a.oog_info, 'contract:\\s*(0x[a-fA-F0-9]+)', 1))
         AS oog_contract,
-    TRY_CAST(regexp_extract(oog_info, 'pc:\\s*(\\d+)', 1) AS INTEGER)
+    TRY_CAST(regexp_extract(a.oog_info, 'pc:\\s*(\\d+)', 1) AS INTEGER)
         AS oog_pc,
-    TRY_CAST(regexp_extract(oog_info, 'call_depth:\\s*(\\d+)', 1) AS INTEGER)
+    TRY_CAST(regexp_extract(a.oog_info, 'call_depth:\\s*(\\d+)', 1) AS INTEGER)
         AS oog_call_depth,
-    regexp_extract(oog_info, 'opcode_name:\\s*"([^"]+)"', 1)
+    regexp_extract(a.oog_info, 'opcode_name:\\s*"([^"]+)"', 1)
         AS oog_opcode_name,
-    lower(regexp_extract(oog_info, 'pattern:\\s*([A-Za-z]+)', 1))
+    lower(regexp_extract(a.oog_info, 'pattern:\\s*([A-Za-z]+)', 1))
         AS oog_pattern,
-    TRY_CAST(regexp_extract(oog_info, 'gas_remaining:\\s*(\\d+)', 1) AS BIGINT)
+    TRY_CAST(regexp_extract(a.oog_info, 'gas_remaining:\\s*(\\d+)', 1) AS BIGINT)
         AS oog_gas_remaining,
 
+    -- producer-side OOG chain-walk classification (NULL on older data)
+{oog_chain_select}
+
     -- operation counts (JSON fields)
-    operation_counts AS operation_counts_json,
-    TRY_CAST(operation_counts->>'sload_count' AS INTEGER) AS sload_count,
-    TRY_CAST(operation_counts->>'sstore_count' AS INTEGER) AS sstore_count,
-    TRY_CAST(operation_counts->>'call_count' AS INTEGER) AS call_count,
-    TRY_CAST(operation_counts->>'log_count' AS INTEGER) AS log_count,
-    TRY_CAST(operation_counts->>'total_ops' AS INTEGER) AS total_ops,
-    TRY_CAST(operation_counts->>'memory_words_allocated' AS INTEGER) AS memory_words_allocated,
-    TRY_CAST(operation_counts->>'create_count' AS INTEGER) AS create_count
-FROM artifacts_7904
+    a.operation_counts AS operation_counts_json,
+    TRY_CAST(a.operation_counts->>'sload_count' AS INTEGER) AS sload_count,
+    TRY_CAST(a.operation_counts->>'sstore_count' AS INTEGER) AS sstore_count,
+    TRY_CAST(a.operation_counts->>'call_count' AS INTEGER) AS call_count,
+    TRY_CAST(a.operation_counts->>'log_count' AS INTEGER) AS log_count,
+    TRY_CAST(a.operation_counts->>'total_ops' AS INTEGER) AS total_ops,
+    TRY_CAST(a.operation_counts->>'memory_words_allocated' AS INTEGER) AS memory_words_allocated,
+    TRY_CAST(a.operation_counts->>'create_count' AS INTEGER) AS create_count
+FROM artifacts_7904 a
+{join_clause}
 """
 
 NORMALIZED_CALL_FRAMES_SQL = """
@@ -127,7 +159,9 @@ def build_normalized_forensics(
         for statement in create_views_sql(schedule_name, paths.research_lake):
             conn.execute(statement)
 
-        conn.execute(NORMALIZED_FORENSICS_SQL)
+        conn.execute(_normalized_forensics_sql(
+            include_oog_chain=_hot_has_oog_chain_columns(conn),
+        ))
         conn.execute(WALLET_FIXABLE_SQL)
         conn.execute(EIP8037_TX_IMPACT_SQL)
         conn.execute(EIP8037_CONTRACT_IMPACT_SQL)

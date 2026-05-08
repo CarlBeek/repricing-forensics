@@ -61,17 +61,28 @@ GROUP BY 1
 ORDER BY divergent_txs DESC
 """
 
-# Wallet-fixable = divergence at depth ≤ 1 with no internal calls.
-# These are just tight gas estimates that wallets will auto-fix via
-# eth_estimateGas against the new schedule. We filter them from the
-# detailed forensics/affected views to focus on real contract breakage.
+# Wallet-fixable = divergence whose chain of CALLs from root to OOG frame
+# all forwarded gas proportionally (EIP-150 63/64 rule), so raising the
+# wallet's gas limit propagates to the broken frame and clears the OOG.
+# The producer (reth-research) tags each OOG row with this classification;
+# see docs/oog-classifier-fix.md and crates/research/src/oog_chain.rs.
+#
+# Fallback for rows analyzed before the producer emitted the new column
+# (or non-OOG divergences where the column is NULL): the old heuristic of
+# "depth ≤ 1 with no internal calls". This keeps historical data
+# classified the same as before until the producer is re-run.
 WALLET_FIXABLE_SQL = """
 CREATE OR REPLACE TABLE wallet_fixable_ids AS
 SELECT nf.divergence_id
 FROM normalized_forensics nf
-WHERE nf.divergence_call_depth IS NOT NULL
-  AND nf.divergence_call_depth <= 1
-  AND coalesce(nf.call_count, 0) = 0
+WHERE
+    nf.oog_chain_proportional = TRUE
+    OR (
+        nf.oog_chain_proportional IS NULL
+        AND nf.divergence_call_depth IS NOT NULL
+        AND nf.divergence_call_depth <= 1
+        AND coalesce(nf.call_count, 0) = 0
+    )
 """
 
 
