@@ -543,6 +543,120 @@ def eip8037_multiplier_histogram():
     ]
 
 
+@router.get("/eip8037/reservoir")
+def eip8037_reservoir():
+    """Reservoir-utilization view: how full does the per-tx state-gas
+    reservoir get in practice, and what happens to the overflow tail."""
+    headline = query("""
+        SELECT
+            count(*) AS total_txs,
+            sum(CASE WHEN runtime_state_gas > 0 THEN 1 ELSE 0 END) AS state_touching_txs,
+            sum(CASE WHEN runtime_state_gas_spillover > 0 THEN 1 ELSE 0 END) AS overflow_txs,
+            percentile_cont(0.95) WITHIN GROUP (
+                ORDER BY runtime_state_gas::DOUBLE / NULLIF(schedule_initial_reservoir, 0)
+            ) FILTER (WHERE schedule_initial_reservoir > 0 AND runtime_state_gas > 0)
+                AS p95_utilization_state_touching,
+            percentile_cont(0.50) WITHIN GROUP (
+                ORDER BY runtime_state_gas::DOUBLE / NULLIF(schedule_initial_reservoir, 0)
+            ) FILTER (WHERE schedule_initial_reservoir > 0 AND runtime_state_gas > 0)
+                AS p50_utilization_state_touching
+        FROM eip8037_tx_impact
+    """)[0]
+
+    util_rows = query("""
+        WITH bucketed AS (
+            SELECT
+                CASE
+                    WHEN runtime_state_gas <= 0 THEN 0
+                    WHEN schedule_initial_reservoir <= 0
+                         OR runtime_state_gas > schedule_initial_reservoir THEN 6
+                    WHEN runtime_state_gas <= 0.10 * schedule_initial_reservoir THEN 1
+                    WHEN runtime_state_gas <= 0.25 * schedule_initial_reservoir THEN 2
+                    WHEN runtime_state_gas <= 0.50 * schedule_initial_reservoir THEN 3
+                    WHEN runtime_state_gas <= 0.75 * schedule_initial_reservoir THEN 4
+                    ELSE 5
+                END AS sort_key,
+                count(*) AS txs,
+                sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs
+            FROM eip8037_tx_impact
+            GROUP BY 1
+        )
+        SELECT * FROM bucketed ORDER BY sort_key
+    """)
+    UTIL_LABELS = {
+        0: "no state", 1: "0–10%", 2: "10–25%", 3: "25–50%",
+        4: "50–75%", 5: "75–100%", 6: "overflow",
+    }
+    utilization = [
+        {
+            "bucket": UTIL_LABELS.get(int(r["sort_key"]), str(r["sort_key"])),
+            "sort_key": int(r["sort_key"]),
+            "txs": _int(r["txs"]),
+            "status_changed_txs": _int(r["status_changed_txs"]),
+        }
+        for r in util_rows
+    ]
+
+    # Spillover severity (overflow cohort only) — log2-bucketed CDF input.
+    spillover_rows = query("""
+        WITH bucketed AS (
+            SELECT
+                floor(log2(runtime_state_gas_spillover))::int AS log_bin,
+                count(*) AS cnt
+            FROM eip8037_tx_impact
+            WHERE runtime_state_gas_spillover > 0
+            GROUP BY 1
+        )
+        SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
+    """)
+    spillover_total = sum(int(r["cnt"]) for r in spillover_rows) or 1
+    spillover_histogram = [
+        {
+            "bin_start": 2 ** int(r["log_bin"]),
+            "label": f'{2**int(r["log_bin"])}–{2**(int(r["log_bin"])+1)}',
+            "count": _int(r["cnt"]),
+            "density": round(int(r["cnt"]) / spillover_total, 6),
+        }
+        for r in spillover_rows
+    ]
+
+    category_rows = query("""
+        SELECT
+            coalesce(state_gas_category, 'uncategorized') AS category,
+            count(*) AS total_txs,
+            sum(CASE WHEN runtime_state_gas <= 0 THEN 1 ELSE 0 END) AS no_state_txs,
+            sum(CASE WHEN runtime_state_gas > 0 AND runtime_state_gas_spillover = 0
+                          THEN 1 ELSE 0 END) AS fits_txs,
+            sum(CASE WHEN runtime_state_gas_spillover > 0 THEN 1 ELSE 0 END) AS overflow_txs
+        FROM eip8037_tx_impact
+        GROUP BY 1
+        ORDER BY total_txs DESC
+    """)
+    category_split = [
+        {
+            "category": r["category"],
+            "total_txs": _int(r["total_txs"]),
+            "no_state_txs": _int(r["no_state_txs"]),
+            "fits_txs": _int(r["fits_txs"]),
+            "overflow_txs": _int(r["overflow_txs"]),
+        }
+        for r in category_rows
+    ]
+
+    return {
+        "headline": {
+            "total_txs": _int(headline["total_txs"]),
+            "state_touching_txs": _int(headline["state_touching_txs"]),
+            "overflow_txs": _int(headline["overflow_txs"]),
+            "p50_utilization_state_touching": _float_or_none(headline["p50_utilization_state_touching"]),
+            "p95_utilization_state_touching": _float_or_none(headline["p95_utilization_state_touching"]),
+        },
+        "utilization": utilization,
+        "spillover_histogram": spillover_histogram,
+        "category_split": category_split,
+    }
+
+
 @router.get("/eip8037/state-gas-by-category")
 def eip8037_state_gas_by_category():
     rows = query("""

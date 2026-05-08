@@ -13,24 +13,45 @@
 <p>Runtime state gas is the state-gas component after subtracting state gas charged at transaction start. Spillover means runtime state gas exceeded the initial reservoir and had to be paid from regular gas.</p>
 <div class="poster-grid" id="stateCards"><p class="loading">Loading...</p></div>
 
-<h2>3. Minimum Gas-Limit Multiplier</h2>
+<h2>3. Reservoir Mechanics</h2>
+<p>EIP-8037 gives every transaction an initial state-gas reservoir, sized from intrinsic gas at transaction start. State operations (<code>SSTORE</code>, <code>CREATE</code>, new-account transfer, EIP-7702 authorization) draw from it. Once the reservoir is exhausted, the rest <em>spills over</em> and gets charged against regular gas. These three views show how full the reservoir gets in practice and what happens to the overflow tail.</p>
+
+<div class="poster-grid" id="reservoirCards" style="grid-template-columns: repeat(3, 1fr);">
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+  <div class="skeleton-card"><div class="skeleton skeleton-number"></div><div class="skeleton skeleton-text" style="width:60%;margin:0 auto"></div></div>
+</div>
+
+<h3 style="margin-top:24px">3a. Utilization distribution</h3>
+<p>For every transaction, how full did its initial reservoir get? Most txs touch no state at all; a smaller cohort uses some; the <strong>overflow</strong> tail paid regular gas for the excess.</p>
+<div id="utilizationChart"><p class="loading">Loading chart...</p></div>
+
+<h3 style="margin-top:24px">3b. Spillover severity (overflow cohort only)</h3>
+<p>For transactions whose state operations exceeded the reservoir, this CDF shows how much excess was charged against regular gas. Tells us whether the reservoir is "almost the right size" (small spills) or routinely too small (large spills).</p>
+<div id="spilloverChart"><p class="loading">Loading chart...</p></div>
+
+<h3 style="margin-top:24px">3c. By state-gas category</h3>
+<p>Which kinds of state-touching transactions dominate the reservoir, and which actually overflow it. Stacked share per category — only categories with state activity are shown.</p>
+<div id="categoryReservoirChart"><p class="loading">Loading chart...</p></div>
+
+<h2>4. Minimum Gas-Limit Multiplier</h2>
 <p>For transactions that need more outer gas, this buckets the minimum multiplier observed in replay. "Unresolved" means the replay still failed or halted for a non-gas reason at the configured inflated limit.</p>
 <div id="multiplierChart"><p class="loading">Loading chart...</p></div>
 
-<h2>4. State Gas Categories</h2>
+<h2>5. State Gas Categories</h2>
 <div id="categoryChart"><p class="loading">Loading chart...</p></div>
 <table>
   <thead><tr><th>Category</th><th>Txs</th><th>Total State Gas</th><th>Runtime State Gas</th><th>Spillover</th><th>Reservoir Exhausted</th></tr></thead>
   <tbody id="categoryBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<h2>5. Top Contracts by Original-Limit Risk</h2>
+<h2>6. Top Contracts by Original-Limit Risk</h2>
 <table>
   <thead><tr><th>Contract</th><th>Original-Limit Failures</th><th>Status Changes</th><th>State Gas</th><th>p95 Multiplier</th><th>Max Extra Gas</th></tr></thead>
   <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<h2>6. Highest-Risk Transactions</h2>
+<h2>7. Highest-Risk Transactions</h2>
 <table>
   <thead><tr><th>Tx</th><th>Target</th><th>Gas Limit</th><th>Schedule Used</th><th>Multiplier</th><th>State Gas</th><th>Spillover</th></tr></thead>
   <tbody id="exampleBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
@@ -44,12 +65,13 @@ function fmtMultiplier(n) {
 }
 
 (async function() {
-  const [overview, buckets, categories, contracts, examples] = await Promise.all([
+  const [overview, buckets, categories, contracts, examples, reservoir] = await Promise.all([
     fetchJSON('/api/eip8037/overview'),
     fetchJSON('/api/eip8037/multiplier-histogram'),
     fetchJSON('/api/eip8037/state-gas-by-category'),
     fetchJSON('/api/eip8037/top-contracts?limit=20'),
     fetchJSON('/api/eip8037/examples?limit=50'),
+    fetchJSON('/api/eip8037/reservoir'),
   ]);
 
   document.getElementById('subtitle').textContent =
@@ -68,6 +90,100 @@ function fmtMultiplier(n) {
     { value: fmtGas(overview.total_runtime_state_gas_spillover), label: 'Runtime Spillover', color: COLORS.broken },
     { value: fmtCount(overview.reservoir_exhausted_txs), label: 'Reservoir Exhausted Txs', color: COLORS.broken },
   ]);
+
+  // ── Reservoir mechanics ──────────────────────────────────────────────
+  const rh = reservoir.headline;
+  const stateTouchPct = rh.total_txs ? (rh.state_touching_txs / rh.total_txs * 100) : 0;
+  const overflowOfTouchingPct = rh.state_touching_txs ? (rh.overflow_txs / rh.state_touching_txs * 100) : 0;
+  function fmtPctVal(n) { return `${n.toFixed(n < 1 ? 2 : 1)}%`; }
+  function fmtUtil(n) { return n == null ? 'n/a' : fmtPctVal(n * 100); }
+
+  renderPosterCards('reservoirCards', [
+    { value: fmtPctVal(stateTouchPct), label: `Txs touching state<br>(${fmtCount(rh.state_touching_txs)} of ${fmtCount(rh.total_txs)})` },
+    { value: fmtUtil(rh.p95_utilization_state_touching),
+      label: 'p95 utilization<br>(state-touching cohort)',
+      color: COLORS.changed },
+    { value: fmtPctVal(overflowOfTouchingPct),
+      label: `Overflow rate<br>(${fmtCount(rh.overflow_txs)} of ${fmtCount(rh.state_touching_txs)})`,
+      color: COLORS.broken },
+  ]);
+
+  // 3a. Utilization histogram
+  const utilColors = reservoir.utilization.map(u => {
+    if (u.bucket === 'overflow') return COLORS.broken;
+    if (u.bucket === '75–100%') return COLORS.changed;
+    if (u.bucket === 'no state') return COLORS.neutral;
+    return COLORS.saved;
+  });
+  Plotly.newPlot('utilizationChart', [{
+    x: reservoir.utilization.map(u => u.bucket),
+    y: reservoir.utilization.map(u => u.txs),
+    type: 'bar',
+    marker: { color: utilColors },
+    hovertext: reservoir.utilization.map(u =>
+      `${u.bucket}: ${fmtCount(u.txs)} txs<br>${fmtCount(u.status_changed_txs)} status changes`),
+    hoverinfo: 'text',
+  }], layout({
+    title: { text: 'Reservoir utilization (all txs)' },
+    xaxis: { title: 'runtime_state_gas / initial_reservoir' },
+    yaxis: { title: 'Transactions (log)', type: 'log', tickformat: ',' },
+    height: 380,
+  }), { responsive: true });
+
+  // 3b. Spillover severity CDF — log x, conditional on spillover > 0
+  const spillHist = reservoir.spillover_histogram;
+  if (spillHist.length === 0) {
+    document.getElementById('spilloverChart').innerHTML =
+      '<p class="note">No transactions overflow the reservoir in this dataset.</p>';
+  } else {
+    let spillCum = 0;
+    const spillCmf = spillHist.map(b => { spillCum += b.density; return spillCum * 100; });
+    Plotly.newPlot('spilloverChart', [{
+      x: spillHist.map(b => b.bin_start),
+      y: spillCmf,
+      mode: 'lines+markers',
+      marker: { size: 5, color: COLORS.broken },
+      line: { color: COLORS.broken, width: 2 },
+      hovertext: spillHist.map((b, i) =>
+        `spillover ${b.label} gas: ${fmtCount(b.count)} txs (${spillCmf[i].toFixed(1)}% cumulative)`),
+      hoverinfo: 'text',
+    }], layout({
+      title: { text: 'Spillover-gas CDF (overflow cohort)' },
+      xaxis: { title: 'Spillover gas (log)', type: 'log', tickformat: ',', exponentformat: 'none' },
+      yaxis: { title: 'Cumulative %', range: [0, 105], ticksuffix: '%' },
+      height: 380,
+    }), { responsive: true });
+  }
+
+  // 3c. Per-category fits-vs-overflow stacked bar
+  const cats = reservoir.category_split.filter(c => (c.fits_txs + c.overflow_txs) > 0);
+  Plotly.newPlot('categoryReservoirChart', [
+    {
+      x: cats.map(c => c.category),
+      y: cats.map(c => c.fits_txs),
+      name: 'Fits in reservoir',
+      type: 'bar',
+      marker: { color: COLORS.saved },
+      hovertext: cats.map(c => `${c.category}: ${fmtCount(c.fits_txs)} fit`),
+      hoverinfo: 'text',
+    },
+    {
+      x: cats.map(c => c.category),
+      y: cats.map(c => c.overflow_txs),
+      name: 'Overflow',
+      type: 'bar',
+      marker: { color: COLORS.broken },
+      hovertext: cats.map(c => `${c.category}: ${fmtCount(c.overflow_txs)} overflow`),
+      hoverinfo: 'text',
+    },
+  ], layout({
+    title: { text: 'State-touching txs by category: fits vs overflow' },
+    barmode: 'stack',
+    xaxis: { title: 'state_gas_category' },
+    yaxis: { title: 'Transactions', tickformat: ',' },
+    height: 420,
+    showlegend: true,
+  }), { responsive: true });
 
   Plotly.newPlot('multiplierChart', [{
     x: buckets.map(b => b.bucket),
