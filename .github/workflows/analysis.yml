@@ -36,6 +36,12 @@ jobs:
           pip install --upgrade pip
           pip install -e .
 
+      - name: Stop web server
+        # Releases the DuckDB read-only lock so the pipeline below can write.
+        # The "Restart web server" step at the end brings it back with the
+        # newly built database.
+        run: sudo systemctl stop eip7904-web || echo "Web server service not running — skipping stop"
+
       - name: Export Parquet from divergence DB
         run: |
           . .venv/bin/activate
