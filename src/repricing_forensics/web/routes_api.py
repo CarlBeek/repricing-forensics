@@ -1471,6 +1471,12 @@ def debug_divergence_sample():
         WHERE divergence_location IS NOT NULL
         LIMIT 3
     """)
+    oog_samples = query("""
+        SELECT divergence_location, oog_info
+        FROM artifacts_7904
+        WHERE oog_info IS NOT NULL
+        LIMIT 3
+    """)
     top_opcodes = query("""
         SELECT divergence_opcode AS op_num, count(*) AS cnt
         FROM normalized_forensics
@@ -1485,6 +1491,13 @@ def debug_divergence_sample():
                 "oog_info": s["oog_info"],
             }
             for s in samples
+        ],
+        "oog_samples": [
+            {
+                "divergence_location": s["divergence_location"],
+                "oog_info": s["oog_info"],
+            }
+            for s in oog_samples
         ],
         "top_opcodes_int": [
             {
