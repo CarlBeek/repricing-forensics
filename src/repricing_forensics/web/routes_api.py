@@ -1241,11 +1241,10 @@ def search(q: str = Query(default="")):
 def debug_data_audit():
     """One-shot audit of upstream replay-data quality.
 
-    Introspects the columns of the derived tables that feed the web UI,
-    profiles each numeric / string / boolean field, and auto-flags
-    fields that look broken (uniformly NULL, all zero, all empty,
-    single-distinct-value). Use this to triage what to fix in the reth
-    fork without having to instrument the consumer side."""
+    Profiles every numeric / string / boolean column on the derived
+    tables that feed the web UI in a single batched SELECT per table,
+    and auto-flags fields that look broken (uniformly NULL, all zero,
+    all empty, single distinct value, always-true / always-false)."""
 
     SCOPED_TABLES = [
         "normalized_forensics",
@@ -1266,141 +1265,126 @@ def debug_data_audit():
     def is_bool(t: str) -> bool:
         return "BOOL" in t.upper()
 
-    def profile_num(t, f):
-        try:
-            r = query(f"""
-                SELECT
-                    count(*) AS total,
-                    count("{f}") AS non_null,
-                    sum(CASE WHEN "{f}" = 0 THEN 1 ELSE 0 END) AS zero,
-                    sum(CASE WHEN "{f}" > 0 THEN 1 ELSE 0 END) AS positive,
-                    sum(CASE WHEN "{f}" < 0 THEN 1 ELSE 0 END) AS negative,
-                    count(DISTINCT "{f}") AS distinct_n,
-                    min("{f}") AS min_v, max("{f}") AS max_v, avg("{f}") AS avg_v
-                FROM {t}
-            """)[0]
-            return {
-                "total": _int(r["total"]),
-                "non_null": _int(r["non_null"]),
-                "zero": _int(r["zero"]),
-                "positive": _int(r["positive"]),
-                "negative": _int(r["negative"]),
-                "distinct": _int(r["distinct_n"]),
-                "min": _float_or_none(r["min_v"]),
-                "max": _float_or_none(r["max_v"]),
-                "avg": _float_or_none(r["avg_v"]),
-            }
-        except Exception as e:
-            return {"error": str(e)[:200]}
-
-    def profile_str(t, f):
-        try:
-            r = query(f"""
-                SELECT
-                    count(*) AS total,
-                    count("{f}") AS non_null,
-                    sum(CASE WHEN "{f}" = '' THEN 1 ELSE 0 END) AS empty,
-                    count(DISTINCT "{f}") AS distinct_n
-                FROM {t}
-            """)[0]
-            samples = query(f"""
-                SELECT "{f}" AS val, count(*) AS cnt
-                FROM {t}
-                WHERE "{f}" IS NOT NULL AND "{f}" <> ''
-                GROUP BY 1 ORDER BY cnt DESC LIMIT 3
-            """)
-            return {
-                "total": _int(r["total"]),
-                "non_null": _int(r["non_null"]),
-                "empty": _int(r["empty"]),
-                "distinct": _int(r["distinct_n"]),
-                "top_values": [
-                    {"val": str(s["val"])[:80], "count": _int(s["cnt"])} for s in samples
-                ],
-            }
-        except Exception as e:
-            return {"error": str(e)[:200]}
-
-    def profile_bool(t, f):
-        try:
-            r = query(f"""
-                SELECT
-                    count(*) AS total,
-                    sum(CASE WHEN "{f}" THEN 1 ELSE 0 END) AS true_n,
-                    sum(CASE WHEN NOT "{f}" THEN 1 ELSE 0 END) AS false_n,
-                    count(*) FILTER (WHERE "{f}" IS NULL) AS null_n
-                FROM {t}
-            """)[0]
-            return {
-                "total": _int(r["total"]),
-                "true": _int(r["true_n"]),
-                "false": _int(r["false_n"]),
-                "null": _int(r["null_n"]),
-            }
-        except Exception as e:
-            return {"error": str(e)[:200]}
-
-    def verdict(profile, kind):
-        if "error" in profile:
-            return f"ERROR: {profile['error']}"
-        if kind == "numeric":
-            if profile["non_null"] == 0:
-                return "UNPOPULATED (all NULL)"
-            if profile["distinct"] == 1:
-                return f"BROKEN (single value: {profile['min']})"
-            if profile["zero"] == profile["non_null"]:
-                return "BROKEN (all zero)"
-            return "OK"
-        if kind == "string":
-            if profile["non_null"] == 0:
-                return "UNPOPULATED (all NULL)"
-            if profile["empty"] == profile["non_null"]:
-                return "BROKEN (all empty strings)"
-            if profile["distinct"] == 1:
-                top = profile.get("top_values") or [{}]
-                return f"BROKEN (single distinct value: {top[0].get('val', '?')})"
-            return "OK"
-        if kind == "boolean":
-            if profile["true"] == 0 and profile["false"] == 0:
-                return "UNPOPULATED (all NULL)"
-            if profile["true"] == 0:
-                return "ALWAYS FALSE"
-            if profile["false"] == 0:
-                return "ALWAYS TRUE"
-            return "OK"
-        return "OK"
-
-    checks = []
-    for table in SCOPED_TABLES:
+    def profile_table(table):
+        """One scan, all column profiles."""
         try:
             cols = query(f"DESCRIBE {table}")
         except Exception as e:
-            checks.append({
-                "table": table, "field": "<table>", "verdict": f"ERROR: {str(e)[:100]}",
-                "kind": "table",
-            })
-            continue
+            return [{
+                "table": table, "field": "<table>", "kind": "table",
+                "verdict": f"ERROR: {str(e)[:120]}",
+            }]
+        col_meta = []  # (name, kind)
+        aggs = ["count(*) AS total"]
         for col in cols:
             name = col["column_name"]
             ctype = col["column_type"]
             if any(s in ctype.upper() for s in SKIP_TYPES):
                 continue
+            qf = f'"{name}"'
             if is_numeric(ctype):
-                profile = profile_num(table, name); kind = "numeric"
+                aggs += [
+                    f'count({qf}) AS "{name}__non_null"',
+                    f'sum(CASE WHEN {qf} = 0 THEN 1 ELSE 0 END) AS "{name}__zero"',
+                    f'sum(CASE WHEN {qf} > 0 THEN 1 ELSE 0 END) AS "{name}__positive"',
+                    f'sum(CASE WHEN {qf} < 0 THEN 1 ELSE 0 END) AS "{name}__negative"',
+                    f'min({qf}) AS "{name}__min"',
+                    f'max({qf}) AS "{name}__max"',
+                    f'avg({qf}) AS "{name}__avg"',
+                ]
+                col_meta.append((name, "numeric", ctype))
             elif is_string(ctype):
-                profile = profile_str(table, name); kind = "string"
+                aggs += [
+                    f'count({qf}) AS "{name}__non_null"',
+                    f"sum(CASE WHEN {qf} = '' THEN 1 ELSE 0 END) AS \"{name}__empty\"",
+                    f'min({qf}) AS "{name}__min"',
+                    f'max({qf}) AS "{name}__max"',
+                ]
+                col_meta.append((name, "string", ctype))
             elif is_bool(ctype):
-                profile = profile_bool(table, name); kind = "boolean"
-            else:
-                continue
-            checks.append({
-                "table": table,
-                "field": name,
-                "type": ctype,
-                "kind": kind,
-                "verdict": verdict(profile, kind),
-                **profile,
-            })
+                aggs += [
+                    f'sum(CASE WHEN {qf} THEN 1 ELSE 0 END) AS "{name}__true"',
+                    f'sum(CASE WHEN NOT {qf} THEN 1 ELSE 0 END) AS "{name}__false"',
+                    f'count(*) FILTER (WHERE {qf} IS NULL) AS "{name}__null"',
+                ]
+                col_meta.append((name, "bool", ctype))
+        if not col_meta:
+            return []
+        try:
+            row = query(f"SELECT {', '.join(aggs)} FROM {table}")[0]
+        except Exception as e:
+            return [{
+                "table": table, "field": "<batch>", "kind": "batch",
+                "verdict": f"ERROR: {str(e)[:200]}",
+            }]
+        total = _int(row["total"])
+        results = []
+        for name, kind, ctype in col_meta:
+            if kind == "numeric":
+                non_null = _int(row[f"{name}__non_null"])
+                zero = _int(row[f"{name}__zero"])
+                pos = _int(row[f"{name}__positive"])
+                neg = _int(row[f"{name}__negative"])
+                min_v = _float_or_none(row[f"{name}__min"])
+                max_v = _float_or_none(row[f"{name}__max"])
+                avg_v = _float_or_none(row[f"{name}__avg"])
+                if non_null == 0:
+                    verdict = "UNPOPULATED (all NULL)"
+                elif min_v == max_v:
+                    verdict = f"CONSTANT ({min_v})"
+                elif zero == non_null:
+                    verdict = "ALL ZERO"
+                else:
+                    verdict = "OK"
+                results.append({
+                    "table": table, "field": name, "type": ctype, "kind": "numeric",
+                    "total": total, "non_null": non_null,
+                    "zero": zero, "positive": pos, "negative": neg,
+                    "min": min_v, "max": max_v, "avg": avg_v,
+                    "verdict": verdict,
+                })
+            elif kind == "string":
+                non_null = _int(row[f"{name}__non_null"])
+                empty = _int(row[f"{name}__empty"])
+                min_v = row[f"{name}__min"]
+                max_v = row[f"{name}__max"]
+                if non_null == 0:
+                    verdict = "UNPOPULATED (all NULL)"
+                elif empty == non_null:
+                    verdict = "ALL EMPTY"
+                elif min_v == max_v:
+                    verdict = f"CONSTANT ({str(min_v)[:50]})"
+                else:
+                    verdict = "OK"
+                results.append({
+                    "table": table, "field": name, "type": ctype, "kind": "string",
+                    "total": total, "non_null": non_null, "empty": empty,
+                    "min": str(min_v)[:80] if min_v is not None else None,
+                    "max": str(max_v)[:80] if max_v is not None else None,
+                    "verdict": verdict,
+                })
+            elif kind == "bool":
+                t_n = _int(row[f"{name}__true"])
+                f_n = _int(row[f"{name}__false"])
+                null_n = _int(row[f"{name}__null"])
+                if t_n == 0 and f_n == 0:
+                    verdict = "UNPOPULATED (all NULL)"
+                elif t_n == 0:
+                    verdict = "ALWAYS FALSE"
+                elif f_n == 0:
+                    verdict = "ALWAYS TRUE"
+                else:
+                    verdict = "OK"
+                results.append({
+                    "table": table, "field": name, "type": ctype, "kind": "bool",
+                    "total": total, "true": t_n, "false": f_n, "null": null_n,
+                    "verdict": verdict,
+                })
+        return results
+
+    checks = []
+    for table in SCOPED_TABLES:
+        checks.extend(profile_table(table))
 
     # Cross-field invariants
     def safe_count(sql):
