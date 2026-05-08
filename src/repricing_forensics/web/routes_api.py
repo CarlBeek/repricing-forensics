@@ -1237,6 +1237,237 @@ def search(q: str = Query(default="")):
     return results
 
 
+@router.get("/_debug/data-audit")
+def debug_data_audit():
+    """One-shot audit of upstream replay-data quality.
+
+    Introspects the columns of the derived tables that feed the web UI,
+    profiles each numeric / string / boolean field, and auto-flags
+    fields that look broken (uniformly NULL, all zero, all empty,
+    single-distinct-value). Use this to triage what to fix in the reth
+    fork without having to instrument the consumer side."""
+
+    SCOPED_TABLES = [
+        "normalized_forensics",
+        "eip8037_tx_impact",
+        "eip8037_contract_impact",
+        "hot_7904",
+    ]
+    SKIP_TYPES = ("JSON", "STRUCT", "MAP", "LIST", "[]", "UNION")
+
+    def is_numeric(t: str) -> bool:
+        u = t.upper()
+        return any(k in u for k in ("INT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "REAL"))
+
+    def is_string(t: str) -> bool:
+        u = t.upper()
+        return "VARCHAR" in u or "TEXT" in u or "CHAR" in u
+
+    def is_bool(t: str) -> bool:
+        return "BOOL" in t.upper()
+
+    def profile_num(t, f):
+        try:
+            r = query(f"""
+                SELECT
+                    count(*) AS total,
+                    count("{f}") AS non_null,
+                    sum(CASE WHEN "{f}" = 0 THEN 1 ELSE 0 END) AS zero,
+                    sum(CASE WHEN "{f}" > 0 THEN 1 ELSE 0 END) AS positive,
+                    sum(CASE WHEN "{f}" < 0 THEN 1 ELSE 0 END) AS negative,
+                    count(DISTINCT "{f}") AS distinct_n,
+                    min("{f}") AS min_v, max("{f}") AS max_v, avg("{f}") AS avg_v
+                FROM {t}
+            """)[0]
+            return {
+                "total": _int(r["total"]),
+                "non_null": _int(r["non_null"]),
+                "zero": _int(r["zero"]),
+                "positive": _int(r["positive"]),
+                "negative": _int(r["negative"]),
+                "distinct": _int(r["distinct_n"]),
+                "min": _float_or_none(r["min_v"]),
+                "max": _float_or_none(r["max_v"]),
+                "avg": _float_or_none(r["avg_v"]),
+            }
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    def profile_str(t, f):
+        try:
+            r = query(f"""
+                SELECT
+                    count(*) AS total,
+                    count("{f}") AS non_null,
+                    sum(CASE WHEN "{f}" = '' THEN 1 ELSE 0 END) AS empty,
+                    count(DISTINCT "{f}") AS distinct_n
+                FROM {t}
+            """)[0]
+            samples = query(f"""
+                SELECT "{f}" AS val, count(*) AS cnt
+                FROM {t}
+                WHERE "{f}" IS NOT NULL AND "{f}" <> ''
+                GROUP BY 1 ORDER BY cnt DESC LIMIT 3
+            """)
+            return {
+                "total": _int(r["total"]),
+                "non_null": _int(r["non_null"]),
+                "empty": _int(r["empty"]),
+                "distinct": _int(r["distinct_n"]),
+                "top_values": [
+                    {"val": str(s["val"])[:80], "count": _int(s["cnt"])} for s in samples
+                ],
+            }
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    def profile_bool(t, f):
+        try:
+            r = query(f"""
+                SELECT
+                    count(*) AS total,
+                    sum(CASE WHEN "{f}" THEN 1 ELSE 0 END) AS true_n,
+                    sum(CASE WHEN NOT "{f}" THEN 1 ELSE 0 END) AS false_n,
+                    count(*) FILTER (WHERE "{f}" IS NULL) AS null_n
+                FROM {t}
+            """)[0]
+            return {
+                "total": _int(r["total"]),
+                "true": _int(r["true_n"]),
+                "false": _int(r["false_n"]),
+                "null": _int(r["null_n"]),
+            }
+        except Exception as e:
+            return {"error": str(e)[:200]}
+
+    def verdict(profile, kind):
+        if "error" in profile:
+            return f"ERROR: {profile['error']}"
+        if kind == "numeric":
+            if profile["non_null"] == 0:
+                return "UNPOPULATED (all NULL)"
+            if profile["distinct"] == 1:
+                return f"BROKEN (single value: {profile['min']})"
+            if profile["zero"] == profile["non_null"]:
+                return "BROKEN (all zero)"
+            return "OK"
+        if kind == "string":
+            if profile["non_null"] == 0:
+                return "UNPOPULATED (all NULL)"
+            if profile["empty"] == profile["non_null"]:
+                return "BROKEN (all empty strings)"
+            if profile["distinct"] == 1:
+                top = profile.get("top_values") or [{}]
+                return f"BROKEN (single distinct value: {top[0].get('val', '?')})"
+            return "OK"
+        if kind == "boolean":
+            if profile["true"] == 0 and profile["false"] == 0:
+                return "UNPOPULATED (all NULL)"
+            if profile["true"] == 0:
+                return "ALWAYS FALSE"
+            if profile["false"] == 0:
+                return "ALWAYS TRUE"
+            return "OK"
+        return "OK"
+
+    checks = []
+    for table in SCOPED_TABLES:
+        try:
+            cols = query(f"DESCRIBE {table}")
+        except Exception as e:
+            checks.append({
+                "table": table, "field": "<table>", "verdict": f"ERROR: {str(e)[:100]}",
+                "kind": "table",
+            })
+            continue
+        for col in cols:
+            name = col["column_name"]
+            ctype = col["column_type"]
+            if any(s in ctype.upper() for s in SKIP_TYPES):
+                continue
+            if is_numeric(ctype):
+                profile = profile_num(table, name); kind = "numeric"
+            elif is_string(ctype):
+                profile = profile_str(table, name); kind = "string"
+            elif is_bool(ctype):
+                profile = profile_bool(table, name); kind = "boolean"
+            else:
+                continue
+            checks.append({
+                "table": table,
+                "field": name,
+                "type": ctype,
+                "kind": kind,
+                "verdict": verdict(profile, kind),
+                **profile,
+            })
+
+    # Cross-field invariants
+    def safe_count(sql):
+        try:
+            row = query(sql)[0]
+            return _int(row[list(row.keys())[0]])
+        except Exception as e:
+            return f"ERROR: {str(e)[:100]}"
+
+    invariants = [
+        {
+            "table": "hot_7904",
+            "name": "gas_delta == schedule_gas_used - baseline_gas_used",
+            "violations": safe_count("""
+                SELECT count(*) FROM hot_7904
+                WHERE gas_delta IS NOT NULL
+                  AND schedule_gas_used IS NOT NULL
+                  AND baseline_gas_used IS NOT NULL
+                  AND gas_delta <> schedule_gas_used - baseline_gas_used
+            """),
+        },
+        {
+            "table": "hot_7904",
+            "name": "status_changed iff baseline_success <> schedule_success",
+            "violations": safe_count("""
+                SELECT count(*) FROM hot_7904
+                WHERE status_changed <> (baseline_success <> schedule_success)
+            """),
+        },
+        {
+            "table": "eip8037_tx_impact",
+            "name": "runtime_state_gas_spillover <= runtime_state_gas",
+            "violations": safe_count("""
+                SELECT count(*) FROM eip8037_tx_impact
+                WHERE runtime_state_gas_spillover > runtime_state_gas
+            """),
+        },
+        {
+            "table": "eip8037_tx_impact",
+            "name": "spillover == GREATEST(0, runtime_state_gas - schedule_initial_reservoir)",
+            "violations": safe_count("""
+                SELECT count(*) FROM eip8037_tx_impact
+                WHERE runtime_state_gas_spillover <>
+                      GREATEST(0, runtime_state_gas - schedule_initial_reservoir)
+            """),
+        },
+        {
+            "table": "eip8037_tx_impact",
+            "name": "would_fit_in_original_limit implies schedule_success",
+            "violations": safe_count("""
+                SELECT count(*) FROM eip8037_tx_impact
+                WHERE would_fit_in_original_limit AND NOT schedule_success
+            """),
+        },
+        {
+            "table": "eip8037_tx_impact",
+            "name": "original_limit_failure implies NOT would_fit_in_original_limit",
+            "violations": safe_count("""
+                SELECT count(*) FROM eip8037_tx_impact
+                WHERE original_limit_failure AND would_fit_in_original_limit
+            """),
+        },
+    ]
+
+    return {"checks": checks, "invariants": invariants}
+
+
 @router.get("/_debug/divergence-sample")
 def debug_divergence_sample():
     """Diagnostic: confirm whether the numeric divergence_opcode column
