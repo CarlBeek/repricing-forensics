@@ -98,17 +98,30 @@ def overview():
 
 @router.get("/funnel")
 def funnel():
-    total = query_scalar("SELECT count(*) FROM hot_7904")
-    broken = query_scalar("SELECT count(*) FROM hot_7904 WHERE status_changed")
-    event_log_changed = query_scalar(
-        "SELECT count(*) FROM hot_7904 WHERE event_logs_changed AND NOT status_changed"
-    )
-    cost_only = total - broken - event_log_changed
+    """Bucket every divergent tx by observable impact.
+
+    `trace_divergent_only` is the previously-mislabelled cohort: txs whose
+    intermediate EVM trace differs from baseline but whose final outcome
+    (gas used, event logs, status) matches — i.e. no observable change.
+    """
+    row = query("""
+        SELECT
+            count(*) AS total,
+            sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS broken,
+            sum(CASE WHEN event_logs_changed AND NOT status_changed THEN 1 ELSE 0 END)
+                AS event_log_changed,
+            sum(CASE WHEN NOT status_changed AND NOT event_logs_changed
+                          AND gas_delta > 0 THEN 1 ELSE 0 END) AS gas_only_change,
+            sum(CASE WHEN NOT status_changed AND NOT event_logs_changed
+                          AND gas_delta <= 0 THEN 1 ELSE 0 END) AS trace_divergent_only
+        FROM hot_7904
+    """)[0]
     return {
-        "divergent_txs": int(total),
-        "cost_only": int(cost_only),
-        "event_log_changed": int(event_log_changed),
-        "broken_txs": int(broken),
+        "divergent_txs": _int(row["total"]),
+        "broken_txs": _int(row["broken"]),
+        "event_log_changed": _int(row["event_log_changed"]),
+        "gas_only_change": _int(row["gas_only_change"]),
+        "trace_divergent_only": _int(row["trace_divergent_only"]),
     }
 
 

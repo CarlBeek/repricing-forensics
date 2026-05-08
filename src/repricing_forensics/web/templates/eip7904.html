@@ -23,7 +23,7 @@ break under the proposed schedule and where the breakages concentrate.
 
 <!-- 2. The Funnel -->
 <h2>2. Transaction Breakdown</h2>
-<p>Every re-executed transaction falls into one of these buckets. "Cost-only" means it succeeded but used more gas. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" means a previously-successful transaction now reverts.</p>
+<p>Every re-executed transaction falls into one of these buckets. "Trace-divergent only" means the EVM trace differed from baseline at some intermediate step but the final outcome — gas used, event logs, status — all match, so no observable impact. "Gas-only change" means it succeeded under both schedules but used more gas under EIP-7904. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" means a previously-successful transaction now reverts.</p>
 <div id="funnel"><p class="loading">Loading...</p></div>
 
 <!-- 3. Opcode Impact -->
@@ -79,27 +79,29 @@ break under the proposed schedule and where the breakages concentrate.
     { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
   ]);
 
-  // 2. Funnel — Sankey: Total → Divergent/Unchanged → subtypes → broken split
+  // 2. Funnel — Sankey: All → Unchanged/Divergent → subtypes → broken split
   const totalAnalyzed = overview.total_analyzed;
   const unchanged = totalAnalyzed - funnel.divergent_txs;
   const walletFixable = overview.wallet_fixable_txs;
   const contractBroken = overview.contract_broken_txs;
 
   const labels = [
-    `All Analyzed\n${fmtCount(totalAnalyzed)}`,         // 0
-    `Unchanged\n${fmtCount(unchanged)}`,                 // 1
-    `Divergent\n${fmtCount(funnel.divergent_txs)}`,      // 2
-    `Gas-Only Change\n${fmtCount(funnel.cost_only)}`,    // 3
-    `Event Logs Changed\n${fmtCount(funnel.event_log_changed)}`, // 4
-    `Broken\n${fmtCount(funnel.broken_txs)}`,            // 5
-    `Wallet-Fixable\n${fmtCount(walletFixable)}`,        // 6
-    `Contract-Broken\n${fmtCount(contractBroken)}`,      // 7
+    `All Analyzed\n${fmtCount(totalAnalyzed)}`,                       // 0
+    `Unchanged\n${fmtCount(unchanged)}`,                              // 1
+    `Divergent\n${fmtCount(funnel.divergent_txs)}`,                   // 2
+    `Trace-Divergent Only\n${fmtCount(funnel.trace_divergent_only)}`, // 3
+    `Gas-Only Change\n${fmtCount(funnel.gas_only_change)}`,           // 4
+    `Event Logs Changed\n${fmtCount(funnel.event_log_changed)}`,      // 5
+    `Broken\n${fmtCount(funnel.broken_txs)}`,                         // 6
+    `Wallet-Fixable\n${fmtCount(walletFixable)}`,                     // 7
+    `Contract-Broken\n${fmtCount(contractBroken)}`,                   // 8
   ];
   const nodeColors = [
     COLORS.neutral,    // All Analyzed
     '#3f3f46',         // Unchanged
     COLORS.changed,    // Divergent
-    COLORS.saved,      // Gas-only
+    '#3f3f46',         // Trace-divergent only (no observable change → match Unchanged)
+    COLORS.saved,      // Gas-only change
     COLORS.event_logs, // Event logs
     COLORS.broken,     // Broken
     COLORS.call_tree,  // Wallet-fixable
@@ -108,19 +110,29 @@ break under the proposed schedule and where the breakages concentrate.
 
   renderSankey('funnel', {
     labels,
-    sources:     [0, 0, 2, 2, 2, 5, 5],
-    targets:     [1, 2, 3, 4, 5, 6, 7],
-    values:      [unchanged, funnel.divergent_txs, funnel.cost_only, funnel.event_log_changed, funnel.broken_txs, walletFixable, contractBroken],
+    sources:     [0, 0, 2, 2, 2, 2, 6, 6],
+    targets:     [1, 2, 3, 4, 5, 6, 7, 8],
+    values: [
+      unchanged,
+      funnel.divergent_txs,
+      funnel.trace_divergent_only,
+      funnel.gas_only_change,
+      funnel.event_log_changed,
+      funnel.broken_txs,
+      walletFixable,
+      contractBroken,
+    ],
     link_colors: [
       'rgba(90,74,32,0.2)',        // → Unchanged
       'rgba(255,184,48,0.12)',     // → Divergent
-      'rgba(255,208,112,0.12)',    // → Gas-only
+      'rgba(90,74,32,0.18)',       // → Trace-divergent only
+      'rgba(255,208,112,0.12)',    // → Gas-only change
       'rgba(138,112,48,0.12)',     // → Event logs
       'rgba(255,184,48,0.2)',      // → Broken
       'rgba(204,144,32,0.12)',     // → Wallet-fixable
       'rgba(255,184,48,0.25)',     // → Contract-broken
     ],
-  }, { height: 400 });
+  }, { height: 420 });
 
   // 3. Opcodes
   document.getElementById('opcodeBody').innerHTML = opcodes.map(o =>
