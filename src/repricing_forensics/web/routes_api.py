@@ -79,17 +79,42 @@ def _float(value) -> float:
 def overview():
     total_divergent = query_scalar("SELECT count(*) FROM hot_7904")
     broken = query_scalar("SELECT count(*) FROM hot_7904 WHERE status_changed")
-    wallet_fixable = query_scalar(
-        f"SELECT count(*) FROM hot_7904 WHERE status_changed"
-        f" AND divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)"
-    )
+    # Carve out the wallet-fixable bucket into two sub-buckets:
+    #   - shallow: depth ≤ 1, no internal calls (the original heuristic)
+    #   - deep_chain: oog_chain_proportional=TRUE on a row the shallow rule
+    #     would have missed (rescued by the producer's chain-walk classifier)
+    wallet_split = query(f"""
+        SELECT
+            sum(CASE
+                WHEN nf.divergence_call_depth IS NOT NULL
+                 AND nf.divergence_call_depth <= 1
+                 AND coalesce(nf.call_count, 0) = 0
+                THEN 1 ELSE 0 END) AS shallow,
+            sum(CASE
+                WHEN nf.oog_chain_proportional = TRUE
+                 AND NOT (
+                    nf.divergence_call_depth IS NOT NULL
+                    AND nf.divergence_call_depth <= 1
+                    AND coalesce(nf.call_count, 0) = 0
+                 )
+                THEN 1 ELSE 0 END) AS deep_chain
+        FROM normalized_forensics nf
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed
+          AND h.divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)
+    """)[0]
+    wallet_fixable_shallow = _int(wallet_split["shallow"])
+    wallet_fixable_deep_chain = _int(wallet_split["deep_chain"])
+    wallet_fixable = wallet_fixable_shallow + wallet_fixable_deep_chain
     total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_7904")
-    contract_broken = broken - (wallet_fixable or 0)
+    contract_broken = broken - wallet_fixable
     return {
         "total_analyzed": _int(total_analyzed),
         "divergent_txs": int(total_divergent),
         "broken_txs": int(broken),
-        "wallet_fixable_txs": int(wallet_fixable or 0),
+        "wallet_fixable_txs": wallet_fixable,
+        "wallet_fixable_shallow_txs": wallet_fixable_shallow,
+        "wallet_fixable_deep_chain_txs": wallet_fixable_deep_chain,
         "contract_broken_txs": int(contract_broken),
         "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
         "contract_breakage_rate": round(contract_broken / total_analyzed * 100, 2) if total_analyzed else 0,
@@ -324,6 +349,37 @@ def forensics_call_depth():
           AND h.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
         GROUP BY 1 ORDER BY 1
     """)
+
+
+@router.get("/forensics/bottleneck-kinds")
+def forensics_bottleneck_kinds():
+    """How many contract-broken txs hit each kind of gas-forwarding bottleneck.
+
+    The producer's chain-walk classifier tags every OOG row with the kind of
+    throttle that broke the call chain (Stipend2300 / FixedGas / FractionalGas).
+    Rows whose chain was fully proportional are not contract-broken — they're
+    in wallet_fixable_ids — so they don't appear here. Rows analyzed before
+    the classifier shipped have NULL kind and bucket as 'Unclassified'.
+    """
+    rows = query(f"""
+        SELECT
+            coalesce(nf.oog_bottleneck_kind, 'Unclassified') AS kind,
+            count(*) AS cnt
+        FROM normalized_forensics nf
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed {NOT_WALLET_FIXABLE}
+        GROUP BY 1
+        ORDER BY cnt DESC
+    """)
+    total = sum(r["cnt"] for r in rows) or 1
+    return [
+        {
+            "kind": r["kind"],
+            "count": _int(r["cnt"]),
+            "share": round(r["cnt"] / total * 100, 1),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/forensics/failure-motifs")
@@ -935,6 +991,15 @@ def affected_detail(address: str):
         WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
         ORDER BY gas_delta DESC LIMIT 20
     """)
+    bottleneck_kinds_raw = query(f"""
+        SELECT coalesce(n.oog_bottleneck_kind, 'Unclassified') as kind, count(*) as cnt
+        FROM normalized_forensics n
+        JOIN hot_7904 h USING (divergence_id)
+        WHERE h.status_changed
+          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+          AND lower(h.recipient) = '{addr}'
+        GROUP BY 1 ORDER BY cnt DESC
+    """)
 
     # ── EIP-8037 stats ──
     eip8037_rows = query(f"""
@@ -1004,6 +1069,10 @@ def affected_detail(address: str):
             "depths": _with_shares([
                 {"depth": _int(r["depth"]), "count": _int(r["cnt"])}
                 for r in depths_raw
+            ]),
+            "bottleneck_kinds": _with_shares([
+                {"kind": r["kind"], "count": _int(r["cnt"])}
+                for r in bottleneck_kinds_raw
             ]),
             "transactions": [
                 {
@@ -1079,6 +1148,7 @@ def tx_detail(tx_hash: str):
         SELECT divergence_contract, divergence_call_depth, divergence_opcode,
                divergence_opcode_name,
                oog_contract, oog_call_depth, oog_opcode_name, oog_pattern, oog_gas_remaining,
+               oog_chain_proportional, oog_bottleneck_depth, oog_bottleneck_kind,
                sload_count, sstore_count, call_count, log_count, total_ops
         FROM normalized_forensics
         WHERE divergence_id = {div_id}
@@ -1174,6 +1244,9 @@ def tx_detail(tx_hash: str):
             "opcode": f.get("oog_opcode_name") or "",
             "pattern": f.get("oog_pattern") or "",
             "gas_remaining": f.get("oog_gas_remaining"),
+            "chain_proportional": f.get("oog_chain_proportional"),
+            "bottleneck_depth": f.get("oog_bottleneck_depth"),
+            "bottleneck_kind": f.get("oog_bottleneck_kind"),
         } if f and f.get("oog_contract") else None,
         "op_counts": {
             "sload": f.get("sload_count", 0),

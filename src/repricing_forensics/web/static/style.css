@@ -195,6 +195,21 @@ tr[onclick]:hover td:last-child::after {
 .tag-blue { border-color: rgba(204,144,32,0.3); color: var(--blue); background: var(--blue-bg); }
 .tag-purple { border-color: rgba(138,112,48,0.3); color: var(--purple); background: var(--purple-bg); }
 
+/* OOG chain-walk classifier chips: surface why a tx broke (or why it's
+   actually wallet-fixable despite a deep call stack). */
+.oog-chip {
+  display: inline-block; margin-left: 8px; padding: 1px 7px;
+  font-size: 0.78em; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid; border-radius: 3px; vertical-align: baseline;
+  cursor: help;
+}
+.oog-chip-fix {
+  border-color: rgba(255,208,112,0.4); color: var(--green); background: var(--green-bg);
+}
+.oog-chip-broken {
+  border-color: var(--red); color: var(--red); background: var(--red-bg);
+}
+
 /* ── Funnel ─────────────────────────────────────────────────────────── */
 .funnel-step { display: flex; align-items: center; gap: 14px; margin: 5px 0; }
 .funnel-bar {

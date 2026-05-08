@@ -20,6 +20,11 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 <p id="depthNote"></p>
 <div id="depthChart"><p class="loading">Loading chart...</p></div>
 
+<!-- 2b. Bottleneck kinds -->
+<h2>2b. Breakage by Bottleneck Type</h2>
+<p>For each contract-broken tx, the producer walks the call chain from root to OOG frame and classifies the first hop that throttled gas. <code>Stipend2300</code> is Solidity's <code>.transfer()</code>/<code>.send()</code> 2300-gas stipend. <code>FixedGas</code> is a small hardcoded constant. <code>FractionalGas</code> is a pattern like <code>gas() / 2</code>. Rows analyzed before the producer emitted these tags fall into <code>Unclassified</code>.</p>
+<div id="bottleneckChart"><p class="loading">Loading chart...</p></div>
+
 <!-- 3. Top 20 contracts -->
 <h2>3. Top 20 Contracts by Breakage</h2>
 <p>Primary targets for pre-fork outreach. <a href="/affected">Search all affected contracts</a> for full details.</p>
@@ -42,10 +47,11 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 {% block scripts %}
 <script>
 (async function() {
-  const [overview, opcodes, depth, top20, motifs, remed] = await Promise.all([
+  const [overview, opcodes, depth, bottleneckKinds, top20, motifs, remed] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/opcode-impact'),
     fetchJSON('/api/forensics/call-depth'),
+    fetchJSON('/api/forensics/bottleneck-kinds'),
     fetchJSON('/api/top-contracts?limit=20'),
     fetchJSON('/api/forensics/failure-motifs'),
     fetchJSON('/api/forensics/remediation'),
@@ -70,6 +76,34 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
       depth.map(r => ({ label: r.divergence_call_depth >= 0 ? `Depth ${r.divergence_call_depth}` : 'Unknown', count: r.divergent_txs })),
       'label', 'count',
       { title: 'Call Depth at Divergence Point', xTitle: 'Call Depth', yTitle: 'Divergent Txs', color: COLORS.call_tree, yaxis: { tickformat: ',' } }
+    );
+  }
+
+  // 2b. Bottleneck kinds
+  // Hide the section entirely when every row is Unclassified — the lake
+  // hasn't been re-analyzed with the new producer yet, so there's nothing
+  // to show beyond a "no data" pie.
+  const classified = bottleneckKinds.filter(k => k.kind !== 'Unclassified');
+  const bottleneckEl = document.getElementById('bottleneckChart');
+  if (classified.length === 0) {
+    bottleneckEl.innerHTML = '<p class="note">No classified rows in the analyzed range yet. Re-run the producer with the chain-walk classifier to populate this chart.</p>';
+  } else {
+    const colorByKind = {
+      'Stipend2300': COLORS.broken,
+      'FixedGas': COLORS.changed,
+      'FractionalGas': COLORS.event_logs,
+      'Unclassified': COLORS.neutral,
+    };
+    renderBar('bottleneckChart',
+      bottleneckKinds.map(k => ({ label: k.kind, count: k.count, share: k.share })),
+      'label', 'count',
+      {
+        title: 'Contract-Broken Txs by Bottleneck Type',
+        xTitle: 'Bottleneck Kind',
+        yTitle: 'Contract-Broken Txs',
+        color: bottleneckKinds.map(k => colorByKind[k.kind] || COLORS.neutral),
+        yaxis: { tickformat: ',' },
+      }
     );
   }
 

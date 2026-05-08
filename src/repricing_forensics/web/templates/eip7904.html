@@ -18,7 +18,7 @@ break under the proposed schedule and where the breakages concentrate.
 
 <!-- 1. Headline Numbers -->
 <h2>1. Headline Numbers</h2>
-<p>"Wallet-fixable" means simple calls where the sender just needs a higher gas estimate &mdash; wallets auto-correct this via <code>eth_estimateGas</code>. "Contract-broken" means the failure is structural and requires code changes.</p>
+<p>"Wallet-fixable" means simple calls where the sender just needs a higher gas estimate &mdash; wallets auto-correct this via <code>eth_estimateGas</code>. "Contract-broken" means the failure is structural and requires code changes. The wallet-fixable bucket includes a "deep call chain" sub-bucket: txs whose entire call chain forwards gas via the EIP-150 63/64 rule, so a higher wallet gas limit propagates all the way down. These look like contract failures in a naïve view but resolve themselves once the wallet retries with more gas.</p>
 <div class="poster-grid" id="headlines"><p class="loading">Loading...</p></div>
 
 <!-- 2. The Funnel -->
@@ -72,10 +72,17 @@ break under the proposed schedule and where the breakages concentrate.
     `Blocks ${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`;
 
   // 1. Headlines
+  // Show the wallet-fixable card with a sub-line breaking out the
+  // "deep call chain" portion when the producer's chain-walk classifier
+  // has tagged any rows. On older lakes (no tags yet) the deep-chain count
+  // is 0, so we drop the breakdown and the card looks unchanged.
+  const walletFixableSubLabel = overview.wallet_fixable_deep_chain_txs > 0
+    ? `Wallet-Fixable<br><span style="font-size:0.78em; color:var(--text-muted)">${fmtCount(overview.wallet_fixable_shallow_txs)} shallow + ${fmtCount(overview.wallet_fixable_deep_chain_txs)} deep chain</span>`
+    : 'Wallet-Fixable<br>(auto-resolved by gas estimate)';
   renderPosterCards('headlines', [
     { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
     { value: fmtCount(overview.broken_txs), label: 'All Broken Txs' },
-    { value: fmtCount(overview.wallet_fixable_txs), label: 'Wallet-Fixable<br>(auto-resolved by gas estimate)' },
+    { value: fmtCount(overview.wallet_fixable_txs), label: walletFixableSubLabel },
     { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
   ]);
 
@@ -83,6 +90,8 @@ break under the proposed schedule and where the breakages concentrate.
   const totalAnalyzed = overview.total_analyzed;
   const unchanged = totalAnalyzed - funnel.divergent_txs;
   const walletFixable = overview.wallet_fixable_txs;
+  const walletShallow = overview.wallet_fixable_shallow_txs;
+  const walletDeepChain = overview.wallet_fixable_deep_chain_txs;
   const contractBroken = overview.contract_broken_txs;
 
   const labels = [
@@ -108,30 +117,50 @@ break under the proposed schedule and where the breakages concentrate.
     COLORS.broken,     // Contract-broken
   ];
 
+  const sources = [0, 0, 2, 2, 2, 2, 6, 6];
+  const targets = [1, 2, 3, 4, 5, 6, 7, 8];
+  const values = [
+    unchanged,
+    funnel.divergent_txs,
+    funnel.trace_divergent_only,
+    funnel.gas_only_change,
+    funnel.event_log_changed,
+    funnel.broken_txs,
+    walletFixable,
+    contractBroken,
+  ];
+  const linkColors = [
+    'rgba(90,74,32,0.2)',        // → Unchanged
+    'rgba(255,184,48,0.12)',     // → Divergent
+    'rgba(90,74,32,0.18)',       // → Trace-divergent only
+    'rgba(255,208,112,0.12)',    // → Gas-only change
+    'rgba(138,112,48,0.12)',     // → Event logs
+    'rgba(255,184,48,0.2)',      // → Broken
+    'rgba(204,144,32,0.12)',     // → Wallet-fixable
+    'rgba(255,184,48,0.25)',     // → Contract-broken
+  ];
+
+  // When the producer's chain-walk classifier has tagged rows, push the
+  // wallet-fixable bucket through one more split: shallow vs deep call
+  // chain. Older lakes (no tags) get the original 4-bucket sankey.
+  if (walletDeepChain > 0) {
+    const shallowIdx = labels.length;
+    const deepIdx = shallowIdx + 1;
+    labels.push(`Shallow\n${fmtCount(walletShallow)}`);
+    labels.push(`Deep Call Chain\n${fmtCount(walletDeepChain)}`);
+    nodeColors.push(COLORS.call_tree, COLORS.call_tree);
+    sources.push(7, 7);
+    targets.push(shallowIdx, deepIdx);
+    values.push(walletShallow, walletDeepChain);
+    linkColors.push('rgba(204,144,32,0.10)', 'rgba(204,144,32,0.18)');
+  }
+
   renderSankey('funnel', {
     labels,
-    sources:     [0, 0, 2, 2, 2, 2, 6, 6],
-    targets:     [1, 2, 3, 4, 5, 6, 7, 8],
-    values: [
-      unchanged,
-      funnel.divergent_txs,
-      funnel.trace_divergent_only,
-      funnel.gas_only_change,
-      funnel.event_log_changed,
-      funnel.broken_txs,
-      walletFixable,
-      contractBroken,
-    ],
-    link_colors: [
-      'rgba(90,74,32,0.2)',        // → Unchanged
-      'rgba(255,184,48,0.12)',     // → Divergent
-      'rgba(90,74,32,0.18)',       // → Trace-divergent only
-      'rgba(255,208,112,0.12)',    // → Gas-only change
-      'rgba(138,112,48,0.12)',     // → Event logs
-      'rgba(255,184,48,0.2)',      // → Broken
-      'rgba(204,144,32,0.12)',     // → Wallet-fixable
-      'rgba(255,184,48,0.25)',     // → Contract-broken
-    ],
+    sources,
+    targets,
+    values,
+    link_colors: linkColors,
   }, { height: 420 });
 
   // 3. Opcodes

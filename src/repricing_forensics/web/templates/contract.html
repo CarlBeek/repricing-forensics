@@ -176,6 +176,11 @@ function txTable8037(txs) {
           ${shareList(e7.depths, d => depthLabel(d.depth))}
         </div>
       </div>
+      ${(e7.bottleneck_kinds && e7.bottleneck_kinds.some(k => k.kind !== 'Unclassified')) ? `
+        <div style="margin: 12px 0;">
+          <h3 style="font-size:0.92em; margin-bottom:4px">Gas-forwarding bottleneck</h3>
+          ${shareList(e7.bottleneck_kinds, k => k.kind)}
+        </div>` : ''}
       <p class="note">Divergence at depth 2+ usually means the contract hardcodes gas in an inner <code>CALL</code> or
         relies on the 2300 transfer stipend — see <a href="/about#6364-rule">the 63/64 rule</a>.</p>
 

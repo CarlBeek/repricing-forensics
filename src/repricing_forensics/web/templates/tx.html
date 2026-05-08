@@ -281,14 +281,32 @@ function renderCallSankey(divId, stack) {
       in ${escHtml(tx.divergence.contract)}
     </div>` : ''}
 
-    ${tx.oog ? `
-    <div style="margin-bottom:12px; padding:10px 12px; background:var(--red-bg); border:1px solid var(--red-border); border-radius:var(--radius-sm); font-size:0.88em;">
-      <strong>Out of Gas:</strong>
-      <code>${escHtml(tx.oog.opcode)}</code> at depth ${tx.oog.call_depth ?? '?'}
-      in ${escHtml(tx.oog.contract)}
-      — <code>${escHtml(tx.oog.pattern)}</code>,
-      gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
-    </div>` : ''}
+    ${tx.oog ? (() => {
+      // Producer's chain-walk classifier (NULL on rows analyzed before the
+      // classifier shipped — show nothing rather than a misleading default).
+      let chainTag = '';
+      if (tx.oog.chain_proportional === true) {
+        chainTag = `<span class="oog-chip oog-chip-fix" title="Every CALL from root to OOG forwarded gas via EIP-150 63/64 — raising the wallet's gas clears it.">wallet-fixable (deep chain)</span>`;
+      } else if (tx.oog.chain_proportional === false) {
+        const kind = tx.oog.bottleneck_kind || 'unknown bottleneck';
+        const at = tx.oog.bottleneck_depth != null ? ` at depth ${tx.oog.bottleneck_depth}` : '';
+        const tip = ({
+          'Stipend2300': 'Solidity .transfer()/.send() forwarded the 2300-gas stipend; the callee can never get more — needs a code change.',
+          'FixedGas': 'Caller hardcoded a small constant gas amount on the CALL — needs a code change to forward more.',
+          'FractionalGas': 'Caller passed a fraction of available gas (e.g. gas()/2). May be tunable; usually still requires a code change.',
+        })[kind] || 'Some hop in the call chain throttled gas forwarding — contract-broken.';
+        chainTag = `<span class="oog-chip oog-chip-broken" title="${escHtml(tip)}">${escHtml(kind)}${at}</span>`;
+      }
+      return `
+      <div style="margin-bottom:12px; padding:10px 12px; background:var(--red-bg); border:1px solid var(--red-border); border-radius:var(--radius-sm); font-size:0.88em;">
+        <strong>Out of Gas:</strong>
+        <code>${escHtml(tx.oog.opcode)}</code> at depth ${tx.oog.call_depth ?? '?'}
+        in ${escHtml(tx.oog.contract)}
+        — <code>${escHtml(tx.oog.pattern)}</code>,
+        gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
+        ${chainTag}
+      </div>`;
+    })() : ''}
 
     ${breakdownHtml}
 
