@@ -50,6 +50,39 @@ def healthz():
     return {"status": "ok"}
 
 
+@app.get("/api/_debug/producer-info", include_in_schema=False)
+def producer_info():
+    """Where is PRODUCER_DB_PATH pointing? Does the file exist? Can we
+    open it? Cheap diagnostic for production triage."""
+    import os
+    from .source_db import resolve_producer_db_path, open_session
+    from .db import SCHEDULE_NAME
+
+    env_value = os.environ.get("PRODUCER_DB_PATH")
+    path = resolve_producer_db_path()
+    info = {
+        "env_PRODUCER_DB_PATH": env_value,
+        "resolved_path": str(path),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else None,
+        "schedule_name": SCHEDULE_NAME,
+    }
+    try:
+        conn = open_session(path, SCHEDULE_NAME)
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM duckdb_tables() WHERE database_name = 'producer'"
+        ).fetchall()]
+        rows = conn.execute("SELECT count(*) FROM divergences").fetchone()
+        info["producer_tables"] = tables
+        info["divergences_count"] = int(rows[0]) if rows else None
+        info["open_ok"] = True
+        conn.close()
+    except Exception as e:
+        info["open_ok"] = False
+        info["open_error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
 @app.exception_handler(Exception)
 async def producer_unavailable_handler(request: Request, exc: Exception):
     """Convert producer-DB-access failures (missing file, ATTACH errors,
