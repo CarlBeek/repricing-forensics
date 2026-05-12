@@ -37,24 +37,18 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
   <thead><tr><th>Pair Motif</th><th>Triple Motif</th><th>Failures</th><th>Avg Gas Provided</th></tr></thead>
   <tbody id="motifsBody"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
 </table>
-
-<!-- 5. Remediation -->
-<h2>5. Remediation Outlook</h2>
-<p>For contracts with known ownership, this maps each project to its likely remediation path: upgradeable proxy (admin can fix), integration update (caller needs to change), or immutable (requires migration).</p>
-<div id="remedSankey"></div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 (async function() {
-  const [overview, opcodes, depth, bottleneckKinds, top20, motifs, remed] = await Promise.all([
+  const [overview, opcodes, depth, bottleneckKinds, top20, motifs] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/opcode-impact'),
     fetchJSON('/api/forensics/call-depth'),
     fetchJSON('/api/forensics/bottleneck-kinds'),
     fetchJSON('/api/top-contracts?limit=20'),
     fetchJSON('/api/forensics/failure-motifs'),
-    fetchJSON('/api/forensics/remediation'),
   ]);
 
   document.getElementById('subtitle').textContent =
@@ -129,14 +123,6 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
       <td style="text-align:right">${fmtGas(m.avg_gas_provided || 0)}</td>
     </tr>
   `).join('');
-
-  // 5. Remediation — sankey: contracts → owner bucket → remediation bucket
-  if (remed.labels && remed.labels.length) {
-    renderSankey('remedSankey', remed, {
-      title: 'Remediation Outlook: Contract → Owner → Remediation',
-      height: 600,
-    });
-  }
 })();
 </script>
 {% endblock %}

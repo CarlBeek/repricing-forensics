@@ -1,10 +1,9 @@
 """Repo paths and schedule name.
 
-Most of the consumer's state lives in the producer DB now (see
-`source_db.resolve_producer_db_path`). The only paths the consumer
-itself still owns are `cache_dir` (contract_labels.csv) and
-`artifacts_dir` (the optional CSVs the failure-motif / remediation
-endpoints read).
+The producer DB is the source of truth (see `source_db.resolve_producer_db_path`
+for how its path is resolved). The only path the consumer still owns is
+`cache_dir`, where `contract_labels.csv` may live for additional address
+labeling beyond the hardcoded map in `labels.py`.
 """
 from __future__ import annotations
 
@@ -19,7 +18,6 @@ DEFAULT_SCHEDULE_NAME = "eip-8037"
 class Paths:
     repo_root: Path
     cache_dir: Path
-    artifacts_dir: Path
 
 
 def _env_path(var: str, default: Path) -> Path:
@@ -36,5 +34,4 @@ def default_paths(repo_root: Path | None = None) -> Paths:
     return Paths(
         repo_root=root,
         cache_dir=_env_path("CACHE_DIR", root / "cache"),
-        artifacts_dir=_env_path("ARTIFACTS_DIR", root / "artifacts"),
     )

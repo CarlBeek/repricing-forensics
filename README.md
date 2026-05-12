@@ -27,8 +27,7 @@ Environment variables:
 |---|---|---|
 | `PRODUCER_DB_PATH` | `./synthetic.duckdb` | Producer DuckDB file (the source of truth) |
 | `SCHEDULE_NAME`    | `eip-8037`           | Which schedule's rows to surface |
-| `CACHE_DIR`        | `./cache`            | Where `contract_labels.csv` lives |
-| `ARTIFACTS_DIR`    | `./artifacts`        | Optional CSVs (failure motifs, remediation buckets) |
+| `CACHE_DIR`        | `./cache`            | Optional `contract_labels.csv` for address labeling |
 | `DUCKDB_THREADS`   | `cpu_count`          | DuckDB worker threads |
 | `HOST`, `PORT`     | `0.0.0.0`, `8000`    | Uvicorn bind |
 

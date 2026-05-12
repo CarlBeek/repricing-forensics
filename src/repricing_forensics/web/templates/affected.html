@@ -33,9 +33,8 @@
       <th>EIP-7904 Avg Δ</th>
       <th>EIP-8037 Need ↑ Limit</th>
       <th>EIP-8037 Reservoir</th>
-      <th>Action</th>
     </tr></thead>
-    <tbody id="contractBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+    <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
   </table>
 </div>
 <div id="pagination" class="pagination"></div>
@@ -45,13 +44,6 @@
 <script>
 let currentPage = 1;
 const perPage = 100;
-
-function remediationTag(r) {
-  if (r === 'admin_upgrade_possible') return '<span class="tag tag-green tag-action">Upgradeable</span>';
-  if (r === 'integration_update') return '<span class="tag tag-orange tag-action">Integration fix</span>';
-  if (r === 'immutable_contract_or_migration') return '<span class="tag tag-red tag-action">Needs migration</span>';
-  return '';
-}
 
 function dashIfZero(n, fmt = fmtCount) {
   return n > 0 ? fmt(n) : '<span style="color:var(--text-dim)">—</span>';
@@ -67,7 +59,6 @@ function renderTable(items, page) {
       <td style="text-align:right">${dashIfZero(c.avg_delta_7904, fmtGas)}</td>
       <td style="text-align:right">${dashIfZero(c.need_higher_limit_8037)}</td>
       <td style="text-align:right">${dashIfZero(c.reservoir_exhausted_8037)}</td>
-      <td>${remediationTag(c.remediation)}</td>
     </tr>`
   ).join('');
 }
@@ -92,7 +83,7 @@ function renderPagination(total, totalPages, page) {
 
 async function loadPage(page) {
   currentPage = page;
-  document.getElementById('contractBody').innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
+  document.getElementById('contractBody').innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
   const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);

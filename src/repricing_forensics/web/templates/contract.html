@@ -158,8 +158,6 @@ function txTable8037(txs) {
     <p class="mono" style="color:var(--text-dim); margin-bottom:12px">${data.address}
       <button class="copy-btn" onclick="navigator.clipboard.writeText('${data.address}')" style="margin-left:8px">copy</button>
     </p>
-    ${data.owner ? `<p style="margin:6px 0"><strong>Owner:</strong> ${escHtml(data.owner)}</p>` : ''}
-    ${data.remediation ? `<p style="margin:6px 0"><strong>Remediation:</strong> ${escHtml(data.remediation)}</p>` : ''}
 
     <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0;">
       ${card7}

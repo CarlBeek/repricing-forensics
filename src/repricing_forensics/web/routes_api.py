@@ -5,6 +5,8 @@ import math
 
 from fastapi import APIRouter, Query
 
+from repricing_forensics.labels import infer_project_label
+
 from .db import (
     SCHEDULE_NAME,
     db_mtime,
@@ -12,7 +14,6 @@ from .db import (
     query,
     query_df,
     query_scalar,
-    read_csv,
 )
 
 router = APIRouter(prefix="/api")
@@ -461,50 +462,130 @@ def forensics_bottleneck_kinds():
     ]
 
 
+# SQL fragment used by both /forensics/failure-motifs and
+# /forensics/failure-flow. "Failing leaf" = the deepest CALL frame in a
+# contract-broken tx whose success flag is FALSE — that's the frame
+# that OOG'd. We pick the deepest such frame per tx via a row-number
+# window. For most real txs every ancestor frame also has success=FALSE
+# (the OOG bubbles up), but ranking by depth keeps the leaf consistent.
+_FAILING_LEAVES_CTE = """
+WITH failing_leaves AS (
+    SELECT
+        cf.divergence_id,
+        cf.from_address,
+        cf.to_address,
+        cf.gas_provided,
+        ROW_NUMBER() OVER (
+            PARTITION BY cf.divergence_id
+            ORDER BY cf.depth DESC, cf.call_index DESC
+        ) AS rn
+    FROM call_frames cf
+    JOIN divergences d USING (divergence_id)
+    WHERE d.bucket = 'contract_broken'
+      AND cf.success = FALSE
+)
+"""
+
+
 @router.get("/forensics/failure-motifs")
 def forensics_failure_motifs():
-    df = read_csv("failure_motifs.csv")
-    if df.empty:
-        return []
-    return df.head(15).to_dict(orient="records")
+    """Top caller→callee pairs at the failing leaf frame.
+
+    `pair_motif` is (caller_project, callee_project). `triple_motif` adds
+    the root-frame project for context — useful when the same library
+    fails from different top-level entry points.
+    """
+    rows = query(_FAILING_LEAVES_CTE + """,
+    roots AS (
+        SELECT cf.divergence_id, cf.to_address AS root_to
+        FROM call_frames cf
+        JOIN divergences d USING (divergence_id)
+        WHERE d.bucket = 'contract_broken' AND cf.depth = 0
+    )
+    SELECT
+        lower(coalesce(fl.from_address, '')) AS caller,
+        lower(coalesce(fl.to_address, ''))   AS callee,
+        lower(coalesce(r.root_to, ''))       AS root,
+        count(*)                             AS status_failures,
+        avg(fl.gas_provided)                 AS avg_gas_provided
+    FROM failing_leaves fl
+    LEFT JOIN roots r USING (divergence_id)
+    WHERE fl.rn = 1
+    GROUP BY 1, 2, 3
+    ORDER BY status_failures DESC
+    LIMIT 50
+    """)
+    out: list[dict] = []
+    for r in rows:
+        caller = infer_project_label(r["caller"])
+        callee = infer_project_label(r["callee"])
+        root = infer_project_label(r["root"])
+        out.append({
+            "pair_motif":   f"{caller} → {callee}",
+            "triple_motif": f"{root} → {caller} → {callee}",
+            "status_failures": _int(r["status_failures"]),
+            "avg_gas_provided": _float(r["avg_gas_provided"]),
+        })
+    return out[:15]
 
 
 @router.get("/forensics/failure-flow")
 def forensics_failure_flow():
-    """Return pre-processed Sankey data for the failure flow diagram."""
-    import pandas as pd
-    df = read_csv("failure_path_sankey_edges.csv")
-    if df.empty:
+    """Sankey: root project → failing caller project → failing callee project.
+
+    Sourced from `call_frames` for the contract-broken cohort. Addresses
+    that don't have a hardcoded label fall back to the address itself —
+    once the producer-side `contract_metadata` table lands we can do
+    nicer labeling via codehash.
+    """
+    rows = query(_FAILING_LEAVES_CTE + """,
+    roots AS (
+        SELECT cf.divergence_id, cf.to_address AS root_to
+        FROM call_frames cf
+        JOIN divergences d USING (divergence_id)
+        WHERE d.bucket = 'contract_broken' AND cf.depth = 0
+    )
+    SELECT
+        lower(coalesce(r.root_to, ''))       AS root_addr,
+        lower(coalesce(fl.from_address, '')) AS caller_addr,
+        lower(coalesce(fl.to_address, ''))   AS callee_addr,
+        count(*) AS status_failures
+    FROM failing_leaves fl
+    LEFT JOIN roots r USING (divergence_id)
+    WHERE fl.rn = 1
+    GROUP BY 1, 2, 3
+    ORDER BY status_failures DESC
+    LIMIT 200
+    """)
+    if not rows:
         return {"labels": [], "sources": [], "targets": [], "values": [], "link_colors": []}
 
-    df["status_failures"] = pd.to_numeric(df["status_failures"], errors="coerce").fillna(0).astype(int)
+    # Sum to project-level edges, keep top-15 per edge type.
+    from collections import defaultdict
+    rc_edges: dict[tuple[str, str], int] = defaultdict(int)
+    cc_edges: dict[tuple[str, str], int] = defaultdict(int)
+    for r in rows:
+        root = infer_project_label(r["root_addr"])
+        caller = infer_project_label(r["caller_addr"])
+        callee = infer_project_label(r["callee_addr"])
+        n = _int(r["status_failures"])
+        rc_edges[(root, caller)] += n
+        cc_edges[(caller, callee)] += n
+    top_rc = sorted(rc_edges.items(), key=lambda kv: kv[1], reverse=True)[:15]
+    top_cc = sorted(cc_edges.items(), key=lambda kv: kv[1], reverse=True)[:15]
 
-    rc = df.groupby(["root_project", "failing_caller_project"])["status_failures"].sum().reset_index()
-    rc = rc.nlargest(15, "status_failures")
-    cc = df.groupby(["failing_caller_project", "failing_callee_project"])["status_failures"].sum().reset_index()
-    cc = cc.nlargest(15, "status_failures")
-
-    used_labels = set()
-    for _, row in rc.iterrows():
-        used_labels.add(row["root_project"])
-        used_labels.add(row["failing_caller_project"])
-    for _, row in cc.iterrows():
-        used_labels.add(row["failing_caller_project"])
-        used_labels.add(row["failing_callee_project"])
-    labels = sorted(used_labels)
-    label_idx = {l: i for i, l in enumerate(labels)}
+    used = {p for (a, b), _ in top_rc for p in (a, b)}
+    used |= {p for (a, b), _ in top_cc for p in (a, b)}
+    labels = sorted(used)
+    idx = {l: i for i, l in enumerate(labels)}
 
     sources, targets, values, link_colors = [], [], [], []
-    for _, row in rc.iterrows():
-        sources.append(label_idx[row["root_project"]])
-        targets.append(label_idx[row["failing_caller_project"]])
-        values.append(int(row["status_failures"]))
-        link_colors.append("rgba(52,152,219,0.3)")
-    for _, row in cc.iterrows():
-        sources.append(label_idx[row["failing_caller_project"]])
-        targets.append(label_idx[row["failing_callee_project"]])
-        values.append(int(row["status_failures"]))
-        link_colors.append("rgba(231,76,60,0.3)")
+    for (a, b), n in top_rc:
+        sources.append(idx[a]); targets.append(idx[b])
+        values.append(n); link_colors.append("rgba(52,152,219,0.3)")
+    for (a, b), n in top_cc:
+        sources.append(idx[a]); targets.append(idx[b])
+        values.append(n); link_colors.append("rgba(231,76,60,0.3)")
 
     display_labels = [label_address(l) if l.startswith("0x") else l for l in labels]
     return {
@@ -516,58 +597,13 @@ def forensics_failure_flow():
     }
 
 
-@router.get("/forensics/remediation")
-def forensics_remediation():
-    """Sankey: Top 10 contracts → owner bucket → remediation bucket."""
-    import pandas as pd
-
-    df = read_csv("project_owner_summary.csv")
-    if df.empty:
-        return {"labels": [], "sources": [], "targets": [], "values": [], "link_colors": []}
-
-    known = df[df["owner_bucket"] != "unknown_owner"].copy()
-    if known.empty:
-        return {"labels": [], "sources": [], "targets": [], "values": [], "link_colors": []}
-
-    # Top 10 projects by status_changed_txs; rest grouped as "Other"
-    known["status_changed_txs"] = pd.to_numeric(known["status_changed_txs"], errors="coerce").fillna(0)
-    project_totals = known.groupby("divergence_project")["status_changed_txs"].sum().sort_values(ascending=False)
-    top_projects = set(project_totals.head(10).index)
-    known["project_label"] = known["divergence_project"].apply(lambda p: p if p in top_projects else "Other")
-
-    # Aggregate: project → owner
-    po = known.groupby(["project_label", "owner_bucket"])["status_changed_txs"].sum().reset_index()
-    po = po[po["status_changed_txs"] > 0]
-    # Aggregate: owner → remediation
-    or_ = known.groupby(["owner_bucket", "remediation_bucket"])["status_changed_txs"].sum().reset_index()
-    or_ = or_[or_["status_changed_txs"] > 0]
-
-    # Build label list: projects first, then owner buckets, then remediation buckets
-    project_labels = sorted(po["project_label"].unique(), key=lambda p: (p == "Other", p))
-    owner_labels = sorted(po["owner_bucket"].unique())
-    remed_labels = sorted(or_["remediation_bucket"].unique())
-    all_labels = list(project_labels) + list(owner_labels) + list(remed_labels)
-    idx = {l: i for i, l in enumerate(all_labels)}
-
-    sources, targets, values, link_colors = [], [], [], []
-    for _, row in po.iterrows():
-        sources.append(idx[row["project_label"]])
-        targets.append(idx[row["owner_bucket"]])
-        values.append(int(row["status_changed_txs"]))
-        link_colors.append("rgba(52,152,219,0.3)")
-    for _, row in or_.iterrows():
-        sources.append(idx[row["owner_bucket"]])
-        targets.append(idx[row["remediation_bucket"]])
-        values.append(int(row["status_changed_txs"]))
-        link_colors.append("rgba(231,76,60,0.3)")
-
-    return {
-        "labels": all_labels,
-        "sources": sources,
-        "targets": targets,
-        "values": values,
-        "link_colors": link_colors,
-    }
+# /forensics/remediation retired: the project_owner_summary.csv it
+# consumed was hand-curated metadata (project owners + remediation
+# buckets) that doesn't live in this repo anymore. When the
+# producer-side `contract_metadata` table ships with codehash-keyed
+# solc/EVM info, we can compute a different remediation surface from
+# that (e.g. cluster by solc version); until then there's nothing to
+# show, so the endpoint is gone rather than returning empty stubs.
 
 
 # ── EIP-8037 state-gas endpoints ──────────────────────────────────────
@@ -980,23 +1016,16 @@ def affected(
         LIMIT {int(per_page)} OFFSET {int(offset)}
     """)
 
-    outreach = read_csv("outreach_priority.csv")
-    outreach_dict = {}
-    if not outreach.empty:
-        for _, row in outreach.iterrows():
-            outreach_dict[row["project"]] = {
-                "owner_buckets": str(row.get("owner_buckets", "")),
-                "remediation_buckets": str(row.get("remediation_buckets", "")),
-            }
-
+    # `owner` / `remediation` chips used to come from an outreach CSV
+    # of manual classifications. The CSV-generation script is gone; the
+    # producer-side contract_metadata table will provide a coarser
+    # equivalent (solc/EVM target) when it lands.
     items = []
     for r in rows:
         addr = r["addr"]
-        name = label_address(addr)
-        info = outreach_dict.get(name, {})
         items.append({
             "recipient": addr,
-            "name": name,
+            "name": label_address(addr),
             "broken_txs_7904": _int(r["broken_txs_7904"]),
             "avg_delta_7904": _float(r["avg_delta_7904"]),
             "total_delta_7904": _float(r["total_delta_7904"]),
@@ -1006,8 +1035,8 @@ def affected(
             "p95_multiplier_8037": _float_or_none(r["p95_multiplier_8037"]),
             "min_block": _int(r["min_block"]),
             "max_block": _int(r["max_block"]),
-            "owner": info.get("owner_buckets", ""),
-            "remediation": info.get("remediation_buckets", ""),
+            "owner": "",
+            "remediation": "",
         })
     return {
         "items": items,
@@ -1105,23 +1134,15 @@ def affected_detail(address: str):
     found = eip7904_broken > 0 or eip8037_div > 0
 
     name = label_address(addr)
-    outreach = read_csv("outreach_priority.csv")
-    info = {}
-    if not outreach.empty:
-        match = outreach[outreach["project"] == name]
-        if not match.empty:
-            row = match.iloc[0]
-            info = {
-                "owner_buckets": str(row.get("owner_buckets", "")),
-                "remediation_buckets": str(row.get("remediation_buckets", "")),
-            }
-
+    # owner / remediation classification used to come from a hand-curated
+    # CSV; without it we return empty strings. See the comment in
+    # /api/affected for context.
     return {
         "found": found,
         "address": addr,
         "name": name,
-        "owner": info.get("owner_buckets", ""),
-        "remediation": info.get("remediation_buckets", ""),
+        "owner": "",
+        "remediation": "",
         "eip7904": {
             "broken_txs": eip7904_broken,
             "wallet_fixable_txs": eip7904_wallet_n,
