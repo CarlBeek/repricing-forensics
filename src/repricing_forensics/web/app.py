@@ -55,7 +55,7 @@ def producer_info():
     """Where is PRODUCER_DB_PATH pointing? Does the file exist? Can we
     open it? Cheap diagnostic for production triage."""
     import os
-    from .source_db import resolve_producer_db_path, open_session
+    from repricing_forensics.source_db import resolve_producer_db_path, open_session
     from .db import SCHEDULE_NAME
 
     env_value = os.environ.get("PRODUCER_DB_PATH")
