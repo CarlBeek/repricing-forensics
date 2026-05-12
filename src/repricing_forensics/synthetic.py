@@ -2,9 +2,9 @@
 
 While reth lands the new producer (see `crates/research/docs/storage-redesign.md`),
 the consumer rewrite in this repo needs *something* to attach to.
-`build_synthetic_db(path)` emits a small new-schema DuckDB file with rows
-covering every bucket and every dashboard surface, so the consumer code
-can be developed and parity-tested without blocking on reth.
+`build_synthetic_db(path)` emits a small SQLite file with rows covering
+every bucket and every dashboard surface, so the consumer code can be
+developed and parity-tested without blocking on reth.
 
 This module is deliberately deterministic (fixed scenarios) rather than
 randomly generated — the dashboards exercise specific code paths (e.g.
@@ -15,11 +15,10 @@ Throwaway when the real producer ships.
 """
 from __future__ import annotations
 
-import time
+import json
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import duckdb
 
 from .producer_schema import (
     Bucket,
@@ -135,7 +134,6 @@ def _scenario_event_logs_changed() -> _Tx:
         baseline_gas_used=80_000, schedule_gas_used=82_500,
         event_logs_changed=True,
     )
-    # Two-frame trace: USDC root call, no failures.
     tx.frames = [
         _frame(0, None, 0, EOA_SENDER, USDC, "CALL", "0xa9059cbb",
                gas_provided=80_000, gas_used=80_000, success=True),
@@ -146,15 +144,13 @@ def _scenario_event_logs_changed() -> _Tx:
         _op_row(0, _OP_KECCAK256, 6, gas_baseline=6 * 30, gas_schedule=6 * 45),
     ]
     tx.event_logs = [
-        _log(0, "baseline", 0, USDC, topic0=_b("transfer-evt")),
-        _log(0, "schedule", 0, USDC, topic0=_b("transfer-evt"), data_hash=_b("alt")),
+        _log("baseline", 0, USDC, topic0=_b("transfer-evt")),
+        _log("schedule", 0, USDC, topic0=_b("transfer-evt"), data_hash=_b("alt")),
     ]
     return tx
 
 
 def _scenario_wallet_fixable_shallow() -> _Tx:
-    """Tight gas estimate, no internal calls, status flipped — wallet
-    just needs a bigger limit."""
     return _Tx(
         bucket=Bucket.WALLET_FIXABLE_SHALLOW.value, recipient=USDC,
         gas_delta=12_000,
@@ -168,8 +164,7 @@ def _scenario_wallet_fixable_shallow() -> _Tx:
 
 
 def _scenario_wallet_fixable_deep_chain() -> _Tx:
-    """Deep call chain, every hop forwarded gas via 63/64 — wallet can fix."""
-    tx = _Tx(
+    return _Tx(
         bucket=Bucket.WALLET_FIXABLE_DEEP_CHAIN.value, recipient=UNI_V2_ROUTER,
         gas_delta=15_000,
         baseline_gas_used=185_000, schedule_gas_used=200_000,
@@ -180,17 +175,9 @@ def _scenario_wallet_fixable_deep_chain() -> _Tx:
         oog_pattern="oog", oog_gas_remaining=0,
         oog_chain_proportional=True,
     )
-    # No per-frame data emitted for aggregate buckets, but call-depth/opcode
-    # fields on `divergences` ARE — except wallet-fixable rows go to
-    # block_summaries only, not divergences. So we leave frames/op-counts
-    # empty here.
-    tx.frames = []
-    tx.opcode_counts = []
-    return tx
 
 
 def _scenario_contract_broken_stipend2300() -> _Tx:
-    """Solidity .transfer() — fixed 2300-gas stipend, bottleneck at depth 1."""
     tx = _Tx(
         bucket=Bucket.CONTRACT_BROKEN.value, recipient=FRESH_CONTRACT,
         gas_delta=18_000,
@@ -222,7 +209,6 @@ def _scenario_contract_broken_stipend2300() -> _Tx:
 
 
 def _scenario_contract_broken_fixed_gas() -> _Tx:
-    """Hardcoded ~50K gas on an inner CALL — bottleneck at depth 1."""
     tx = _Tx(
         bucket=Bucket.CONTRACT_BROKEN.value, recipient=FRESH_CONTRACT,
         gas_delta=22_000,
@@ -253,7 +239,6 @@ def _scenario_contract_broken_fixed_gas() -> _Tx:
 
 
 def _scenario_contract_broken_fractional() -> _Tx:
-    """Caller passes gas()/2 — proportional-ish but throttled vs full 63/64."""
     tx = _Tx(
         bucket=Bucket.CONTRACT_BROKEN.value, recipient=UNI_V2_ROUTER,
         gas_delta=24_000,
@@ -288,8 +273,7 @@ def _scenario_contract_broken_fractional() -> _Tx:
 
 
 def _scenario_8037_reservoir_exhausted() -> _Tx:
-    """Status-stable contract creation tx whose 8037 reservoir spilled over."""
-    tx = _Tx(
+    return _Tx(
         bucket=Bucket.GAS_ONLY.value, recipient=FRESH_CONTRACT,
         gas_delta=8_500,
         baseline_gas_used=210_000, schedule_gas_used=218_500,
@@ -301,7 +285,6 @@ def _scenario_8037_reservoir_exhausted() -> _Tx:
         reservoir_exhausted=True,
         min_multiplier_to_succeed=1.05,
     )
-    return tx
 
 
 def _scenario_8037_needs_higher_multiplier() -> _Tx:
@@ -337,8 +320,6 @@ def _scenario_8037_needs_higher_multiplier() -> _Tx:
     return tx
 
 
-# Order matters: each block walks this list, taking one scenario per
-# index so the dataset is reproducible.
 _SCENARIO_FACTORIES = [
     _scenario_unchanged,
     _scenario_unchanged,
@@ -376,7 +357,7 @@ def _frame(
     return dict(
         call_index=call_index, parent_call_index=parent, depth=depth,
         from_address=from_addr, to_address=to_addr,
-        code_address=to_addr,  # synthetic: no delegatecall split for simplicity
+        code_address=to_addr,
         codehash=_b(f"code-{to_addr}"),
         call_type=call_type, selector=sel,
         value_wei="0",
@@ -396,7 +377,7 @@ def _op_row(call_index: int, opcode: int, count: int,
                 gas_baseline=gas_baseline, gas_schedule=gas_schedule)
 
 
-def _log(divergence_id, trace_kind, log_index, address, *, topic0=None, data_hash=None):
+def _log(trace_kind, log_index, address, *, topic0=None, data_hash=None):
     return dict(trace_kind=trace_kind, log_index=log_index, address=address,
                 topic0=topic0, topic1=None, topic2=None, topic3=None,
                 data_bytes=None, data_hash=data_hash)
@@ -447,16 +428,19 @@ class _BucketAcc:
 # ── Build ───────────────────────────────────────────────────────────────
 
 def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
-    """Create a new-schema DuckDB file with `blocks` blocks of synthetic data.
-
-    Deterministic given the same `blocks` count.
-    """
+    """Create a SQLite file with `blocks` blocks of synthetic data."""
     out_path = Path(out_path)
     if out_path.exists():
         out_path.unlink()
+    # SQLite's WAL also creates -wal and -shm sidecar files; remove
+    # those from any prior run too.
+    for suffix in ("-wal", "-shm"):
+        sidecar = out_path.with_name(out_path.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = duckdb.connect(str(out_path))
+    conn = sqlite3.connect(str(out_path))
     initialize_schema(conn)
 
     now = 1_700_000_000
@@ -472,13 +456,12 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
         notes=f"synthetic fixture, schema v{SCHEMA_VERSION}",
     )
 
-    # contract_metadata first (referenced via codehash from frames).
     for addr, bytecode_name in ALL_CONTRACTS:
         codehash = _b(f"code-{addr}")
         conn.execute(
             "INSERT INTO contract_metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [codehash, addr, "0.8.21", "synthetic", "shanghai",
-             True, True, len(bytecode_name), now],
+            (codehash, addr, "0.8.21", "synthetic", "shanghai",
+             1, 1, len(bytecode_name), now),
         )
 
     for b_idx in range(blocks):
@@ -529,11 +512,10 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                     timestamp=timestamp,
                 )
 
-        # block_coverage row
         conn.execute(
             "INSERT INTO block_coverage VALUES ("
             "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
+            (
                 SCHEDULE_NAME, SCHEDULE_CONFIG_HASH,
                 block_number, block_hash, parent_hash, timestamp,
                 len(_SCENARIO_FACTORIES),
@@ -544,13 +526,14 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                 bucket_counts[Bucket.WALLET_FIXABLE_SHALLOW.value],
                 bucket_counts[Bucket.WALLET_FIXABLE_DEEP_CHAIN.value],
                 bucket_counts[Bucket.CONTRACT_BROKEN.value],
-            ],
+            ),
         )
 
-        # block_summaries — one row per non-empty bucket (except UNCHANGED)
         for bucket, acc in accs.items():
             if bucket == Bucket.UNCHANGED.value:
                 continue
+            # SQLite has no native array/struct; serialize as JSON. The
+            # consumer reads via DuckDB's json_each() to unnest.
             opcode_count_list = [
                 {"opcode": op, "count": cnt}
                 for op, cnt in sorted(acc.opcode_count_totals.items())
@@ -562,26 +545,27 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
             conn.execute(
                 "INSERT INTO block_summaries VALUES ("
                 "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
+                (
                     SCHEDULE_NAME, block_number, bucket, acc.tx_count,
-                    acc.gas_delta_sum, acc.gas_delta_sum_sq,
+                    acc.gas_delta_sum, float(acc.gas_delta_sum_sq),
                     acc.gas_delta_min, acc.gas_delta_max,
-                    acc.gas_delta_hist,
-                    opcode_count_list, opcode_gas_list,
+                    json.dumps(acc.gas_delta_hist),
+                    json.dumps(opcode_count_list), json.dumps(opcode_gas_list),
                     acc.state_gas_sum, acc.state_gas_spillover_sum,
-                    acc.multiplier_hist,
+                    json.dumps(acc.multiplier_hist),
                     acc.tx_count_creation, acc.tx_count_authorization,
                     acc.tx_count_runtime_state, acc.tx_count_no_state,
-                ],
+                ),
             )
 
+    conn.commit()
     conn.close()
 
 
 def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
                      timestamp: int) -> None:
     """Insert a divergences row + per-frame + opcode-counts + event-logs."""
-    div_id = conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO divergences (
             schedule_name, schedule_config_hash, block_number, tx_index,
@@ -599,52 +583,55 @@ def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
             state_gas_category, reservoir_exhausted
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING divergence_id
         """,
-        [
+        (
             SCHEDULE_NAME, SCHEDULE_CONFIG_HASH, block_number, tx_index,
             _b(f"tx-{block_number}-{tx_index}"), timestamp, tx.bucket,
-            EOA_SENDER, tx.recipient, tx.is_create, tx.tx_gas_limit,
-            tx.baseline_success, tx.schedule_success,
-            tx.status_changed, tx.event_logs_changed, False, False,
+            EOA_SENDER, tx.recipient, int(tx.is_create), tx.tx_gas_limit,
+            int(tx.baseline_success), int(tx.schedule_success),
+            int(tx.status_changed), int(tx.event_logs_changed), 0, 0,
             tx.baseline_gas_used, tx.schedule_gas_used, tx.gas_delta,
-            tx.would_fit_in_original_limit, tx.min_multiplier_to_succeed,
+            int(tx.would_fit_in_original_limit), tx.min_multiplier_to_succeed,
             tx.divergence_contract or tx.recipient,
             tx.divergence_call_depth, tx.divergence_opcode,
             tx.oog_contract, tx.oog_call_depth, tx.oog_opcode,
             tx.oog_pattern, tx.oog_gas_remaining,
-            tx.oog_chain_proportional, tx.oog_bottleneck_depth, tx.oog_bottleneck_kind,
+            None if tx.oog_chain_proportional is None else int(tx.oog_chain_proportional),
+            tx.oog_bottleneck_depth, tx.oog_bottleneck_kind,
             tx.schedule_state_gas_spent, tx.schedule_initial_reservoir,
             tx.runtime_state_gas, tx.runtime_state_gas_spillover,
-            tx.state_gas_category, tx.reservoir_exhausted,
-        ],
-    ).fetchone()[0]
+            tx.state_gas_category, int(tx.reservoir_exhausted),
+        ),
+    )
+    div_id = int(cur.lastrowid)
 
     for f in tx.frames:
         conn.execute(
             "INSERT INTO divergence_call_frames VALUES ("
             "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [
+            (
                 div_id, f["call_index"], f["parent_call_index"], f["depth"],
                 f["from_address"], f["to_address"], f["code_address"],
                 f["codehash"], f["call_type"], f["selector"], f["value_wei"],
-                f["gas_provided"], f["gas_used"], f["gas_margin"], f["success"],
+                f["gas_provided"], f["gas_used"], f["gas_margin"],
+                int(f["success"]),
                 f["parent_gas_at_call"], f["gas_requested_on_stack"],
-                f["eip150_cap_binding"], f["state_gas_running"],
-            ],
+                None if f["eip150_cap_binding"] is None else int(f["eip150_cap_binding"]),
+                f["state_gas_running"],
+            ),
         )
 
     for op in tx.opcode_counts:
         conn.execute(
             "INSERT INTO divergence_opcode_counts VALUES (?, ?, ?, ?, ?, ?)",
-            [div_id, op["call_index"], op["opcode"], op["count"],
-             op["gas_baseline"], op["gas_schedule"]],
+            (div_id, op["call_index"], op["opcode"], op["count"],
+             op["gas_baseline"], op["gas_schedule"]),
         )
 
     for lg in tx.event_logs:
         conn.execute(
             "INSERT INTO divergence_event_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [div_id, lg["trace_kind"], lg["log_index"], lg["address"],
+            (div_id, lg["trace_kind"], lg["log_index"], lg["address"],
              lg["topic0"], lg["topic1"], lg["topic2"], lg["topic3"],
-             lg["data_bytes"], lg["data_hash"]],
+             lg["data_bytes"], lg["data_hash"]),
         )

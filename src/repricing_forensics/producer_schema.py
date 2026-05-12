@@ -1,17 +1,22 @@
-"""Producer-side DuckDB schema for the consolidated repricing-forensics lake.
+"""Producer-side SQLite schema for the repricing-forensics pipeline.
 
-This module is the *contract* between reth (`crates/research/`) and this
-consumer. Both repos must agree on these table shapes; the producer writes
-them, the consumer reads them.
+The producer (reth-research) writes SQLite; the consumer attaches the
+file read-only via DuckDB's `sqlite_scanner` extension and runs
+analytical queries through DuckDB's vectorized engine. This sidesteps
+DuckDB's single-process writer-lock constraint while keeping our
+analytical query path fast (DuckDB engine over SQLite storage).
 
-The schema is also created here so we can drive a synthetic test fixture
-(`scripts/build_synthetic_producer_db.py`) without needing reth to land
-the new producer first. Once reth ships its DuckDB writer, the source of
-truth for DDL effectively moves to the producer crate; this module
-becomes a duplicate kept for the synthetic fixture and parity tests.
+See `docs/storage-redesign.md` for the rationale.
 
-See `docs/storage-redesign.md` (this repo) and
-`crates/research/docs/storage-redesign.md` (reth) for the rationale.
+SQLite has no native array / struct types, so where the original
+DuckDB schema used `INTEGER[12]` or `STRUCT(opcode, count)[]` we
+serialize JSON into a TEXT column. DuckDB can json_each / unnest these
+on the read side. SQLite is dynamically typed; the affinity hints in
+the DDL below are documentation as much as enforcement.
+
+WAL mode is the bedrock of the concurrency model: one writer + many
+readers without blocking. The producer sets WAL on first open; the
+consumer doesn't need to (read-only ATTACH respects the mode).
 """
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: SQLite storage with JSON for array/struct columns
 
 
 class Bucket(str, Enum):
@@ -55,75 +60,70 @@ AGGREGATE_ONLY_BUCKETS: tuple[str, ...] = (
 
 # ── DDL ───────────────────────────────────────────────────────────────
 
-_SEQUENCES: tuple[str, ...] = (
-    "CREATE SEQUENCE IF NOT EXISTS seq_divergence_id START 1",
-    "CREATE SEQUENCE IF NOT EXISTS seq_analysis_run_id START 1",
-)
-
-
-# Each entry is (table_name, ddl). Order matters: foreign-key references
-# require parents first.
+# Each entry is (table_name, ddl). Order matters when foreign keys are
+# enabled; we don't enforce FKs but keep the parent-first order for
+# clarity.
 _TABLES: tuple[tuple[str, str], ...] = (
     ("analysis_runs", """
         CREATE TABLE IF NOT EXISTS analysis_runs (
-            run_id               UBIGINT  PRIMARY KEY DEFAULT nextval('seq_analysis_run_id'),
-            schema_version       INTEGER  NOT NULL,
-            schedule_name        VARCHAR  NOT NULL,
-            schedule_config_hash VARCHAR  NOT NULL,
-            reth_commit          VARCHAR,
-            run_started_at       UBIGINT  NOT NULL,
-            run_finished_at      UBIGINT,
-            blocks_processed     UBIGINT,
-            notes                VARCHAR
+            run_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            schema_version       INTEGER NOT NULL,
+            schedule_name        TEXT    NOT NULL,
+            schedule_config_hash TEXT    NOT NULL,
+            reth_commit          TEXT,
+            run_started_at       INTEGER NOT NULL,
+            run_finished_at      INTEGER,
+            blocks_processed     INTEGER,
+            notes                TEXT
         )
     """),
 
     ("block_coverage", """
         CREATE TABLE IF NOT EXISTS block_coverage (
-            schedule_name        VARCHAR  NOT NULL,
-            schedule_config_hash VARCHAR  NOT NULL,
-            block_number         UBIGINT  NOT NULL,
-            block_hash           BLOB     NOT NULL,
-            parent_hash          BLOB     NOT NULL,
-            timestamp            UBIGINT  NOT NULL,
-            tx_count             UINTEGER NOT NULL,
-            tx_count_unchanged                 UINTEGER NOT NULL,
-            tx_count_trace_only                UINTEGER NOT NULL,
-            tx_count_gas_only                  UINTEGER NOT NULL,
-            tx_count_event_logs_changed        UINTEGER NOT NULL,
-            tx_count_wallet_fixable_shallow    UINTEGER NOT NULL,
-            tx_count_wallet_fixable_deep_chain UINTEGER NOT NULL,
-            tx_count_contract_broken           UINTEGER NOT NULL,
+            schedule_name        TEXT    NOT NULL,
+            schedule_config_hash TEXT    NOT NULL,
+            block_number         INTEGER NOT NULL,
+            block_hash           BLOB    NOT NULL,
+            parent_hash          BLOB    NOT NULL,
+            timestamp            INTEGER NOT NULL,
+            tx_count             INTEGER NOT NULL,
+            tx_count_unchanged                 INTEGER NOT NULL,
+            tx_count_trace_only                INTEGER NOT NULL,
+            tx_count_gas_only                  INTEGER NOT NULL,
+            tx_count_event_logs_changed        INTEGER NOT NULL,
+            tx_count_wallet_fixable_shallow    INTEGER NOT NULL,
+            tx_count_wallet_fixable_deep_chain INTEGER NOT NULL,
+            tx_count_contract_broken           INTEGER NOT NULL,
             PRIMARY KEY (schedule_name, block_number, block_hash)
         )
     """),
 
     ("block_summaries", """
         CREATE TABLE IF NOT EXISTS block_summaries (
-            schedule_name VARCHAR  NOT NULL,
-            block_number  UBIGINT  NOT NULL,
-            bucket        VARCHAR  NOT NULL,
-            tx_count      UINTEGER NOT NULL,
+            schedule_name TEXT    NOT NULL,
+            block_number  INTEGER NOT NULL,
+            bucket        TEXT    NOT NULL,
+            tx_count      INTEGER NOT NULL,
 
-            -- gas-delta moments + log2 histogram (bins: <=1, 2..2^11+)
-            gas_delta_sum       BIGINT,
-            gas_delta_sum_sq    HUGEINT,
-            gas_delta_min       BIGINT,
-            gas_delta_max       BIGINT,
-            gas_delta_log2_hist INTEGER[12],
+            -- gas-delta moments + log2 histogram (12 bins, JSON array)
+            gas_delta_sum       INTEGER,
+            gas_delta_sum_sq    REAL,     -- REAL (loses precision past 2^53) to avoid HUGEINT
+            gas_delta_min       INTEGER,
+            gas_delta_max       INTEGER,
+            gas_delta_log2_hist TEXT,     -- JSON: array of 12 ints
 
-            -- EIP-7904: per-bucket per-opcode totals (sparse; nonzero only)
-            opcode_count_totals_7904     STRUCT(opcode UTINYINT, count UBIGINT)[],
-            opcode_gas_delta_totals_7904 STRUCT(opcode UTINYINT, delta BIGINT)[],
+            -- EIP-7904: per-bucket per-opcode totals (sparse JSON arrays)
+            opcode_count_totals_7904     TEXT, -- JSON: [{"opcode": int, "count": int}, ...]
+            opcode_gas_delta_totals_7904 TEXT, -- JSON: [{"opcode": int, "delta": int}, ...]
 
             -- EIP-8037: state-gas totals + multiplier histogram + per-category counts
-            state_gas_sum           UBIGINT,
-            state_gas_spillover_sum UBIGINT,
-            multiplier_log2_hist    INTEGER[12],
-            tx_count_creation       UINTEGER,
-            tx_count_authorization  UINTEGER,
-            tx_count_runtime_state  UINTEGER,
-            tx_count_no_state       UINTEGER,
+            state_gas_sum           INTEGER,
+            state_gas_spillover_sum INTEGER,
+            multiplier_log2_hist    TEXT,     -- JSON: array of 12 ints
+            tx_count_creation       INTEGER,
+            tx_count_authorization  INTEGER,
+            tx_count_runtime_state  INTEGER,
+            tx_count_no_state       INTEGER,
 
             PRIMARY KEY (schedule_name, block_number, bucket)
         )
@@ -131,62 +131,62 @@ _TABLES: tuple[tuple[str, str], ...] = (
 
     ("divergences", """
         CREATE TABLE IF NOT EXISTS divergences (
-            divergence_id        UBIGINT  PRIMARY KEY DEFAULT nextval('seq_divergence_id'),
-            schedule_name        VARCHAR  NOT NULL,
-            schedule_config_hash VARCHAR  NOT NULL,
-            block_number         UBIGINT  NOT NULL,
-            tx_index             UINTEGER NOT NULL,
-            tx_hash              BLOB     NOT NULL,
-            timestamp            UBIGINT  NOT NULL,
-            bucket               VARCHAR  NOT NULL,
+            divergence_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            schedule_name        TEXT    NOT NULL,
+            schedule_config_hash TEXT    NOT NULL,
+            block_number         INTEGER NOT NULL,
+            tx_index             INTEGER NOT NULL,
+            tx_hash              BLOB    NOT NULL,
+            timestamp            INTEGER NOT NULL,
+            bucket               TEXT    NOT NULL,
 
-            sender       VARCHAR  NOT NULL,
-            recipient    VARCHAR,
-            is_create    BOOLEAN  NOT NULL,
-            tx_gas_limit UBIGINT  NOT NULL,
+            sender       TEXT    NOT NULL,
+            recipient    TEXT,
+            is_create    INTEGER NOT NULL,  -- 0/1
+            tx_gas_limit INTEGER NOT NULL,
 
-            baseline_success     BOOLEAN  NOT NULL,
-            schedule_success     BOOLEAN  NOT NULL,
-            status_changed       BOOLEAN  NOT NULL,
-            event_logs_changed   BOOLEAN  NOT NULL,
-            output_changed       BOOLEAN  NOT NULL,
-            logs_bloom_changed   BOOLEAN  NOT NULL,
+            baseline_success     INTEGER NOT NULL,
+            schedule_success     INTEGER NOT NULL,
+            status_changed       INTEGER NOT NULL,
+            event_logs_changed   INTEGER NOT NULL,
+            output_changed       INTEGER NOT NULL,
+            logs_bloom_changed   INTEGER NOT NULL,
 
-            baseline_gas_used        UBIGINT NOT NULL,
-            schedule_gas_used        UBIGINT NOT NULL,
-            gas_delta                BIGINT  NOT NULL,
-            baseline_total_gas_spent UBIGINT,
-            baseline_gas_refunded    UBIGINT,
-            schedule_total_gas_spent UBIGINT,
-            schedule_gas_refunded    UBIGINT,
-            schedule_intrinsic_gas   UBIGINT,
-            schedule_floor_gas       UBIGINT,
-            would_fit_in_original_limit BOOLEAN,
-            min_multiplier_to_succeed   DOUBLE,
+            baseline_gas_used        INTEGER NOT NULL,
+            schedule_gas_used        INTEGER NOT NULL,
+            gas_delta                INTEGER NOT NULL,
+            baseline_total_gas_spent INTEGER,
+            baseline_gas_refunded    INTEGER,
+            schedule_total_gas_spent INTEGER,
+            schedule_gas_refunded    INTEGER,
+            schedule_intrinsic_gas   INTEGER,
+            schedule_floor_gas       INTEGER,
+            would_fit_in_original_limit INTEGER,  -- 0/1/NULL
+            min_multiplier_to_succeed   REAL,
 
             -- 7904 OOG location + chain-walk classification
-            divergence_contract    VARCHAR,
-            divergence_pc          UINTEGER,
+            divergence_contract    TEXT,
+            divergence_pc          INTEGER,
             divergence_call_depth  INTEGER,
-            divergence_opcode      UTINYINT,
-            oog_contract           VARCHAR,
-            oog_pc                 UINTEGER,
+            divergence_opcode      INTEGER,
+            oog_contract           TEXT,
+            oog_pc                 INTEGER,
             oog_call_depth         INTEGER,
-            oog_opcode             UTINYINT,
-            oog_pattern            VARCHAR,
-            oog_gas_remaining      UBIGINT,
-            oog_chain_proportional BOOLEAN,
+            oog_opcode             INTEGER,
+            oog_pattern            TEXT,
+            oog_gas_remaining      INTEGER,
+            oog_chain_proportional INTEGER,  -- 0/1/NULL
             oog_bottleneck_depth   INTEGER,
-            oog_bottleneck_kind    VARCHAR,
+            oog_bottleneck_kind    TEXT,
 
             -- 8037 state gas
-            schedule_state_gas_spent     UBIGINT,
-            schedule_initial_state_gas   UBIGINT,
-            schedule_initial_reservoir   UBIGINT,
-            runtime_state_gas            UBIGINT,
-            runtime_state_gas_spillover  UBIGINT,
-            state_gas_category           VARCHAR,
-            reservoir_exhausted          BOOLEAN,
+            schedule_state_gas_spent     INTEGER,
+            schedule_initial_state_gas   INTEGER,
+            schedule_initial_reservoir   INTEGER,
+            runtime_state_gas            INTEGER,
+            runtime_state_gas_spillover  INTEGER,
+            state_gas_category           TEXT,
+            reservoir_exhausted          INTEGER,  -- 0/1/NULL
 
             UNIQUE (schedule_name, block_number, tx_index, schedule_config_hash)
         )
@@ -194,47 +194,47 @@ _TABLES: tuple[tuple[str, str], ...] = (
 
     ("divergence_call_frames", """
         CREATE TABLE IF NOT EXISTS divergence_call_frames (
-            divergence_id          UBIGINT  NOT NULL,
-            call_index             UINTEGER NOT NULL,
-            parent_call_index      UINTEGER,
-            depth                  UINTEGER NOT NULL,
-            from_address           VARCHAR  NOT NULL,
-            to_address             VARCHAR  NOT NULL,
-            code_address           VARCHAR,
+            divergence_id          INTEGER NOT NULL,
+            call_index             INTEGER NOT NULL,
+            parent_call_index      INTEGER,
+            depth                  INTEGER NOT NULL,
+            from_address           TEXT    NOT NULL,
+            to_address             TEXT    NOT NULL,
+            code_address           TEXT,
             codehash               BLOB,
-            call_type              VARCHAR  NOT NULL,
+            call_type              TEXT    NOT NULL,
             selector               BLOB,
-            value_wei              VARCHAR,
-            gas_provided           UBIGINT  NOT NULL,
-            gas_used               UBIGINT  NOT NULL,
-            gas_margin             BIGINT,
-            success                BOOLEAN  NOT NULL,
-            parent_gas_at_call     UBIGINT,
-            gas_requested_on_stack UBIGINT,
-            eip150_cap_binding     BOOLEAN,
-            state_gas_running      UBIGINT,
+            value_wei              TEXT,
+            gas_provided           INTEGER NOT NULL,
+            gas_used               INTEGER NOT NULL,
+            gas_margin             INTEGER,
+            success                INTEGER NOT NULL,  -- 0/1
+            parent_gas_at_call     INTEGER,
+            gas_requested_on_stack INTEGER,
+            eip150_cap_binding     INTEGER,  -- 0/1/NULL
+            state_gas_running      INTEGER,
             PRIMARY KEY (divergence_id, call_index)
         )
     """),
 
     ("divergence_opcode_counts", """
         CREATE TABLE IF NOT EXISTS divergence_opcode_counts (
-            divergence_id UBIGINT  NOT NULL,
-            call_index    UINTEGER NOT NULL,
-            opcode        UTINYINT NOT NULL,
-            count         UBIGINT  NOT NULL,
-            gas_baseline  UBIGINT  NOT NULL,
-            gas_schedule  UBIGINT  NOT NULL,
+            divergence_id INTEGER NOT NULL,
+            call_index    INTEGER NOT NULL,
+            opcode        INTEGER NOT NULL,  -- 0..255
+            count         INTEGER NOT NULL,
+            gas_baseline  INTEGER NOT NULL,
+            gas_schedule  INTEGER NOT NULL,
             PRIMARY KEY (divergence_id, call_index, opcode)
         )
     """),
 
     ("divergence_event_logs", """
         CREATE TABLE IF NOT EXISTS divergence_event_logs (
-            divergence_id UBIGINT  NOT NULL,
-            trace_kind    VARCHAR  NOT NULL,
-            log_index     UINTEGER NOT NULL,
-            address       VARCHAR  NOT NULL,
+            divergence_id INTEGER NOT NULL,
+            trace_kind    TEXT    NOT NULL,  -- 'baseline' | 'schedule'
+            log_index     INTEGER NOT NULL,
+            address       TEXT    NOT NULL,
             topic0        BLOB,
             topic1        BLOB,
             topic2        BLOB,
@@ -248,14 +248,14 @@ _TABLES: tuple[tuple[str, str], ...] = (
     ("contract_metadata", """
         CREATE TABLE IF NOT EXISTS contract_metadata (
             codehash               BLOB PRIMARY KEY,
-            representative_address VARCHAR,
-            solc_version           VARCHAR,
-            solc_commit            VARCHAR,
-            evm_target             VARCHAR,
-            cbor_present           BOOLEAN NOT NULL,
-            has_metadata_hash      BOOLEAN NOT NULL,
-            bytecode_len           UINTEGER NOT NULL,
-            extracted_at           UBIGINT NOT NULL
+            representative_address TEXT,
+            solc_version           TEXT,
+            solc_commit            TEXT,
+            evm_target             TEXT,
+            cbor_present           INTEGER NOT NULL,  -- 0/1
+            has_metadata_hash      INTEGER NOT NULL,  -- 0/1
+            bytecode_len           INTEGER NOT NULL,
+            extracted_at           INTEGER NOT NULL
         )
     """),
 )
@@ -273,13 +273,25 @@ _INDEXES: tuple[str, ...] = (
 )
 
 
+# PRAGMAs the producer should set at open time. WAL mode is the
+# linchpin of the writer+readers concurrency model. synchronous=NORMAL
+# is the standard trade-off for WAL — durable on commit (no torn
+# writes) but doesn't fsync on every page write.
+PRODUCER_PRAGMAS: tuple[str, ...] = (
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = NORMAL",
+    "PRAGMA foreign_keys = OFF",
+    "PRAGMA temp_store = MEMORY",
+)
+
+
 TABLE_NAMES: tuple[str, ...] = tuple(name for name, _ in _TABLES)
 
 
 def initialize_schema(conn) -> None:
-    """Create every sequence, table, and index. Idempotent."""
-    for stmt in _SEQUENCES:
-        conn.execute(stmt)
+    """Create every table and index on a sqlite3 connection. Idempotent."""
+    for pragma in PRODUCER_PRAGMAS:
+        conn.execute(pragma)
     for _, ddl in _TABLES:
         conn.execute(ddl)
     for stmt in _INDEXES:
@@ -298,21 +310,20 @@ def insert_analysis_run(
     notes: str | None = None,
 ) -> int:
     """Record an analysis run. Returns the new run_id."""
-    row = conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO analysis_runs (
             schema_version, schedule_name, schedule_config_hash,
             reth_commit, run_started_at, run_finished_at, blocks_processed, notes
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        RETURNING run_id
         """,
-        [
+        (
             SCHEMA_VERSION, schedule_name, schedule_config_hash,
             reth_commit, run_started_at, run_finished_at, blocks_processed, notes,
-        ],
-    ).fetchone()
-    return int(row[0])
+        ),
+    )
+    return int(cur.lastrowid)
 
 
 def latest_schema_version(conn, schedule_name: str | None = None) -> int | None:
@@ -329,7 +340,7 @@ def latest_schema_version(conn, schedule_name: str | None = None) -> int | None:
         row = conn.execute(
             "SELECT schema_version FROM analysis_runs "
             "WHERE schedule_name = ? ORDER BY run_id DESC LIMIT 1",
-            [schedule_name],
+            (schedule_name,),
         ).fetchone()
     return int(row[0]) if row else None
 

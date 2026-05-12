@@ -224,6 +224,8 @@ def gas_overhead():
 
 
 def _gas_delta_aggregate_response(rows: list[dict]) -> dict:
+    import json
+
     total_count = 0
     total_sum = 0
     combined_hist = [0] * 12
@@ -232,9 +234,17 @@ def _gas_delta_aggregate_response(rows: list[dict]) -> dict:
     for r in rows:
         total_count += _int(r["tx_count"])
         total_sum += _int(r["gas_delta_sum"])
-        hist = r.get("gas_delta_log2_hist")
-        if hist is not None:
-            for i, c in enumerate(hist):
+        hist_raw = r.get("gas_delta_log2_hist")
+        # SQLite stores the histogram as a JSON-encoded TEXT column;
+        # decode here. A plain list (legacy in-memory tests) passes
+        # through unchanged.
+        if isinstance(hist_raw, str):
+            try:
+                hist_raw = json.loads(hist_raw)
+            except (json.JSONDecodeError, TypeError):
+                hist_raw = None
+        if hist_raw is not None:
+            for i, c in enumerate(hist_raw):
                 if i < 12:
                     combined_hist[i] += _int(c)
         rmin = r.get("gas_delta_min")

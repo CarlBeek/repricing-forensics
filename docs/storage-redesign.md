@@ -4,11 +4,24 @@ This is the consumer-side companion to `crates/research/docs/storage-redesign.md
 in the reth tree. Read that first for the source-of-truth schema; this doc
 covers what changes in `repricing-forensics`.
 
+> **Architecture update (post-deploy)**: we initially landed this as a
+> single DuckDB file written by reth and attached read-only by the
+> consumer. That hit DuckDB's hard limit on cross-process concurrency
+> (one process can hold the writer; other processes can't ATTACH while
+> a writer is active). We pivoted to **SQLite (writer) + DuckDB
+> sqlite_scanner (reader)**: SQLite WAL handles 1 writer + N readers
+> across processes natively; DuckDB's vectorized engine runs analytical
+> queries through the `sqlite_scanner` extension over the SQLite
+> tables. Same logical schema, different storage engine. SQLite-side
+> DDL lives in `producer_schema.py`; the consumer attaches via
+> `INSTALL sqlite; LOAD sqlite; ATTACH '<path>' AS producer (TYPE
+> sqlite, READ_ONLY)`.
+
 ## Goals
 
-1. **Cut disk usage roughly 2×** by collapsing the three-DB pipeline
-   (`divergences.db` → `research_lake/*.parquet` → `repricing.duckdb`)
-   into a single consolidated DuckDB file owned by the producer.
+1. **One source of truth** owned by reth at a known path
+   (`~/reth/divergences.sqlite` by default; override with
+   `PRODUCER_DB_PATH`).
 2. **Stop storing per-tx data for non-actionable txs.** Wallet-fixable,
    gas-only-change, and trace-divergent-only txs collapse into per-block
    aggregates. Event-log-changed and contract-broken txs stay per-tx.

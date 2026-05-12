@@ -1,16 +1,15 @@
-"""Open a read-only consumer session against the producer's DuckDB file.
+"""Open a read-only consumer session against the producer's SQLite file.
 
-This is the new entry point for the consumer side of the storage redesign
-(see `docs/storage-redesign.md`). The producer (reth, eventually; for now
-the synthetic fixture from `synthetic.py`) owns a single DuckDB file with
-the schema defined in `producer_schema.py`. The consumer attaches that
-file read-only and creates views scoped to a single schedule, which the
-FastAPI app then queries.
+Consumer entry point for the SQLite-writer + DuckDB-reader architecture
+(see `docs/storage-redesign.md`). The producer (reth-research) writes
+SQLite in WAL mode; the consumer attaches that file read-only via
+DuckDB's `sqlite_scanner` extension and runs analytical queries through
+DuckDB's vectorized engine. SQLite WAL handles writer+readers across
+processes natively, so there's no lock conflict.
 
-There's no consumer-side materialization step anymore — the in-memory
-catalog this module builds is the entire "consumer DB". Views are
-recreated each time `open_session` is called, which is cheap and avoids
-stale state between deploys.
+There's no consumer-side materialization step — the in-memory catalog
+this module builds is the entire "consumer DB". Views are recreated
+each time `open_session` is called.
 
 Compared to the old `pipeline.py`:
 - No parquet lake read-through.
@@ -32,14 +31,20 @@ from .config import default_schedule_name
 
 def open_session(producer_db_path: Path, schedule_name: str | None = None
                  ) -> duckdb.DuckDBPyConnection:
-    """Open an in-memory DuckDB, attach the producer file read-only,
-    create schedule-scoped views, return the connection."""
+    """Open an in-memory DuckDB, attach the producer SQLite file
+    read-only via sqlite_scanner, create schedule-scoped views, return
+    the connection."""
     schedule_name = schedule_name or default_schedule_name()
     conn = duckdb.connect(":memory:")
     threads = os.environ.get("DUCKDB_THREADS", str(os.cpu_count() or 4))
     conn.execute(f"PRAGMA threads={threads}")
+    # sqlite_scanner is an official DuckDB extension; INSTALL fetches it
+    # from the central repo once, LOAD makes it available in this
+    # connection.
+    conn.execute("INSTALL sqlite")
+    conn.execute("LOAD sqlite")
     conn.execute(
-        f"ATTACH '{str(producer_db_path)}' AS producer (READ_ONLY)"
+        f"ATTACH '{str(producer_db_path)}' AS producer (TYPE sqlite, READ_ONLY)"
     )
     create_views(conn, schedule_name)
     return conn
@@ -179,12 +184,13 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
 
 
 def resolve_producer_db_path() -> Path:
-    """Where the producer DB lives on disk. Honors PRODUCER_DB_PATH first,
-    then falls back to a synthetic fixture in the repo root."""
+    """Where the producer SQLite file lives on disk. Honors
+    PRODUCER_DB_PATH first, then falls back to a synthetic fixture in
+    the repo root."""
     explicit = os.environ.get("PRODUCER_DB_PATH")
     if explicit:
         return Path(explicit).expanduser().resolve()
     # Fallback to the synthetic fixture path so a fresh checkout can be
     # demoed without producer data.
     from .config import default_paths
-    return (default_paths().repo_root / "synthetic.duckdb").resolve()
+    return (default_paths().repo_root / "synthetic.sqlite").resolve()
