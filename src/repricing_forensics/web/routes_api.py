@@ -34,21 +34,55 @@ FORENSIC_OPCODE_NAMES = {
     "0x20": "KECCAK256",
 }
 
-# Same mapping keyed by the numeric opcode value, since the pipeline's
-# named-string column (`divergence_opcode_name`) ends up empty for every
-# row — the Rust Debug output writes `opcode_name: KECCAK256` (no quotes)
-# but the regex looks for a quoted string. The numeric `divergence_opcode`
-# column is extracted with a `\d+` pattern that does match, so we read
-# from there and map int -> name on the Python side.
-EIP7904_OPCODE_INT_NAMES = {
-    0x04: "DIV",
-    0x05: "SDIV",
-    0x06: "MOD",
-    0x07: "SMOD",
-    0x08: "ADDMOD",
-    0x09: "MULMOD",
-    0x0a: "EXP",
+# Full EVM opcode → mnemonic lookup. Divergence and OOG points can fall on
+# any opcode (CALL, SSTORE, INVALID, etc.), not just the eight repriced
+# ones, so the dashboard needs the whole table to avoid surfacing raw
+# `0xfe`-style hex. Covers everything live on mainnet through Cancun
+# (PUSH0, MCOPY, transient storage, blob ops); EOF opcodes are not in
+# this set, and unknown bytes fall through to `0xXX` as before.
+EVM_OPCODE_NAMES = {
+    0x00: "STOP", 0x01: "ADD", 0x02: "MUL", 0x03: "SUB",
+    0x04: "DIV", 0x05: "SDIV", 0x06: "MOD", 0x07: "SMOD",
+    0x08: "ADDMOD", 0x09: "MULMOD", 0x0a: "EXP", 0x0b: "SIGNEXTEND",
+    0x10: "LT", 0x11: "GT", 0x12: "SLT", 0x13: "SGT", 0x14: "EQ",
+    0x15: "ISZERO", 0x16: "AND", 0x17: "OR", 0x18: "XOR", 0x19: "NOT",
+    0x1a: "BYTE", 0x1b: "SHL", 0x1c: "SHR", 0x1d: "SAR",
     0x20: "KECCAK256",
+    0x30: "ADDRESS", 0x31: "BALANCE", 0x32: "ORIGIN", 0x33: "CALLER",
+    0x34: "CALLVALUE", 0x35: "CALLDATALOAD", 0x36: "CALLDATASIZE",
+    0x37: "CALLDATACOPY", 0x38: "CODESIZE", 0x39: "CODECOPY",
+    0x3a: "GASPRICE", 0x3b: "EXTCODESIZE", 0x3c: "EXTCODECOPY",
+    0x3d: "RETURNDATASIZE", 0x3e: "RETURNDATACOPY", 0x3f: "EXTCODEHASH",
+    0x40: "BLOCKHASH", 0x41: "COINBASE", 0x42: "TIMESTAMP",
+    0x43: "NUMBER", 0x44: "PREVRANDAO", 0x45: "GASLIMIT", 0x46: "CHAINID",
+    0x47: "SELFBALANCE", 0x48: "BASEFEE", 0x49: "BLOBHASH", 0x4a: "BLOBBASEFEE",
+    0x50: "POP", 0x51: "MLOAD", 0x52: "MSTORE", 0x53: "MSTORE8",
+    0x54: "SLOAD", 0x55: "SSTORE", 0x56: "JUMP", 0x57: "JUMPI",
+    0x58: "PC", 0x59: "MSIZE", 0x5a: "GAS", 0x5b: "JUMPDEST",
+    0x5c: "TLOAD", 0x5d: "TSTORE", 0x5e: "MCOPY", 0x5f: "PUSH0",
+    **{0x60 + i: f"PUSH{i + 1}" for i in range(32)},
+    **{0x80 + i: f"DUP{i + 1}" for i in range(16)},
+    **{0x90 + i: f"SWAP{i + 1}" for i in range(16)},
+    **{0xa0 + i: f"LOG{i}" for i in range(5)},
+    0xf0: "CREATE", 0xf1: "CALL", 0xf2: "CALLCODE", 0xf3: "RETURN",
+    0xf4: "DELEGATECALL", 0xf5: "CREATE2",
+    0xfa: "STATICCALL", 0xfd: "REVERT", 0xfe: "INVALID", 0xff: "SELFDESTRUCT",
+}
+
+
+def opcode_label(op: int | None) -> str:
+    """Return the canonical mnemonic for an opcode byte, or '0xXX' if unknown."""
+    if op is None:
+        return ""
+    op = int(op)
+    return EVM_OPCODE_NAMES.get(op, f"0x{op:02x}")
+
+
+# Kept for backwards-compatibility with code that explicitly cared about
+# the eight repriced opcodes (e.g. the opcode-impact chart palette).
+EIP7904_OPCODE_INT_NAMES = {
+    0x04: "DIV", 0x05: "SDIV", 0x06: "MOD", 0x07: "SMOD",
+    0x08: "ADDMOD", 0x09: "MULMOD", 0x0a: "EXP", 0x20: "KECCAK256",
 }
 
 
@@ -163,7 +197,7 @@ def opcode_impact():
     return [
         {
             "opcode": f"0x{int(r['opcode_num']):02x}",
-            "name": EIP7904_OPCODE_INT_NAMES.get(int(r["opcode_num"]), f"0x{int(r['opcode_num']):02x}"),
+            "name": opcode_label(r["opcode_num"]),
             "count": int(r["cnt"]),
             "share": round(r["cnt"] / total * 100, 1) if total else 0,
         }
@@ -1064,7 +1098,7 @@ def affected_detail(address: str):
             "max_block": _int(eip7904_stats["max_block"]),
             "opcodes": _with_shares([
                 {
-                    "name": EIP7904_OPCODE_INT_NAMES.get(int(r["op_num"]), f"0x{int(r['op_num']):02x}"),
+                    "name": opcode_label(r["op_num"]),
                     "count": _int(r["cnt"]),
                 }
                 for r in opcodes_raw
@@ -1235,7 +1269,7 @@ def tx_detail(tx_hash: str):
             "contract_address": f.get("divergence_contract") or "",
             "call_depth": f.get("divergence_call_depth"),
             "opcode": (
-                EIP7904_OPCODE_INT_NAMES.get(int(f["divergence_opcode"]), f"0x{int(f['divergence_opcode']):02x}")
+                opcode_label(f["divergence_opcode"])
                 if f.get("divergence_opcode") is not None
                 else (f.get("divergence_opcode_name") or "")
             ),
@@ -1579,7 +1613,7 @@ def debug_divergence_sample():
             {
                 "opcode_int": _int(r["op_num"]),
                 "opcode_hex": f"0x{int(r['op_num']):02x}",
-                "name": EIP7904_OPCODE_INT_NAMES.get(int(r["op_num"]), f"0x{int(r['op_num']):02x}"),
+                "name": opcode_label(r["op_num"]),
                 "count": _int(r["cnt"]),
             }
             for r in top_opcodes
