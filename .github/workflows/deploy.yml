@@ -1,0 +1,45 @@
+name: Deploy web server
+
+# Runs on every push to master (and on-demand via the dispatch button).
+# The consumer-side rewrite removed the old hourly pipeline — the web
+# server now attaches the producer DuckDB directly and notices file
+# updates via mtime, so there's no analysis work for CI to do. This
+# workflow exists only to roll out code changes.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, reth-server]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recreate Python venv
+        run: |
+          rm -rf .venv
+          python3 -m venv .venv
+          . .venv/bin/activate
+          pip install --upgrade pip
+          pip install -e .
+
+      - name: Smoke-test the new code
+        # Build the synthetic fixture and import the app entry point —
+        # catches import errors before we restart the live service.
+        run: |
+          . .venv/bin/activate
+          python scripts/build_synthetic_producer_db.py --out /tmp/ci-smoke.duckdb --blocks 2
+          PRODUCER_DB_PATH=/tmp/ci-smoke.duckdb python -c "
+          from repricing_forensics.web.app import app
+          from repricing_forensics.web.db import get_conn
+          conn = get_conn()
+          rows = conn.execute('SELECT count(*) FROM divergences').fetchone()
+          assert rows[0] > 0, f'no synthetic divergences? got {rows}'
+          print('smoke test ok')
+          "
+          rm -f /tmp/ci-smoke.duckdb
+
+      - name: Restart web server
+        run: sudo systemctl restart eip7904-web || echo "Web server service not configured — skipping restart"
