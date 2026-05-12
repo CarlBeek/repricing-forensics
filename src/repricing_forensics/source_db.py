@@ -101,6 +101,43 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
         SELECT * FROM producer.contract_metadata
     """)
 
+    # Per-tx EIP-8037 view: every drill-in divergence with the 8037
+    # columns pre-derived (original_limit_failure, target_address). The
+    # old `eip8037_tx_impact` materialized table is gone — DuckDB
+    # recomputes this on each query, which is sub-millisecond.
+    conn.execute("""
+        CREATE OR REPLACE VIEW eip8037_tx_impact AS
+        SELECT
+            divergence_id, tx_hash, block_number, tx_index,
+            lower(recipient) AS target_address,
+            sender, tx_gas_limit, is_create,
+            baseline_success, schedule_success, status_changed,
+            baseline_gas_used, schedule_gas_used, gas_delta,
+            schedule_total_gas_spent, schedule_state_gas_spent,
+            schedule_initial_state_gas, schedule_initial_reservoir,
+            schedule_floor_gas, schedule_gas_refunded,
+            baseline_total_gas_spent, baseline_gas_refunded,
+            runtime_state_gas, runtime_state_gas_spillover,
+            would_fit_in_original_limit,
+            (NOT coalesce(would_fit_in_original_limit, TRUE)
+              AND coalesce(schedule_state_gas_spent, 0) > 0) AS original_limit_failure,
+            min_multiplier_to_succeed,
+            CASE
+                WHEN schedule_success AND min_multiplier_to_succeed IS NOT NULL
+                     AND tx_gas_limit > 0
+                    THEN ceil(tx_gas_limit * min_multiplier_to_succeed)
+                ELSE NULL
+            END AS estimated_min_gas_limit,
+            CASE
+                WHEN schedule_success
+                     AND coalesce(would_fit_in_original_limit, TRUE) = FALSE
+                THEN schedule_gas_used - tx_gas_limit
+                ELSE NULL
+            END AS extra_gas_needed,
+            state_gas_category, reservoir_exhausted
+        FROM divergences
+    """)
+
     # Common derived view: contract-level EIP-8037 impact totals. Lives
     # here rather than in a materialized table because DuckDB recomputes
     # this in milliseconds.
@@ -124,6 +161,15 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
             percentile_cont(0.95) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
                 AS p95_min_multiplier_to_succeed,
             max(min_multiplier_to_succeed) AS max_min_multiplier_to_succeed,
+            sum(CASE WHEN NOT schedule_success
+                      AND min_multiplier_to_succeed IS NULL THEN 1 ELSE 0 END)
+                AS unresolved_replay_failures,
+            max(CASE
+                WHEN schedule_success
+                     AND coalesce(would_fit_in_original_limit, TRUE) = FALSE
+                THEN schedule_gas_used - tx_gas_limit
+                ELSE NULL
+            END) AS max_extra_gas_needed,
             min(block_number) AS min_block,
             max(block_number) AS max_block
         FROM divergences

@@ -17,11 +17,12 @@ from .db import (
 
 router = APIRouter(prefix="/api")
 
-# Filter clause to exclude wallet-fixable breakages (depth ≤ 1, no subcalls).
-# These are just tight gas estimates that wallets auto-fix via eth_estimateGas.
-NOT_WALLET_FIXABLE = """
-    AND divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
-"""
+# In the new schema (docs/storage-redesign.md) the producer pre-classifies
+# every tx into a `bucket` and only emits per-tx rows for the drill-in
+# cohort (contract_broken + event_logs_changed). Wallet-fixable rows
+# never enter `divergences`, so most "contract-broken" queries simply
+# filter `WHERE bucket = 'contract_broken'` instead of the old
+# NOT_WALLET_FIXABLE filter that lived in the consumer.
 
 FORENSIC_OPCODE_NAMES = {
     "0x04": "DIV",
@@ -106,50 +107,47 @@ def _float(value) -> float:
     return value if value is not None else 0.0
 
 
+def _hex(value) -> str | None:
+    """tx_hash / block_hash come back from DuckDB as BLOB → bytes. Render
+    as `0x…` for JSON output. Pass-through strings unchanged."""
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return "0x" + value.hex()
+    return str(value)
+
+
 # ── Briefing endpoints ────────────────────────────────────────────────
 
 
 @router.get("/overview")
 def overview():
-    total_divergent = query_scalar("SELECT count(*) FROM hot_7904")
-    broken = query_scalar("SELECT count(*) FROM hot_7904 WHERE status_changed")
-    # Carve out the wallet-fixable bucket into two sub-buckets:
-    #   - shallow: depth ≤ 1, no internal calls (the original heuristic)
-    #   - deep_chain: oog_chain_proportional=TRUE on a row the shallow rule
-    #     would have missed (rescued by the producer's chain-walk classifier)
-    wallet_split = query(f"""
+    # All headline counts come from block_coverage's per-bucket totals.
+    # The producer's classifier is the single source of truth for which
+    # bucket a tx belongs to; the consumer doesn't second-guess it.
+    row = query("""
         SELECT
-            sum(CASE
-                WHEN nf.divergence_call_depth IS NOT NULL
-                 AND nf.divergence_call_depth <= 1
-                 AND coalesce(nf.call_count, 0) = 0
-                THEN 1 ELSE 0 END) AS shallow,
-            sum(CASE
-                WHEN nf.oog_chain_proportional = TRUE
-                 AND NOT (
-                    nf.divergence_call_depth IS NOT NULL
-                    AND nf.divergence_call_depth <= 1
-                    AND coalesce(nf.call_count, 0) = 0
-                 )
-                THEN 1 ELSE 0 END) AS deep_chain
-        FROM normalized_forensics nf
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed
-          AND h.divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)
+            sum(tx_count) AS total_analyzed,
+            sum(tx_count - tx_count_unchanged) AS divergent_txs,
+            sum(tx_count_contract_broken) AS contract_broken,
+            sum(tx_count_wallet_fixable_shallow) AS wallet_fixable_shallow,
+            sum(tx_count_wallet_fixable_deep_chain) AS wallet_fixable_deep_chain
+        FROM block_coverage
     """)[0]
-    wallet_fixable_shallow = _int(wallet_split["shallow"])
-    wallet_fixable_deep_chain = _int(wallet_split["deep_chain"])
+    total_analyzed = _int(row["total_analyzed"])
+    contract_broken = _int(row["contract_broken"])
+    wallet_fixable_shallow = _int(row["wallet_fixable_shallow"])
+    wallet_fixable_deep_chain = _int(row["wallet_fixable_deep_chain"])
     wallet_fixable = wallet_fixable_shallow + wallet_fixable_deep_chain
-    total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_7904")
-    contract_broken = broken - wallet_fixable
+    broken = contract_broken + wallet_fixable
     return {
-        "total_analyzed": _int(total_analyzed),
-        "divergent_txs": int(total_divergent),
-        "broken_txs": int(broken),
+        "total_analyzed": total_analyzed,
+        "divergent_txs": _int(row["divergent_txs"]),
+        "broken_txs": broken,
         "wallet_fixable_txs": wallet_fixable,
         "wallet_fixable_shallow_txs": wallet_fixable_shallow,
         "wallet_fixable_deep_chain_txs": wallet_fixable_deep_chain,
-        "contract_broken_txs": int(contract_broken),
+        "contract_broken_txs": contract_broken,
         "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
         "contract_breakage_rate": round(contract_broken / total_analyzed * 100, 2) if total_analyzed else 0,
     }
@@ -165,15 +163,14 @@ def funnel():
     """
     row = query("""
         SELECT
-            count(*) AS total,
-            sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS broken,
-            sum(CASE WHEN event_logs_changed AND NOT status_changed THEN 1 ELSE 0 END)
-                AS event_log_changed,
-            sum(CASE WHEN NOT status_changed AND NOT event_logs_changed
-                          AND gas_delta > 0 THEN 1 ELSE 0 END) AS gas_only_change,
-            sum(CASE WHEN NOT status_changed AND NOT event_logs_changed
-                          AND gas_delta <= 0 THEN 1 ELSE 0 END) AS trace_divergent_only
-        FROM hot_7904
+            sum(tx_count - tx_count_unchanged) AS total,
+            sum(tx_count_contract_broken
+                + tx_count_wallet_fixable_shallow
+                + tx_count_wallet_fixable_deep_chain) AS broken,
+            sum(tx_count_event_logs_changed) AS event_log_changed,
+            sum(tx_count_gas_only)           AS gas_only_change,
+            sum(tx_count_trace_only)         AS trace_divergent_only
+        FROM block_coverage
     """)[0]
     return {
         "divergent_txs": _int(row["total"]),
@@ -186,11 +183,11 @@ def funnel():
 
 @router.get("/opcode-impact")
 def opcode_impact():
-    rows = query(f"""
+    rows = query("""
         SELECT divergence_opcode AS opcode_num, count(*) AS cnt
-        FROM normalized_forensics
+        FROM divergences
         WHERE divergence_opcode IS NOT NULL
-          AND divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+          AND bucket = 'contract_broken'
         GROUP BY 1 ORDER BY cnt DESC
     """)
     total = sum(r["cnt"] for r in rows)
@@ -207,56 +204,100 @@ def opcode_impact():
 
 @router.get("/gas-overhead")
 def gas_overhead():
-    stats = query("""
-        SELECT
-            count(*) as cnt,
-            median(gas_delta) as median_delta,
-            avg(gas_delta) as mean_delta,
-            percentile_cont(0.05) WITHIN GROUP (ORDER BY gas_delta) as p5,
-            percentile_cont(0.25) WITHIN GROUP (ORDER BY gas_delta) as p25,
-            percentile_cont(0.75) WITHIN GROUP (ORDER BY gas_delta) as p75,
-            percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95,
-            percentile_cont(0.99) WITHIN GROUP (ORDER BY gas_delta) as p99
-        FROM hot_7904 WHERE NOT status_changed
-    """)[0]
-    # Log-scale PMF: use power-of-2 buckets for the gas delta
-    histogram = query("""
-        WITH bucketed AS (
-            SELECT
-                CASE WHEN gas_delta <= 0 THEN 0
-                     ELSE floor(log2(gas_delta))::int
-                END AS log_bin,
-                count(*) AS cnt
-            FROM hot_7904 WHERE NOT status_changed
-            GROUP BY 1
-        )
-        SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
+    """CDF + stats over the non-broken cohort (gas_only, trace_only,
+    event_logs_changed) reconstructed from `block_summaries`'s pre-binned
+    log2 histograms.
+
+    Percentiles are bin-aligned (powers of two); we can't recover the
+    finer-grained percentiles the old query computed because the
+    aggregate cohort isn't stored per-tx anymore. CDF fidelity is
+    unchanged — it was already plotted from the same log2 bins.
+    """
+    rows = query("""
+        SELECT bucket, tx_count, gas_delta_sum, gas_delta_min, gas_delta_max,
+               gas_delta_log2_hist
+        FROM block_summaries
+        WHERE bucket IN ('gas_only', 'trace_only', 'event_logs_changed')
     """)
-    total = sum(r["cnt"] for r in histogram) or 1
+    return _gas_delta_aggregate_response(rows)
+
+
+def _gas_delta_aggregate_response(rows: list[dict]) -> dict:
+    total_count = 0
+    total_sum = 0
+    combined_hist = [0] * 12
+    gmin = None
+    gmax = None
+    for r in rows:
+        total_count += _int(r["tx_count"])
+        total_sum += _int(r["gas_delta_sum"])
+        hist = r.get("gas_delta_log2_hist")
+        if hist is not None:
+            for i, c in enumerate(hist):
+                if i < 12:
+                    combined_hist[i] += _int(c)
+        rmin = r.get("gas_delta_min")
+        rmax = r.get("gas_delta_max")
+        if rmin is not None:
+            gmin = rmin if gmin is None else min(gmin, _int(rmin))
+        if rmax is not None:
+            gmax = rmax if gmax is None else max(gmax, _int(rmax))
+
+    mean = total_sum / total_count if total_count else 0
+    stats = {
+        "cnt": total_count,
+        "mean_delta": mean,
+        "median_delta": _percentile_from_log2_hist(combined_hist, 0.5),
+        "p5":  _percentile_from_log2_hist(combined_hist, 0.05),
+        "p25": _percentile_from_log2_hist(combined_hist, 0.25),
+        "p75": _percentile_from_log2_hist(combined_hist, 0.75),
+        "p95": _percentile_from_log2_hist(combined_hist, 0.95),
+        "p99": _percentile_from_log2_hist(combined_hist, 0.99),
+    }
+    total_hist = sum(combined_hist) or 1
     return {
-        "stats": {k: float(v) if v is not None else 0 for k, v in stats.items()},
+        "stats": stats,
         "histogram": [
             {
-                "bin_start": 2 ** int(r["log_bin"]) if r["log_bin"] > 0 else 0,
-                "label": f'{2**int(r["log_bin"])}–{2**(int(r["log_bin"])+1)}' if r["log_bin"] > 0 else '≤1',
-                "count": int(r["cnt"]),
-                "density": round(r["cnt"] / total, 6),
+                "bin_start": 2 ** i if i > 0 else 0,
+                "label": (f"{2**i}–{2**(i+1)}" if i > 0 else "≤1"),
+                "count": int(combined_hist[i]),
+                "density": round(combined_hist[i] / total_hist, 6),
             }
-            for r in histogram
+            for i in range(len(combined_hist))
         ],
     }
 
 
+def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
+    """Inverse-CDF over log2 bins; returns the upper-edge of the bin.
+
+    Bin i represents gas-delta in [2^i, 2^(i+1)) for i > 0, [0,1] for i=0.
+    We return the upper edge so the CDF is monotonic with the bar chart.
+    """
+    total = sum(hist)
+    if total == 0:
+        return 0.0
+    target = total * p
+    cumulative = 0
+    for i, c in enumerate(hist):
+        cumulative += c
+        if cumulative >= target:
+            return float(2 ** i if i > 0 else 0)
+    return float(2 ** (len(hist) - 1))
+
+
 @router.get("/concentration")
 def concentration():
-    df = query_df(f"""
-        SELECT recipient, count(*) as broken_txs
-        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
+    df = query_df("""
+        SELECT recipient, count(*) AS broken_txs
+        FROM divergences
+        WHERE bucket = 'contract_broken'
         GROUP BY recipient ORDER BY broken_txs DESC
     """)
     df["cumulative"] = df["broken_txs"].cumsum()
     total = df["broken_txs"].sum()
-    df["cum_pct"] = df["cumulative"] / total * 100
+    df["cum_pct"] = df["cumulative"] / total * 100 if total else 0
     return [
         {
             "rank": i + 1,
@@ -272,9 +313,10 @@ def concentration():
 @router.get("/top-contracts")
 def top_contracts(limit: int = Query(default=10, le=500)):
     rows = query(f"""
-        SELECT recipient, count(*) as broken_txs,
-               avg(gas_delta) as avg_delta, sum(gas_delta) as total_delta
-        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
+        SELECT recipient, count(*) AS broken_txs,
+               avg(gas_delta) AS avg_delta, sum(gas_delta) AS total_delta
+        FROM divergences
+        WHERE bucket = 'contract_broken'
         GROUP BY recipient ORDER BY broken_txs DESC LIMIT {int(limit)}
     """)
     return [
@@ -296,25 +338,24 @@ def top_contracts(limit: int = Query(default=10, le=500)):
 def forensics_time_series():
     return query("""
         WITH bounds AS (
-            SELECT min(block_number) AS mn, max(block_number) AS mx FROM coverage_7904
+            SELECT min(block_number) AS mn, max(block_number) AS mx FROM block_coverage
         ),
         buckets AS (
-            SELECT (mx - mn) / 300 AS bucket_size, mn FROM bounds
+            SELECT greatest((mx - mn) / 300, 1) AS bucket_size, mn FROM bounds
         ),
         broken_per_bucket AS (
             SELECT
-                b.mn + ((h.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
+                b.mn + ((d.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
                 count(*) AS broken
-            FROM hot_7904 h, buckets b
-            WHERE h.status_changed
-              AND h.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+            FROM divergences d, buckets b
+            WHERE d.bucket = 'contract_broken'
             GROUP BY block_group
         ),
         total_per_bucket AS (
             SELECT
                 b.mn + ((c.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
                 sum(c.tx_count) AS total_txs
-            FROM coverage_7904 c, buckets b
+            FROM block_coverage c, buckets b
             GROUP BY block_group
         )
         SELECT
@@ -333,7 +374,13 @@ def forensics_time_series():
 
 @router.get("/forensics/gas-delta")
 def forensics_gas_delta():
-    stats = query(f"""
+    """Gas-delta stats + histogram for the contract-broken cohort.
+
+    Contract-broken rows are per-tx in `divergences`, so percentiles are
+    exact (unlike the aggregate-cohort percentiles in /api/gas-overhead,
+    which approximate from log2 bins).
+    """
+    stats = query("""
         SELECT
             median(gas_delta) as median_delta,
             avg(gas_delta) as mean_delta,
@@ -342,16 +389,16 @@ def forensics_gas_delta():
             percentile_cont(0.90) WITHIN GROUP (ORDER BY gas_delta) as p90,
             percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95,
             percentile_cont(0.99) WITHIN GROUP (ORDER BY gas_delta) as p99
-        FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
+        FROM divergences WHERE bucket = 'contract_broken'
     """)[0]
-    histogram = query(f"""
+    histogram = query("""
         WITH bucketed AS (
             SELECT
                 CASE WHEN gas_delta <= 0 THEN 0
                      ELSE floor(log2(gas_delta))::int
                 END AS log_bin,
                 count(*) AS cnt
-            FROM hot_7904 WHERE status_changed {NOT_WALLET_FIXABLE}
+            FROM divergences WHERE bucket = 'contract_broken'
             GROUP BY 1
         )
         SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
@@ -373,14 +420,12 @@ def forensics_gas_delta():
 
 @router.get("/forensics/call-depth")
 def forensics_call_depth():
-    return query(f"""
+    return query("""
         SELECT
-            coalesce(nf.divergence_call_depth, -1) AS divergence_call_depth,
+            coalesce(divergence_call_depth, -1) AS divergence_call_depth,
             count(*) AS divergent_txs
-        FROM normalized_forensics nf
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed
-          AND h.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
+        FROM divergences
+        WHERE bucket = 'contract_broken'
         GROUP BY 1 ORDER BY 1
     """)
 
@@ -389,19 +434,19 @@ def forensics_call_depth():
 def forensics_bottleneck_kinds():
     """How many contract-broken txs hit each kind of gas-forwarding bottleneck.
 
-    The producer's chain-walk classifier tags every OOG row with the kind of
-    throttle that broke the call chain (Stipend2300 / FixedGas / FractionalGas).
-    Rows whose chain was fully proportional are not contract-broken — they're
-    in wallet_fixable_ids — so they don't appear here. Rows analyzed before
-    the classifier shipped have NULL kind and bucket as 'Unclassified'.
+    The producer's chain-walk classifier tags every contract-broken OOG row
+    with the kind of throttle that broke the call chain (Stipend2300 /
+    FixedGas / FractionalGas). Rows whose chain was fully proportional are
+    not contract-broken — the producer bucketed them as wallet_fixable_*
+    and they don't appear in `divergences`. Rows where the classifier
+    didn't produce a kind (older runs) bucket as 'Unclassified'.
     """
-    rows = query(f"""
+    rows = query("""
         SELECT
-            coalesce(nf.oog_bottleneck_kind, 'Unclassified') AS kind,
+            coalesce(oog_bottleneck_kind, 'Unclassified') AS kind,
             count(*) AS cnt
-        FROM normalized_forensics nf
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed {NOT_WALLET_FIXABLE}
+        FROM divergences
+        WHERE bucket = 'contract_broken'
         GROUP BY 1
         ORDER BY cnt DESC
     """)
@@ -560,8 +605,8 @@ def eip8037_overview():
             max(extra_gas_needed) AS max_extra_gas_needed
         FROM eip8037_tx_impact
     """)[0]
-    total_analyzed = query_scalar("SELECT sum(tx_count) FROM coverage_schedule", default=0)
-    block_range = query("SELECT min(block_number) AS mn, max(block_number) AS mx FROM coverage_schedule")
+    total_analyzed = query_scalar("SELECT sum(tx_count) FROM block_coverage", default=0)
+    block_range = query("SELECT min(block_number) AS mn, max(block_number) AS mx FROM block_coverage")
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
 
     return {
@@ -843,7 +888,7 @@ def eip8037_examples(limit: int = Query(default=50, le=500)):
     """)
     return [
         {
-            "tx_hash": r["tx_hash"],
+            "tx_hash": _hex(r["tx_hash"]),
             "block_number": _int(r["block_number"]),
             "tx_index": _int(r["tx_index"]),
             "target_address": r["target_address"],
@@ -881,8 +926,8 @@ _AFFECTED_BASE_CTE = f"""
                sum(gas_delta) AS total_delta_7904,
                min(block_number) AS min_block_7904,
                max(block_number) AS max_block_7904
-        FROM hot_7904
-        WHERE status_changed {NOT_WALLET_FIXABLE}
+        FROM divergences
+        WHERE bucket = 'contract_broken'
         GROUP BY lower(recipient)
     ),
     e8037 AS (
@@ -984,6 +1029,9 @@ def affected_detail(address: str):
     addr = address.lower()
 
     # ── EIP-7904 stats ──
+    # Wallet-fixable txs aren't stored per-recipient anymore (the
+    # producer aggregates them into block_summaries). The contract
+    # detail page only needs contract-broken data.
     eip7904_stats = query(f"""
         SELECT count(*) as broken_txs,
                avg(gas_delta) as avg_delta,
@@ -991,47 +1039,34 @@ def affected_detail(address: str):
                percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95_delta,
                min(block_number) as min_block,
                max(block_number) as max_block
-        FROM hot_7904
-        WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
+        FROM divergences
+        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
     """)[0]
-    eip7904_wallet = query_scalar(f"""
-        SELECT count(*) FROM hot_7904
-        WHERE status_changed
-          AND divergence_id IN (SELECT divergence_id FROM wallet_fixable_ids)
-          AND lower(recipient) = '{addr}'
-    """, default=0)
+    eip7904_wallet_n = 0  # No longer tracked per-recipient.
     opcodes_raw = query(f"""
-        SELECT n.divergence_opcode AS op_num, count(*) AS cnt
-        FROM normalized_forensics n
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed
-          AND n.divergence_opcode IS NOT NULL
-          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
-          AND lower(h.recipient) = '{addr}'
+        SELECT divergence_opcode AS op_num, count(*) AS cnt
+        FROM divergences
+        WHERE bucket = 'contract_broken'
+          AND divergence_opcode IS NOT NULL
+          AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
     depths_raw = query(f"""
-        SELECT coalesce(n.divergence_call_depth, -1) as depth, count(*) as cnt
-        FROM normalized_forensics n
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed
-          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
-          AND lower(h.recipient) = '{addr}'
+        SELECT coalesce(divergence_call_depth, -1) as depth, count(*) as cnt
+        FROM divergences
+        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
     eip7904_txs = query(f"""
         SELECT tx_hash, block_number, gas_delta
-        FROM hot_7904
-        WHERE status_changed {NOT_WALLET_FIXABLE} AND lower(recipient) = '{addr}'
+        FROM divergences
+        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
         ORDER BY gas_delta DESC LIMIT 20
     """)
     bottleneck_kinds_raw = query(f"""
-        SELECT coalesce(n.oog_bottleneck_kind, 'Unclassified') as kind, count(*) as cnt
-        FROM normalized_forensics n
-        JOIN hot_7904 h USING (divergence_id)
-        WHERE h.status_changed
-          AND n.divergence_id NOT IN (SELECT divergence_id FROM wallet_fixable_ids)
-          AND lower(h.recipient) = '{addr}'
+        SELECT coalesce(oog_bottleneck_kind, 'Unclassified') as kind, count(*) as cnt
+        FROM divergences
+        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC
     """)
 
@@ -1063,7 +1098,6 @@ def affected_detail(address: str):
     """)
 
     eip7904_broken = _int(eip7904_stats["broken_txs"])
-    eip7904_wallet_n = _int(eip7904_wallet)
     eip8037_div = _int(eip8037_row["divergent_txs"]) if eip8037_row else 0
     # Wallet-fixable-only contracts aren't 7904-affected in any actionable
     # sense: the wallet auto-resolves it via eth_estimateGas, no code change
@@ -1113,7 +1147,7 @@ def affected_detail(address: str):
             ]),
             "transactions": [
                 {
-                    "tx_hash": t["tx_hash"],
+                    "tx_hash": _hex(t["tx_hash"]),
                     "block_number": _int(t["block_number"]),
                     "gas_delta": _float(t["gas_delta"]),
                 }
@@ -1136,7 +1170,7 @@ def affected_detail(address: str):
             ]),
             "transactions": [
                 {
-                    "tx_hash": t["tx_hash"],
+                    "tx_hash": _hex(t["tx_hash"]),
                     "block_number": _int(t["block_number"]),
                     "tx_gas_limit": _int(t["tx_gas_limit"]),
                     "min_multiplier_to_succeed": _float_or_none(t["min_multiplier_to_succeed"]),
@@ -1156,23 +1190,28 @@ def tx_detail(tx_hash: str):
     """Detailed view of a single broken transaction: gas info, divergence location, call stack."""
     tx_hash = tx_hash.lower().strip()
 
-    # Core tx info from hot table
+    # Core tx info + 8037 derived fields, all from `divergences` now.
     hot = query(f"""
-        SELECT h.divergence_id, h.block_number, h.tx_index, h.tx_hash,
-               h.baseline_success, h.schedule_success,
-               h.baseline_gas_used, h.schedule_gas_used, h.gas_delta,
-               h.tx_gas_limit, h.sender, h.recipient,
-               e.would_fit_in_original_limit, e.min_multiplier_to_succeed,
-               e.extra_gas_needed, e.estimated_min_gas_limit,
-               e.schedule_total_gas_spent, e.schedule_state_gas_spent,
-               e.schedule_initial_state_gas, e.runtime_state_gas,
-               e.schedule_initial_reservoir, e.runtime_state_gas_spillover,
-               e.schedule_floor_gas, e.schedule_gas_refunded,
-               e.baseline_total_gas_spent, e.baseline_gas_refunded,
-               e.state_gas_category, e.reservoir_exhausted
-        FROM hot_7904 h
+        SELECT
+            d.divergence_id, d.block_number, d.tx_index, d.tx_hash, d.bucket,
+            d.baseline_success, d.schedule_success, d.status_changed,
+            d.event_logs_changed, d.baseline_gas_used, d.schedule_gas_used,
+            d.gas_delta, d.tx_gas_limit, d.sender, d.recipient,
+            d.divergence_contract, d.divergence_call_depth, d.divergence_opcode,
+            d.oog_contract, d.oog_call_depth, d.oog_opcode, d.oog_pattern,
+            d.oog_gas_remaining, d.oog_chain_proportional,
+            d.oog_bottleneck_depth, d.oog_bottleneck_kind,
+            e.would_fit_in_original_limit, e.min_multiplier_to_succeed,
+            e.extra_gas_needed, e.estimated_min_gas_limit,
+            d.schedule_total_gas_spent, d.schedule_state_gas_spent,
+            d.schedule_initial_state_gas, d.runtime_state_gas,
+            d.schedule_initial_reservoir, d.runtime_state_gas_spillover,
+            d.schedule_floor_gas, d.schedule_gas_refunded,
+            d.baseline_total_gas_spent, d.baseline_gas_refunded,
+            d.state_gas_category, d.reservoir_exhausted
+        FROM divergences d
         LEFT JOIN eip8037_tx_impact e USING (divergence_id)
-        WHERE lower(h.tx_hash) = '{tx_hash}'
+        WHERE lower(hex(d.tx_hash)) = '{tx_hash.removeprefix("0x")}'
         LIMIT 1
     """)
     if not hot:
@@ -1180,79 +1219,87 @@ def tx_detail(tx_hash: str):
     h = hot[0]
     div_id = h["divergence_id"]
 
-    # Forensic info: divergence location + OOG info
-    forensics = query(f"""
-        SELECT divergence_contract, divergence_call_depth, divergence_opcode,
-               divergence_opcode_name,
-               oog_contract, oog_call_depth, oog_opcode_name, oog_pattern, oog_gas_remaining,
-               oog_chain_proportional, oog_bottleneck_depth, oog_bottleneck_kind,
-               sload_count, sstore_count, call_count, log_count, total_ops
-        FROM normalized_forensics
+    # Per-frame call stack from the normalized frames table (replaces the
+    # JSON blob in the old artifacts_7904).
+    frames = query(f"""
+        SELECT call_index, depth, from_address, to_address, call_type,
+               selector, gas_provided, gas_used, success
+        FROM call_frames
         WHERE divergence_id = {div_id}
-        LIMIT 1
+        ORDER BY call_index
     """)
-
-    # Raw artifacts: call frames + operation counts
-    artifacts_raw = query(f"""
-        SELECT schedule_call_frames, operation_counts
-        FROM artifacts_7904
-        WHERE divergence_id = {div_id}
-        LIMIT 1
-    """)
-    frames_raw = artifacts_raw
-
     call_stack = []
-    if frames_raw and frames_raw[0].get("schedule_call_frames"):
-        import json
-        try:
-            frames = json.loads(frames_raw[0]["schedule_call_frames"])
-            for f in frames:
-                to_addr = f.get("to") or ""
-                input_hex = f.get("input") or ""
-                selector = input_hex[:10] if len(input_hex) >= 10 else ""
-                call_stack.append({
-                    "depth": f.get("depth", 0),
-                    "call_type": f.get("call_type", ""),
-                    "from": label_address(f.get("from", "")),
-                    "from_address": f.get("from", ""),
-                    "to": label_address(to_addr),
-                    "to_address": to_addr,
-                    "selector": selector,
-                    "gas_provided": f.get("gas_provided", 0),
-                    "gas_used": f.get("gas_used", 0),
-                    "success": f.get("success", False),
-                })
-        except (json.JSONDecodeError, TypeError):
-            pass
+    for fr in frames:
+        sel_bytes = fr.get("selector") or b""
+        selector = "0x" + sel_bytes.hex() if sel_bytes else ""
+        to_addr = fr.get("to_address") or ""
+        call_stack.append({
+            "depth": _int(fr.get("depth")),
+            "call_type": fr.get("call_type", ""),
+            "from": label_address(fr.get("from_address", "")),
+            "from_address": fr.get("from_address", ""),
+            "to": label_address(to_addr),
+            "to_address": to_addr,
+            "selector": selector,
+            "gas_provided": _int(fr.get("gas_provided")),
+            "gas_used": _int(fr.get("gas_used")),
+            "success": bool(fr.get("success")),
+        })
 
-    # Per-opcode gas breakdown from operation_counts JSON
+    # Per-opcode gas breakdown for the 8 repriced opcodes, summed across
+    # all frames in this tx. The new opcode_counts table gives us exact
+    # per-frame data — the dashboard table aggregates to tx-level.
+    REPRICED_OP_BYTES = {
+        0x04: "DIV", 0x05: "SDIV", 0x06: "MOD", 0x07: "SMOD",
+        0x08: "ADDMOD", 0x09: "MULMOD", 0x0a: "EXP", 0x20: "KECCAK256",
+    }
+    placeholders = ", ".join(str(op) for op in REPRICED_OP_BYTES)
+    op_rows = query(f"""
+        SELECT opcode, sum(count) AS count,
+               sum(gas_schedule) - sum(gas_baseline) AS gas_delta
+        FROM opcode_counts
+        WHERE divergence_id = {div_id} AND opcode IN ({placeholders})
+        GROUP BY opcode
+    """)
     gas_breakdown = []
-    if artifacts_raw and artifacts_raw[0].get("operation_counts"):
-        import json
-        try:
-            oc = json.loads(artifacts_raw[0]["operation_counts"]) if isinstance(
-                artifacts_raw[0]["operation_counts"], str
-            ) else artifacts_raw[0]["operation_counts"]
-            REPRICED_OPCODES = [
-                ("DIV", "div"), ("SDIV", "sdiv"), ("MOD", "mod"), ("SMOD", "smod"),
-                ("ADDMOD", "addmod"), ("MULMOD", "mulmod"), ("EXP", "exp"), ("KECCAK256", "keccak256"),
-            ]
-            for name, key in REPRICED_OPCODES:
-                count = int(oc.get(f"{key}_count", 0))
-                delta = int(oc.get(f"{key}_gas_delta", 0))
-                if count > 0 or delta != 0:
-                    gas_breakdown.append({
-                        "opcode": name,
-                        "count": count,
-                        "gas_delta": delta,
-                    })
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+    for r in op_rows:
+        op = int(r["opcode"])
+        cnt = _int(r["count"])
+        delta = _int(r["gas_delta"])
+        if cnt > 0 or delta != 0:
+            gas_breakdown.append({
+                "opcode": REPRICED_OP_BYTES[op],
+                "count": cnt,
+                "gas_delta": delta,
+            })
 
-    f = forensics[0] if forensics else {}
+    # Cross-frame opcode totals for SLOAD/SSTORE/CALL/LOG/total — used by
+    # the op_counts panel on the tx page.
+    counts_by_op = {r["opcode"]: _int(r["count"]) for r in query(f"""
+        SELECT opcode, sum(count) AS count
+        FROM opcode_counts WHERE divergence_id = {div_id}
+        GROUP BY opcode
+    """)}
+    total_ops = sum(counts_by_op.values())
+    log_count = sum(counts_by_op.get(op, 0) for op in (0xa0, 0xa1, 0xa2, 0xa3, 0xa4))
+    call_count = sum(counts_by_op.get(op, 0)
+                     for op in (0xf1, 0xf2, 0xf4, 0xfa, 0xf0, 0xf5))
+    op_counts = {
+        "sload": counts_by_op.get(0x54, 0),
+        "sstore": counts_by_op.get(0x55, 0),
+        "call": call_count,
+        "log": log_count,
+        "total": total_ops,
+    }
+
+    tx_hash_hex = (
+        "0x" + h["tx_hash"].hex()
+        if isinstance(h["tx_hash"], (bytes, bytearray))
+        else h["tx_hash"]
+    )
     return {
         "found": True,
-        "tx_hash": h["tx_hash"],
+        "tx_hash": tx_hash_hex,
         "block_number": int(h["block_number"]),
         "tx_index": int(h["tx_index"]),
         "sender": h["sender"],
@@ -1265,33 +1312,25 @@ def tx_detail(tx_hash: str):
         "gas_delta": int(h["gas_delta"]),
         "gas_limit": int(h["tx_gas_limit"]),
         "divergence": {
-            "contract": label_address(f.get("divergence_contract") or ""),
-            "contract_address": f.get("divergence_contract") or "",
-            "call_depth": f.get("divergence_call_depth"),
-            "opcode": (
-                opcode_label(f["divergence_opcode"])
-                if f.get("divergence_opcode") is not None
-                else (f.get("divergence_opcode_name") or "")
-            ),
-        } if f else None,
+            "contract": label_address(h.get("divergence_contract") or ""),
+            "contract_address": h.get("divergence_contract") or "",
+            "call_depth": h.get("divergence_call_depth"),
+            "opcode": (opcode_label(h["divergence_opcode"])
+                       if h.get("divergence_opcode") is not None else ""),
+        } if h.get("divergence_contract") else None,
         "oog": {
-            "contract": label_address(f.get("oog_contract") or ""),
-            "contract_address": f.get("oog_contract") or "",
-            "call_depth": f.get("oog_call_depth"),
-            "opcode": f.get("oog_opcode_name") or "",
-            "pattern": f.get("oog_pattern") or "",
-            "gas_remaining": f.get("oog_gas_remaining"),
-            "chain_proportional": f.get("oog_chain_proportional"),
-            "bottleneck_depth": f.get("oog_bottleneck_depth"),
-            "bottleneck_kind": f.get("oog_bottleneck_kind"),
-        } if f and f.get("oog_contract") else None,
-        "op_counts": {
-            "sload": f.get("sload_count", 0),
-            "sstore": f.get("sstore_count", 0),
-            "call": f.get("call_count", 0),
-            "log": f.get("log_count", 0),
-            "total": f.get("total_ops", 0),
-        } if f else None,
+            "contract": label_address(h.get("oog_contract") or ""),
+            "contract_address": h.get("oog_contract") or "",
+            "call_depth": h.get("oog_call_depth"),
+            "opcode": (opcode_label(h["oog_opcode"])
+                       if h.get("oog_opcode") is not None else ""),
+            "pattern": h.get("oog_pattern") or "",
+            "gas_remaining": h.get("oog_gas_remaining"),
+            "chain_proportional": h.get("oog_chain_proportional"),
+            "bottleneck_depth": h.get("oog_bottleneck_depth"),
+            "bottleneck_kind": h.get("oog_bottleneck_kind"),
+        } if h.get("oog_contract") else None,
+        "op_counts": op_counts,
         "eip8037": {
             "would_fit_in_original_limit": h.get("would_fit_in_original_limit"),
             "min_multiplier_to_succeed": _float_or_none(h.get("min_multiplier_to_succeed")),
@@ -1357,10 +1396,13 @@ def debug_data_audit():
     all empty, single distinct value, always-true / always-false)."""
 
     SCOPED_TABLES = [
-        "normalized_forensics",
+        "divergences",
+        "call_frames",
+        "opcode_counts",
         "eip8037_tx_impact",
         "eip8037_contract_impact",
-        "hot_7904",
+        "block_coverage",
+        "block_summaries",
     ]
     SKIP_TYPES = ("JSON", "STRUCT", "MAP", "LIST", "[]", "UNION")
 
@@ -1506,10 +1548,10 @@ def debug_data_audit():
 
     invariants = [
         {
-            "table": "hot_7904",
+            "table": "divergences",
             "name": "gas_delta == schedule_gas_used - baseline_gas_used",
             "violations": safe_count("""
-                SELECT count(*) FROM hot_7904
+                SELECT count(*) FROM divergences
                 WHERE gas_delta IS NOT NULL
                   AND schedule_gas_used IS NOT NULL
                   AND baseline_gas_used IS NOT NULL
@@ -1517,10 +1559,10 @@ def debug_data_audit():
             """),
         },
         {
-            "table": "hot_7904",
+            "table": "divergences",
             "name": "status_changed iff baseline_success <> schedule_success",
             "violations": safe_count("""
-                SELECT count(*) FROM hot_7904
+                SELECT count(*) FROM divergences
                 WHERE status_changed <> (baseline_success <> schedule_success)
             """),
         },
@@ -1564,51 +1606,25 @@ def debug_data_audit():
 
 @router.get("/_debug/divergence-sample")
 def debug_divergence_sample():
-    """Diagnostic: confirm whether the numeric divergence_opcode column
-    is populated and surface a few raw divergence_location strings so we
-    can see the Rust serializer format. Remove once verified."""
+    """Diagnostic: confirm the producer is emitting divergence/OOG opcode
+    integers and bottleneck classifications on the drill-in cohort."""
     counts = query("""
         SELECT
             count(*) AS rows_total,
             count(*) FILTER (WHERE divergence_opcode IS NOT NULL) AS with_opcode_int,
-            count(*) FILTER (WHERE divergence_opcode_name <> '' AND divergence_opcode_name IS NOT NULL) AS with_opcode_name,
-            count(*) FILTER (WHERE divergence_call_depth IS NOT NULL) AS with_call_depth
-        FROM normalized_forensics
+            count(*) FILTER (WHERE oog_bottleneck_kind IS NOT NULL) AS with_bottleneck_kind,
+            count(*) FILTER (WHERE divergence_call_depth IS NOT NULL) AS with_call_depth,
+            count(*) FILTER (WHERE oog_chain_proportional IS NOT NULL) AS with_chain_classified
+        FROM divergences
     """)[0]
-    samples = query("""
-        SELECT divergence_location, oog_info
-        FROM artifacts_7904
-        WHERE divergence_location IS NOT NULL
-        LIMIT 3
-    """)
-    oog_samples = query("""
-        SELECT divergence_location, oog_info
-        FROM artifacts_7904
-        WHERE oog_info IS NOT NULL
-        LIMIT 3
-    """)
     top_opcodes = query("""
         SELECT divergence_opcode AS op_num, count(*) AS cnt
-        FROM normalized_forensics
+        FROM divergences
         WHERE divergence_opcode IS NOT NULL
         GROUP BY 1 ORDER BY cnt DESC LIMIT 10
     """)
     return {
         "counts": {k: _int(v) for k, v in counts.items()},
-        "samples": [
-            {
-                "divergence_location": s["divergence_location"],
-                "oog_info": s["oog_info"],
-            }
-            for s in samples
-        ],
-        "oog_samples": [
-            {
-                "divergence_location": s["divergence_location"],
-                "oog_info": s["oog_info"],
-            }
-            for s in oog_samples
-        ],
         "top_opcodes_int": [
             {
                 "opcode_int": _int(r["op_num"]),
@@ -1623,7 +1639,7 @@ def debug_divergence_sample():
 
 @router.get("/metadata")
 def metadata():
-    block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM hot_7904")
+    block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM block_coverage")
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
     affected_count = query_scalar(
         _AFFECTED_BASE_CTE + " SELECT count(*) FROM affected_combined",
