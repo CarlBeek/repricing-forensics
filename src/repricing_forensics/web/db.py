@@ -1,10 +1,13 @@
-"""Read-only DuckDB connection and query helpers for the web server."""
+"""Read-only DuckDB session and query helpers for the web server.
+
+Opens an in-memory consumer DB that ATTACHes the producer's DuckDB file
+read-only (see `source_db.py`). The producer file is the single source
+of truth; the consumer never materializes anything.
+"""
 from __future__ import annotations
 
-import os
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -12,48 +15,45 @@ import pandas as pd
 
 from repricing_forensics.config import default_paths, default_schedule_name
 from repricing_forensics.labels import ADDRESS_PROJECT_LABELS
-from repricing_forensics.sql import create_views_sql
+from repricing_forensics.source_db import open_session, resolve_producer_db_path
 
 SCHEDULE_NAME = default_schedule_name()
 
 _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None
-_conn_inode: int | None = None
+_conn_producer_mtime: float | None = None
 _labels: dict[str, str] = {}
 _csv_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 _db_lock = threading.Lock()
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:
-    """Return a shared read-only DuckDB connection, reconnecting if the file was replaced."""
-    global _conn, _conn_inode
-    db_path = _paths.duckdb_path
-    # Detect atomic file replacement (inode change) by the build pipeline
+    """Return a shared read-only consumer session, reopening if the
+    producer file has been replaced since last access."""
+    global _conn, _conn_producer_mtime
+    producer_path = resolve_producer_db_path()
     try:
-        current_inode = db_path.stat().st_ino
+        mtime = producer_path.stat().st_mtime
     except FileNotFoundError:
-        current_inode = None
-    if _conn is not None and current_inode != _conn_inode:
+        mtime = None
+    if _conn is not None and mtime != _conn_producer_mtime:
         try:
             _conn.close()
         except Exception:
             pass
         _conn = None
     if _conn is None:
-        os.chdir(_paths.repo_root)
-        _conn = duckdb.connect(str(db_path), read_only=True)
-        threads = os.environ.get("DUCKDB_THREADS", str(os.cpu_count() or 4))
-        _conn.execute(f"PRAGMA threads={threads}")
-        _conn_inode = current_inode
+        _conn = open_session(producer_path, SCHEDULE_NAME)
+        _conn_producer_mtime = mtime
     return _conn
 
 
 def close_conn() -> None:
-    global _conn, _conn_inode
+    global _conn, _conn_producer_mtime
     if _conn is not None:
         _conn.close()
         _conn = None
-        _conn_inode = None
+        _conn_producer_mtime = None
 
 
 def query(sql: str) -> list[dict[str, Any]]:
@@ -118,8 +118,8 @@ def label_address(addr: str | None) -> str:
 
 
 def db_mtime() -> datetime:
-    """Return the last-modified time of the DuckDB file."""
-    p = _paths.duckdb_path
+    """Return the last-modified time of the producer DuckDB file."""
+    p = resolve_producer_db_path()
     if p.exists():
         return datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
     return datetime.now(tz=timezone.utc)
