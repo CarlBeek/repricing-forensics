@@ -1,0 +1,144 @@
+"""Open a read-only consumer session against the producer's DuckDB file.
+
+This is the new entry point for the consumer side of the storage redesign
+(see `docs/storage-redesign.md`). The producer (reth, eventually; for now
+the synthetic fixture from `synthetic.py`) owns a single DuckDB file with
+the schema defined in `producer_schema.py`. The consumer attaches that
+file read-only and creates views scoped to a single schedule, which the
+FastAPI app then queries.
+
+There's no consumer-side materialization step anymore — the in-memory
+catalog this module builds is the entire "consumer DB". Views are
+recreated each time `open_session` is called, which is cheap and avoids
+stale state between deploys.
+
+Compared to the old `pipeline.py`:
+- No parquet lake read-through.
+- No `normalized_forensics` materialized table.
+- No `wallet_fixable_ids` derivation: the producer already tagged the
+  bucket; queries source from the schedule-scoped `divergences` view
+  for the drill-in cohort and `block_coverage` / `block_summaries`
+  for everything else.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import duckdb
+
+from .config import default_schedule_name
+
+
+def open_session(producer_db_path: Path, schedule_name: str | None = None
+                 ) -> duckdb.DuckDBPyConnection:
+    """Open an in-memory DuckDB, attach the producer file read-only,
+    create schedule-scoped views, return the connection."""
+    schedule_name = schedule_name or default_schedule_name()
+    conn = duckdb.connect(":memory:")
+    threads = os.environ.get("DUCKDB_THREADS", str(os.cpu_count() or 4))
+    conn.execute(f"PRAGMA threads={threads}")
+    conn.execute(
+        f"ATTACH '{str(producer_db_path)}' AS producer (READ_ONLY)"
+    )
+    create_views(conn, schedule_name)
+    return conn
+
+
+def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
+    """Create the schedule-scoped views the API queries against.
+
+    All views live in the consumer's in-memory catalog (the default `memory`
+    database) and filter the producer's tables by `schedule_name`. Reads are
+    transparent to DuckDB's optimizer — predicate pushdown into the attached
+    file works the same as if these queries hit the producer DB directly.
+    """
+    escaped = schedule_name.replace("'", "''")
+
+    # Pass-throughs filtered by schedule.
+    conn.execute(f"""
+        CREATE OR REPLACE VIEW block_coverage AS
+        SELECT * FROM producer.block_coverage
+        WHERE schedule_name = '{escaped}'
+    """)
+    conn.execute(f"""
+        CREATE OR REPLACE VIEW block_summaries AS
+        SELECT * FROM producer.block_summaries
+        WHERE schedule_name = '{escaped}'
+    """)
+    conn.execute(f"""
+        CREATE OR REPLACE VIEW divergences AS
+        SELECT * FROM producer.divergences
+        WHERE schedule_name = '{escaped}'
+    """)
+
+    # Frame / opcode / log tables aren't scheduled directly; they hang off
+    # divergences via divergence_id. We materialize the schedule filter
+    # through a join in the view so the consumer-side queries don't have
+    # to remember to filter.
+    conn.execute("""
+        CREATE OR REPLACE VIEW call_frames AS
+        SELECT f.*
+        FROM producer.divergence_call_frames f
+        JOIN divergences d USING (divergence_id)
+    """)
+    conn.execute("""
+        CREATE OR REPLACE VIEW opcode_counts AS
+        SELECT o.*
+        FROM producer.divergence_opcode_counts o
+        JOIN divergences d USING (divergence_id)
+    """)
+    conn.execute("""
+        CREATE OR REPLACE VIEW event_logs AS
+        SELECT l.*
+        FROM producer.divergence_event_logs l
+        JOIN divergences d USING (divergence_id)
+    """)
+
+    # Contract metadata is schedule-independent.
+    conn.execute("""
+        CREATE OR REPLACE VIEW contract_metadata AS
+        SELECT * FROM producer.contract_metadata
+    """)
+
+    # Common derived view: contract-level EIP-8037 impact totals. Lives
+    # here rather than in a materialized table because DuckDB recomputes
+    # this in milliseconds.
+    conn.execute("""
+        CREATE OR REPLACE VIEW eip8037_contract_impact AS
+        SELECT
+            lower(recipient) AS target_address,
+            count(*)                                          AS divergent_txs,
+            sum(CASE WHEN status_changed THEN 1 ELSE 0 END)   AS status_changed_txs,
+            sum(CASE WHEN NOT would_fit_in_original_limit
+                          AND schedule_state_gas_spent > 0 THEN 1 ELSE 0 END)
+                                                              AS original_limit_failures,
+            sum(CASE WHEN schedule_success
+                          AND NOT would_fit_in_original_limit THEN 1 ELSE 0 END)
+                                                              AS fixable_with_more_outer_gas,
+            sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
+            sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
+            avg(gas_delta) AS avg_gas_delta,
+            sum(gas_delta) AS total_gas_delta,
+            percentile_cont(0.95) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
+                AS p95_min_multiplier_to_succeed,
+            max(min_multiplier_to_succeed) AS max_min_multiplier_to_succeed,
+            min(block_number) AS min_block,
+            max(block_number) AS max_block
+        FROM divergences
+        WHERE recipient IS NOT NULL
+        GROUP BY lower(recipient)
+    """)
+
+
+def resolve_producer_db_path() -> Path:
+    """Where the producer DB lives on disk. Honors PRODUCER_DB_PATH first,
+    then falls back to a synthetic fixture in the repo root."""
+    explicit = os.environ.get("PRODUCER_DB_PATH")
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    # Fallback to the synthetic fixture path so a fresh checkout can be
+    # demoed without producer data.
+    from .config import default_paths
+    return (default_paths().repo_root / "synthetic.duckdb").resolve()
