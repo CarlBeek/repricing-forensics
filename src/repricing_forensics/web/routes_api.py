@@ -1031,7 +1031,10 @@ def affected_detail(address: str):
     eip7904_broken = _int(eip7904_stats["broken_txs"])
     eip7904_wallet_n = _int(eip7904_wallet)
     eip8037_div = _int(eip8037_row["divergent_txs"]) if eip8037_row else 0
-    found = eip7904_broken > 0 or eip7904_wallet_n > 0 or eip8037_div > 0
+    # Wallet-fixable-only contracts aren't 7904-affected in any actionable
+    # sense: the wallet auto-resolves it via eth_estimateGas, no code change
+    # needed. Don't show them as affected.
+    found = eip7904_broken > 0 or eip8037_div > 0
 
     name = label_address(addr)
     outreach = read_csv("outreach_priority.csv")

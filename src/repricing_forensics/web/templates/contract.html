@@ -112,7 +112,11 @@ function txTable8037(txs) {
   }
 
   const e7 = data.eip7904, e8 = data.eip8037;
-  const hit7 = e7.broken_txs > 0 || e7.wallet_fixable_txs > 0;
+  // Wallet-fixable-only contracts aren't actionably 7904-affected: a higher
+  // wallet gas estimate resolves them automatically. Don't open the 7904 card
+  // for them — but the wallet-fixable count stays on the card for contracts
+  // that DO have contract-broken txs alongside, as context.
+  const hit7 = e7.broken_txs > 0;
   const hit8 = e8.divergent_txs > 0;
 
   const card7 = hit7
