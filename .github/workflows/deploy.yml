@@ -43,5 +43,17 @@ jobs:
           "
           rm -f /tmp/ci-smoke.duckdb
 
+      - name: Point systemd unit at the producer DB
+        # reth-research writes ~/reth/divergences.duckdb (on the runner
+        # user). We write a systemd drop-in to set PRODUCER_DB_PATH on
+        # the eip7904-web unit so it doesn't fall back to the
+        # synthetic-fixture path. Idempotent: rewritten each deploy.
+        run: |
+          PRODUCER_DB_PATH="$HOME/reth/divergences.duckdb"
+          sudo mkdir -p /etc/systemd/system/eip7904-web.service.d
+          printf "[Service]\nEnvironment=PRODUCER_DB_PATH=%s\n" "$PRODUCER_DB_PATH" \
+            | sudo tee /etc/systemd/system/eip7904-web.service.d/producer.conf > /dev/null
+          sudo systemctl daemon-reload
+
       - name: Restart web server
         run: sudo systemctl restart eip7904-web || echo "Web server service not configured — skipping restart"
