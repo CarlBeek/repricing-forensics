@@ -26,8 +26,10 @@ jobs:
           pip install -e .
 
       - name: Smoke-test the new code
-        # Build the synthetic fixture and import the app entry point —
-        # catches import errors before we restart the live service.
+        # Boots the app against an ephemeral synthetic fixture — catches
+        # import / SQL / startup errors before we restart the live
+        # service. The live service uses PRODUCER_DB_PATH from the
+        # systemd unit and never sees this fixture.
         run: |
           . .venv/bin/activate
           python scripts/build_synthetic_producer_db.py --out /tmp/ci-smoke.duckdb --blocks 2
