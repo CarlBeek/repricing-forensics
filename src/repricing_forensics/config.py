@@ -1,3 +1,11 @@
+"""Repo paths and schedule name.
+
+Most of the consumer's state lives in the producer DB now (see
+`source_db.resolve_producer_db_path`). The only paths the consumer
+itself still owns are `cache_dir` (contract_labels.csv) and
+`artifacts_dir` (the optional CSVs the failure-motif / remediation
+endpoints read).
+"""
 from __future__ import annotations
 
 import os
@@ -10,14 +18,8 @@ DEFAULT_SCHEDULE_NAME = "eip-8037"
 @dataclass(frozen=True)
 class Paths:
     repo_root: Path
-    sqlite_db: Path
-    research_lake: Path
-    duckdb_dir: Path
-    duckdb_path: Path
     cache_dir: Path
     artifacts_dir: Path
-    notebooks_dir: Path
-    reth_dir: Path
 
 
 def _env_path(var: str, default: Path) -> Path:
@@ -31,27 +33,8 @@ def default_schedule_name() -> str:
 
 def default_paths(repo_root: Path | None = None) -> Paths:
     root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
-    research_lake = _env_path("RESEARCH_LAKE_PATH", root / "research_lake")
-    duckdb_dir = _env_path("DUCKDB_DIR", root / "duckdb")
     return Paths(
         repo_root=root,
-        sqlite_db=_env_path("DIVERGENCE_DB_PATH", root / "divergences.db"),
-        research_lake=research_lake,
-        duckdb_dir=duckdb_dir,
-        duckdb_path=_env_path("DUCKDB_PATH", duckdb_dir / "repricing.duckdb"),
         cache_dir=_env_path("CACHE_DIR", root / "cache"),
         artifacts_dir=_env_path("ARTIFACTS_DIR", root / "artifacts"),
-        notebooks_dir=root / "notebooks",
-        reth_dir=_env_path("RETH_DIR", root.parent / "reth"),
     )
-
-
-def ensure_workspace_dirs(paths: Paths) -> None:
-    for directory in [
-        paths.research_lake,
-        paths.duckdb_dir,
-        paths.cache_dir,
-        paths.artifacts_dir,
-        paths.notebooks_dir,
-    ]:
-        directory.mkdir(parents=True, exist_ok=True)
