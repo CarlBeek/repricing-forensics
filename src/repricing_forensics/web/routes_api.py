@@ -1093,6 +1093,80 @@ def eip8037_reservoir(schedule: str = Query(default=None)):
     }
 
 
+@router.get("/eip8037/divergence-reasons")
+@cache_endpoint(_AGGREGATE_TTL)
+def eip8037_divergence_reasons(schedule: str = Query(default=None)):
+    """Categorize each divergent tx by **why** it diverged under EIP-8037.
+
+    EIP-7825 currently caps `tx.gas` at 16.7M, which per spec forces
+    `state_gas_reservoir == 0` for every historical tx — so the
+    reservoir mechanism is dormant on current mainnet, and most
+    divergent txs aren't actually exercising 8037's headline feature.
+    This breakdown surfaces what they ARE diverging on, in priority
+    order (mutually exclusive):
+
+    1. `pre_execution_rejection` — EVM rejected the tx before
+       running (e.g. adjusted gas_limit < baseline intrinsic). Producer
+       records these with `schedule_total_gas_spent = 0`.
+    2. `runtime_state_gas` — EVM charged state-gas during execution
+       (SSTORE 0→non-zero, account creation via CALL). 8037's canonical
+       mechanism actually firing.
+    3. `intrinsic_state_gas_only` — intrinsic state-gas charged at tx
+       start (CREATE / 7702 auth) but no runtime state-gas. The
+       schedule's intrinsic surcharge drove the divergence.
+    4. `event_log_only` — no state-gas involvement; differs in event
+       log output via different OOG paths or refund timing.
+    5. `other_gas_accounting` — gas_delta != 0 from another path
+       (floor gas, refund interactions) without state-gas or event-log
+       differences.
+
+    Per category we report total txs, status flips, and newly-broken
+    (baseline_success AND NOT schedule_success).
+    """
+    s = resolve_schedule(schedule)
+    rows = query(f"""
+        WITH categorized AS (
+            SELECT
+                CASE
+                    WHEN coalesce(schedule_total_gas_spent, 0) = 0
+                        THEN 'pre_execution_rejection'
+                    WHEN coalesce(schedule_state_gas_spent, 0)
+                       - coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'runtime_state_gas'
+                    WHEN coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'intrinsic_state_gas_only'
+                    WHEN event_logs_changed
+                        THEN 'event_log_only'
+                    ELSE 'other_gas_accounting'
+                END AS category,
+                status_changed, baseline_success, schedule_success,
+                coalesce(schedule_state_gas_spent, 0) AS sg_spent
+            FROM divergences
+            WHERE schedule_name = '{s}'
+        )
+        SELECT
+            category,
+            count(*) AS txs,
+            sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs,
+            sum(CASE WHEN baseline_success AND NOT schedule_success
+                          THEN 1 ELSE 0 END)              AS newly_broken_txs,
+            sum(sg_spent)                                  AS total_state_gas_spent
+        FROM categorized
+        GROUP BY category
+        ORDER BY txs DESC
+    """)
+    return [
+        {
+            "category": r["category"],
+            "txs": _int(r["txs"]),
+            "status_changed_txs": _int(r["status_changed_txs"]),
+            "newly_broken_txs": _int(r["newly_broken_txs"]),
+            "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/eip8037/state-gas-by-category")
 @cache_endpoint(_AGGREGATE_TTL)
 def eip8037_state_gas_by_category(schedule: str = Query(default=None)):
