@@ -99,6 +99,10 @@ def chain_walk_coverage():
             count(*) FILTER (WHERE oog_chain_proportional = 1)        AS proportional,
             count(*) FILTER (WHERE oog_chain_proportional = 0)        AS throttled,
             count(*) FILTER (WHERE oog_chain_proportional IS NULL)    AS classifier_did_not_run,
+            count(*) FILTER (WHERE oog_call_depth IS NOT NULL)        AS has_oog_info,
+            count(*) FILTER (WHERE oog_call_depth IS NULL)            AS no_oog_info,
+            count(*) FILTER (WHERE oog_call_depth IS NOT NULL
+                              AND oog_chain_proportional IS NULL)     AS oog_but_classifier_returned_null,
             count(*) FILTER (WHERE oog_bottleneck_kind IS NOT NULL)   AS has_bottleneck_kind,
             count(*) FILTER (WHERE oog_bottleneck_kind IS NULL
                               AND oog_chain_proportional = 0)         AS throttled_unclassified
