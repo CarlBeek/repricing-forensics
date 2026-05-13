@@ -83,6 +83,118 @@ def producer_info():
     return info
 
 
+@app.get("/api/_debug/perf", include_in_schema=False)
+def perf():
+    """Time the same aggregate via raw sqlite3 vs DuckDB sqlite_scanner,
+    against the live producer file. Surfaces which layer is slow.
+
+    Also reports WAL/SHM sidecar sizes so we can see whether the WAL
+    has grown large (producer not checkpointing).
+    """
+    import os
+    import sqlite3
+    import time
+    from repricing_forensics.source_db import resolve_producer_db_path, open_session
+    from .db import SCHEDULE_NAME, get_conn
+
+    path = resolve_producer_db_path()
+    if not path.exists():
+        return {"error": "producer DB not found", "resolved_path": str(path)}
+
+    def file_size(p):
+        try:
+            return p.stat().st_size
+        except FileNotFoundError:
+            return None
+
+    # File sizes — the WAL growing past ~hundreds of MB suggests the
+    # producer isn't checkpointing.
+    files = {
+        "sqlite": file_size(path),
+        "wal":    file_size(path.with_name(path.name + "-wal")),
+        "shm":    file_size(path.with_name(path.name + "-shm")),
+    }
+
+    # The same aggregate run three ways. Each is a single sample; for a
+    # noisy production system run it a few times and use the lowest.
+    timings: dict[str, dict] = {}
+
+    # 1. Raw sqlite3, mode=ro URI so we don't trigger journal creation.
+    t0 = time.monotonic()
+    try:
+        ro_uri = f"file:{path}?mode=ro"
+        with sqlite3.connect(ro_uri, uri=True, timeout=120) as raw:
+            n = raw.execute("SELECT COUNT(*) FROM block_coverage").fetchone()[0]
+        timings["sqlite3_raw_count_block_coverage"] = {
+            "rows": int(n), "seconds": round(time.monotonic() - t0, 3),
+        }
+    except Exception as e:
+        timings["sqlite3_raw_count_block_coverage"] = {
+            "error": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+
+    t0 = time.monotonic()
+    try:
+        ro_uri = f"file:{path}?mode=ro"
+        with sqlite3.connect(ro_uri, uri=True, timeout=120) as raw:
+            n = raw.execute(
+                "SELECT SUM(tx_count) FROM block_coverage WHERE schedule_name = ?",
+                (SCHEDULE_NAME,),
+            ).fetchone()[0]
+        timings["sqlite3_raw_sum_tx_count"] = {
+            "result": int(n) if n is not None else None,
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+    except Exception as e:
+        timings["sqlite3_raw_sum_tx_count"] = {
+            "error": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+
+    # 2. DuckDB through the cached sqlite_scanner attach (what /api/* uses).
+    t0 = time.monotonic()
+    try:
+        conn = get_conn()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM block_coverage"
+        ).fetchone()[0]
+        timings["duckdb_scanner_count_block_coverage"] = {
+            "rows": int(n), "seconds": round(time.monotonic() - t0, 3),
+        }
+    except Exception as e:
+        timings["duckdb_scanner_count_block_coverage"] = {
+            "error": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+
+    t0 = time.monotonic()
+    try:
+        conn = get_conn()
+        n = conn.execute(
+            "SELECT SUM(tx_count) FROM block_coverage"
+        ).fetchone()[0]
+        timings["duckdb_scanner_sum_tx_count"] = {
+            "result": int(n) if n is not None else None,
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+    except Exception as e:
+        timings["duckdb_scanner_sum_tx_count"] = {
+            "error": f"{type(e).__name__}: {e}",
+            "seconds": round(time.monotonic() - t0, 3),
+        }
+
+    # 3. Producer activity proxy — file mtime. If mtime is very recent
+    # (sub-second), the writer is actively committing.
+    mtime = path.stat().st_mtime
+    now = time.time()
+    return {
+        "file_sizes_bytes": files,
+        "producer_mtime_seconds_ago": round(now - mtime, 3),
+        "timings_seconds": timings,
+    }
+
+
 @app.get("/api/_debug/chain-walk-coverage", include_in_schema=False)
 def chain_walk_coverage():
     """Diagnose why so many contract-broken rows end up bucketed as
