@@ -91,10 +91,9 @@ def chain_walk_coverage():
     root→OOG path is missing `gas_requested_on_stack` or
     `parent_gas_at_call`. This endpoint reports how often each field
     is populated."""
-    from .db import get_conn
+    from .db import query
 
-    conn = get_conn()
-    div_summary = conn.execute("""
+    div_summary = query("""
         SELECT
             count(*)                                                  AS divergences_drill_in,
             count(*) FILTER (WHERE oog_chain_proportional = 1)        AS proportional,
@@ -105,9 +104,9 @@ def chain_walk_coverage():
                               AND oog_chain_proportional = 0)         AS throttled_unclassified
         FROM divergences
         WHERE bucket = 'contract_broken'
-    """).fetchone()
+    """)[0]
 
-    frame_summary = conn.execute("""
+    frame_summary = query("""
         SELECT
             count(*)                                                AS frames_total,
             count(*) FILTER (WHERE depth = 0)                       AS root_frames,
@@ -121,11 +120,11 @@ def chain_walk_coverage():
         FROM call_frames cf
         JOIN divergences d USING (divergence_id)
         WHERE d.bucket = 'contract_broken'
-    """).fetchone()
+    """)[0]
 
     # Per-call-type breakdown: how often does each kind of call have
     # missing chain-walk data?
-    by_call_type = [dict(r) for r in conn.execute("""
+    by_call_type = query("""
         SELECT cf.call_type,
                count(*) AS n,
                count(*) FILTER (WHERE cf.gas_requested_on_stack IS NULL) AS missing_stack_gas,
@@ -135,11 +134,11 @@ def chain_walk_coverage():
         WHERE d.bucket = 'contract_broken' AND cf.depth > 0
         GROUP BY cf.call_type
         ORDER BY n DESC
-    """).df().to_dict(orient="records")]
+    """)
 
     return {
-        "divergences": dict(div_summary),
-        "call_frames": dict(frame_summary),
+        "divergences": div_summary,
+        "call_frames": frame_summary,
         "by_call_type": by_call_type,
     }
 
