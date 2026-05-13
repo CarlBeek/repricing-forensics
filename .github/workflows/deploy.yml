@@ -58,3 +58,20 @@ jobs:
 
       - name: Restart web server
         run: sudo systemctl restart eip7904-web || echo "Web server service not configured — skipping restart"
+
+      - name: Check service health
+        # Surface systemd status + recent logs in the action output so
+        # a failing startup doesn't silently leave the site 502'ing.
+        # Always runs, even on previous failures, so we have evidence.
+        if: always()
+        run: |
+          sleep 5
+          echo "=== systemctl status ==="
+          sudo systemctl status eip7904-web --no-pager -l || true
+          echo
+          echo "=== journalctl (last 80 lines) ==="
+          sudo journalctl -u eip7904-web -n 80 --no-pager || true
+          echo
+          echo "=== local healthz probe ==="
+          curl -sS -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
+            http://127.0.0.1:8000/healthz || true
