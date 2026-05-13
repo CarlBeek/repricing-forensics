@@ -83,6 +83,67 @@ def producer_info():
     return info
 
 
+@app.get("/api/_debug/chain-walk-coverage", include_in_schema=False)
+def chain_walk_coverage():
+    """Diagnose why so many contract-broken rows end up bucketed as
+    'Unclassified' (NULL oog_bottleneck_kind). The chain-walk
+    classifier in reth-research emits NULL when any frame on the
+    root→OOG path is missing `gas_requested_on_stack` or
+    `parent_gas_at_call`. This endpoint reports how often each field
+    is populated."""
+    from .db import get_conn
+
+    conn = get_conn()
+    div_summary = conn.execute("""
+        SELECT
+            count(*)                                                  AS divergences_drill_in,
+            count(*) FILTER (WHERE oog_chain_proportional = 1)        AS proportional,
+            count(*) FILTER (WHERE oog_chain_proportional = 0)        AS throttled,
+            count(*) FILTER (WHERE oog_chain_proportional IS NULL)    AS classifier_did_not_run,
+            count(*) FILTER (WHERE oog_bottleneck_kind IS NOT NULL)   AS has_bottleneck_kind,
+            count(*) FILTER (WHERE oog_bottleneck_kind IS NULL
+                              AND oog_chain_proportional = 0)         AS throttled_unclassified
+        FROM divergences
+        WHERE bucket = 'contract_broken'
+    """).fetchone()
+
+    frame_summary = conn.execute("""
+        SELECT
+            count(*)                                                AS frames_total,
+            count(*) FILTER (WHERE depth = 0)                       AS root_frames,
+            count(*) FILTER (WHERE depth > 0)                       AS non_root_frames,
+            count(*) FILTER (WHERE depth > 0
+                              AND gas_requested_on_stack IS NULL)   AS non_root_missing_stack_gas,
+            count(*) FILTER (WHERE depth > 0
+                              AND parent_gas_at_call IS NULL)       AS non_root_missing_parent_gas,
+            count(*) FILTER (WHERE depth > 0
+                              AND call_type IN ('Create', 'Create2')) AS non_root_creates
+        FROM call_frames cf
+        JOIN divergences d USING (divergence_id)
+        WHERE d.bucket = 'contract_broken'
+    """).fetchone()
+
+    # Per-call-type breakdown: how often does each kind of call have
+    # missing chain-walk data?
+    by_call_type = [dict(r) for r in conn.execute("""
+        SELECT cf.call_type,
+               count(*) AS n,
+               count(*) FILTER (WHERE cf.gas_requested_on_stack IS NULL) AS missing_stack_gas,
+               count(*) FILTER (WHERE cf.parent_gas_at_call IS NULL)     AS missing_parent_gas
+        FROM call_frames cf
+        JOIN divergences d USING (divergence_id)
+        WHERE d.bucket = 'contract_broken' AND cf.depth > 0
+        GROUP BY cf.call_type
+        ORDER BY n DESC
+    """).df().to_dict(orient="records")]
+
+    return {
+        "divergences": dict(div_summary),
+        "call_frames": dict(frame_summary),
+        "by_call_type": by_call_type,
+    }
+
+
 @app.exception_handler(Exception)
 async def producer_unavailable_handler(request: Request, exc: Exception):
     """Convert producer-DB-access failures (missing file, ATTACH errors,
