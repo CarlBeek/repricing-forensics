@@ -281,10 +281,15 @@ def _gas_delta_aggregate_response(rows: list[dict]) -> dict:
 
 
 def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
-    """Inverse-CDF over log2 bins; returns the upper-edge of the bin.
+    """Inverse-CDF over log2 bins, with linear interpolation inside the
+    target bin so percentiles aren't collapsed to bin edges.
 
-    Bin i represents gas-delta in [2^i, 2^(i+1)) for i > 0, [0,1] for i=0.
-    We return the upper edge so the CDF is monotonic with the bar chart.
+    Bin i represents gas-delta in [2^i, 2^(i+1)) for i > 0, [0, 1] for
+    i = 0. When the target percentile falls inside bin i, we return
+    `lo + frac * (hi - lo)` where `frac` is the position within the bin
+    based on the cumulative count. This avoids reporting every
+    percentile as the same number when a single bin holds most of the
+    mass.
     """
     total = sum(hist)
     if total == 0:
@@ -292,10 +297,18 @@ def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
     target = total * p
     cumulative = 0
     for i, c in enumerate(hist):
-        cumulative += c
-        if cumulative >= target:
-            return float(2 ** i if i > 0 else 0)
-    return float(2 ** (len(hist) - 1))
+        new_cum = cumulative + c
+        if new_cum >= target:
+            if c == 0:
+                # Defensive: shouldn't happen since `c >= target - cumulative > 0`
+                # unless `target == cumulative` exactly.
+                return float(2 ** i if i > 0 else 0)
+            frac = (target - cumulative) / c
+            lo = 0.0 if i == 0 else float(2 ** i)
+            hi = float(2 ** (i + 1))
+            return lo + frac * (hi - lo)
+        cumulative = new_cum
+    return float(2 ** len(hist))
 
 
 @router.get("/concentration")
