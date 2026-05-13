@@ -26,21 +26,7 @@ _conn: duckdb.DuckDBPyConnection | None = None
 _conn_producer_mtime: float | None = None
 _conn_opened_at: float | None = None
 _labels: dict[str, str] = {}
-
-# Protects the `_conn` / `_conn_opened_at` / `_retired_conns` globals
-# only — NOT held during SQL execution. Per-query work runs on a fresh
-# DuckDB cursor (a duplicate connection sharing the catalog) so the
-# FastAPI threadpool can serve concurrent /api/* requests in parallel.
-# Holding a single lock across SQL execution previously serialized the
-# ~10 parallel fetchJSON calls each page fans out.
-_conn_lock = threading.Lock()
-
-# When the session recycles, we don't close the old connection
-# immediately — cursors created from it may still be mid-query in
-# other threads. Park the old conn here and close it on the *next*
-# recycle, by which point any in-flight queries have long since
-# completed. Bound to ≤1 entry so we don't grow unbounded.
-_retired_conns: list[duckdb.DuckDBPyConnection] = []
+_db_lock = threading.Lock()
 
 # How long to hold the DuckDB session before recycling it. DuckDB
 # sqlite_scanner keeps a long-lived SQLite shared lock on the attached
@@ -137,80 +123,44 @@ def get_conn() -> duckdb.DuckDBPyConnection:
     don't need to reopen on producer mtime changes — but we *do* need
     to release the lock periodically to let the producer's WAL not
     grow forever (we observed 101 GB WAL when the lock was held for
-    hours).
-
-    Callers should not run SQL on the returned connection directly —
-    use `.cursor()` (see `query()` / `query_df()` / `query_scalar()`)
-    so concurrent threads don't trample each other on a shared
-    connection's transaction state."""
+    hours)."""
     global _conn, _conn_opened_at
-    with _conn_lock:
-        now = time.monotonic()
-        if _conn is not None and _conn_opened_at is not None:
-            if now - _conn_opened_at > _CONN_MAX_AGE_SECONDS:
-                _log.info(
-                    "recycling consumer DuckDB session after %.1fs to release "
-                    "SQLite shared lock (so producer can checkpoint its WAL)",
-                    now - _conn_opened_at,
-                )
-                # Don't close right now — in-flight cursors from this
-                # conn (running on other threads, lock-free) would die.
-                # Park it; close on next recycle when any in-flight
-                # queries have long since drained.
-                _retired_conns.append(_conn)
-                _conn = None
-                cache_invalidate_all()
-        # Close anything retired a previous cycle ago.
-        while len(_retired_conns) > 1:
-            old = _retired_conns.pop(0)
-            try:
-                old.close()
-            except Exception:
-                pass
-        if _conn is None:
-            producer_path = resolve_producer_db_path()
-            _conn = open_session(producer_path)
-            _conn_opened_at = time.monotonic()
-            cache_invalidate_all()
-        return _conn
-
-
-def close_conn() -> None:
-    global _conn, _conn_producer_mtime, _conn_opened_at
-    with _conn_lock:
-        if _conn is not None:
+    now = time.monotonic()
+    if _conn is not None and _conn_opened_at is not None:
+        if now - _conn_opened_at > _CONN_MAX_AGE_SECONDS:
+            _log.info(
+                "recycling consumer DuckDB session after %.1fs to release "
+                "SQLite shared lock (so producer can checkpoint its WAL)",
+                now - _conn_opened_at,
+            )
             try:
                 _conn.close()
             except Exception:
                 pass
             _conn = None
-            _conn_producer_mtime = None
-            _conn_opened_at = None
-        while _retired_conns:
-            old = _retired_conns.pop()
-            try:
-                old.close()
-            except Exception:
-                pass
+            cache_invalidate_all()
+    if _conn is None:
+        producer_path = resolve_producer_db_path()
+        _conn = open_session(producer_path)
+        _conn_opened_at = time.monotonic()
+        cache_invalidate_all()
+    return _conn
+
+
+def close_conn() -> None:
+    global _conn, _conn_producer_mtime, _conn_opened_at
+    if _conn is not None:
+        _conn.close()
+        _conn = None
+        _conn_producer_mtime = None
+        _conn_opened_at = None
     cache_invalidate_all()
-
-
-def _cursor() -> duckdb.DuckDBPyConnection:
-    """Return a fresh DuckDB cursor (a per-call duplicate connection
-    sharing the same catalog). Concurrent threads must each use their
-    own cursor — a single DuckDBPyConnection is not safe for
-    simultaneous SQL execution. Using a cursor here is what makes the
-    ~10 parallel fetches each page issues actually run in parallel."""
-    return get_conn().cursor()
 
 
 def query(sql: str) -> list[dict[str, Any]]:
     """Execute SQL and return a list of dicts."""
-    cur = _cursor()
-    try:
-        df = cur.execute(sql).df()
-    finally:
-        cur.close()
+    with _db_lock:
+        df = get_conn().execute(sql).df()
     # `df.where(df.notna(), None)` does not coerce NaN to None on float columns
     # (pandas preserves the float dtype, so None round-trips back to NaN). Cast
     # to object first so None survives `to_dict`.
@@ -219,20 +169,14 @@ def query(sql: str) -> list[dict[str, Any]]:
 
 def query_df(sql: str) -> pd.DataFrame:
     """Execute SQL and return a DataFrame."""
-    cur = _cursor()
-    try:
-        return cur.execute(sql).df()
-    finally:
-        cur.close()
+    with _db_lock:
+        return get_conn().execute(sql).df()
 
 
 def query_scalar(sql: str, default: Any = None) -> Any:
     """Execute SQL and return the single scalar result, or default if empty."""
-    cur = _cursor()
-    try:
-        row = cur.execute(sql).fetchone()
-    finally:
-        cur.close()
+    with _db_lock:
+        row = get_conn().execute(sql).fetchone()
     if row is None:
         return default
     return row[0]
