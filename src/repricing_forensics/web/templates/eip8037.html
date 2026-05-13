@@ -65,14 +65,14 @@ function fmtMultiplier(n) {
 }
 
 (async function() {
-  const s = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
+  const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
   const [overview, buckets, categories, contracts, examples, reservoir] = await Promise.all([
-    fetchJSON(`/api/eip8037/overview?${s}`),
-    fetchJSON(`/api/eip8037/multiplier-histogram?${s}`),
-    fetchJSON(`/api/eip8037/state-gas-by-category?${s}`),
-    fetchJSON(`/api/eip8037/top-contracts?limit=20&${s}`),
-    fetchJSON(`/api/eip8037/examples?limit=50&${s}`),
-    fetchJSON(`/api/eip8037/reservoir?${s}`),
+    fetchJSON(`/api/eip8037/overview?${qs}`),
+    fetchJSON(`/api/eip8037/multiplier-histogram?${qs}`),
+    fetchJSON(`/api/eip8037/state-gas-by-category?${qs}`),
+    fetchJSON(`/api/eip8037/top-contracts?limit=20&${qs}`),
+    fetchJSON(`/api/eip8037/examples?limit=50&${qs}`),
+    fetchJSON(`/api/eip8037/reservoir?${qs}`),
   ]);
 
   document.getElementById('subtitle').textContent =

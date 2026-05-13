@@ -47,15 +47,15 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 {% block scripts %}
 <script>
 (async function() {
-  const s = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
+  const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
   const [overview, opcodes, depth, breakReason, bottleneckKinds, top20, motifs] = await Promise.all([
-    fetchJSON(`/api/overview?${s}`),
-    fetchJSON(`/api/opcode-impact?${s}`),
-    fetchJSON(`/api/forensics/call-depth?${s}`),
-    fetchJSON(`/api/forensics/break-reason?${s}`),
-    fetchJSON(`/api/forensics/bottleneck-kinds?${s}`),
-    fetchJSON(`/api/top-contracts?limit=20&${s}`),
-    fetchJSON(`/api/forensics/failure-motifs?${s}`),
+    fetchJSON(`/api/overview?${qs}`),
+    fetchJSON(`/api/opcode-impact?${qs}`),
+    fetchJSON(`/api/forensics/call-depth?${qs}`),
+    fetchJSON(`/api/forensics/break-reason?${qs}`),
+    fetchJSON(`/api/forensics/bottleneck-kinds?${qs}`),
+    fetchJSON(`/api/top-contracts?limit=20&${qs}`),
+    fetchJSON(`/api/forensics/failure-motifs?${qs}`),
   ]);
 
   document.getElementById('subtitle').textContent =
