@@ -20,9 +20,14 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 <p id="depthNote"></p>
 <div id="depthChart"><p class="loading">Loading chart...</p></div>
 
-<!-- 2b. Bottleneck kinds -->
-<h2>2b. Breakage by Bottleneck Type</h2>
-<p>For each contract-broken tx, the producer walks the call chain from root to OOG frame and classifies the first hop that throttled gas. <code>Stipend2300</code> is Solidity's <code>.transfer()</code>/<code>.send()</code> 2300-gas stipend. <code>FixedGas</code> is a small hardcoded constant. <code>FractionalGas</code> is a pattern like <code>gas() / 2</code>. Rows analyzed before the producer emitted these tags fall into <code>Unclassified</code>.</p>
+<!-- 2b. Break reason -->
+<h2>2b. Why Did These Txs Break?</h2>
+<p>Status-flip is broader than "ran out of gas". Schedule changes can also trigger different revert paths via refund accounting, intrinsic-gas thresholds, or floor-gas mechanics. This chart splits contract-broken txs into <strong>OOG</strong> (genuinely ran out of gas) vs <strong>non-OOG revert</strong> (other gas-related cause that flipped the outcome).</p>
+<div id="breakReasonChart"><p class="loading">Loading chart...</p></div>
+
+<!-- 2c. Bottleneck kinds (OOG only) -->
+<h2>2c. OOG Breakage by Bottleneck Type</h2>
+<p>For each OOG contract-broken tx, the producer walks the call chain from root to OOG frame and classifies the first hop that throttled gas. <code>Stipend2300</code> is Solidity's <code>.transfer()</code>/<code>.send()</code> 2300-gas stipend. <code>FixedGas</code> is a small hardcoded constant. <code>FractionalGas</code> is a pattern like <code>gas() / 2</code>. <code>Unclassified</code> means the classifier ran but couldn't identify the throttle (rare).</p>
 <div id="bottleneckChart"><p class="loading">Loading chart...</p></div>
 
 <!-- 3. Top 20 contracts -->
@@ -42,10 +47,11 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
 {% block scripts %}
 <script>
 (async function() {
-  const [overview, opcodes, depth, bottleneckKinds, top20, motifs] = await Promise.all([
+  const [overview, opcodes, depth, breakReason, bottleneckKinds, top20, motifs] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/opcode-impact'),
     fetchJSON('/api/forensics/call-depth'),
+    fetchJSON('/api/forensics/break-reason'),
     fetchJSON('/api/forensics/bottleneck-kinds'),
     fetchJSON('/api/top-contracts?limit=20'),
     fetchJSON('/api/forensics/failure-motifs'),
@@ -73,14 +79,25 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
     );
   }
 
-  // 2b. Bottleneck kinds
-  // Hide the section entirely when every row is Unclassified — the lake
-  // hasn't been re-analyzed with the new producer yet, so there's nothing
-  // to show beyond a "no data" pie.
-  const classified = bottleneckKinds.filter(k => k.kind !== 'Unclassified');
+  // 2b. Break reason: OOG vs non-OOG revert.
+  const reasonColorByKey = { 'OOG': COLORS.broken, 'Non-OOG revert': COLORS.event_logs };
+  renderBar('breakReasonChart',
+    breakReason.map(r => ({ label: r.reason, count: r.count, share: r.share })),
+    'label', 'count',
+    {
+      title: 'Contract-Broken Txs: OOG vs Non-OOG',
+      xTitle: 'Break Reason',
+      yTitle: 'Contract-Broken Txs',
+      color: breakReason.map(r => reasonColorByKey[r.reason] || COLORS.neutral),
+      yaxis: { tickformat: ',' },
+      height: 300,
+    }
+  );
+
+  // 2c. Bottleneck kinds (OOG only). If the OOG cohort is empty, say so.
   const bottleneckEl = document.getElementById('bottleneckChart');
-  if (classified.length === 0) {
-    bottleneckEl.innerHTML = '<p class="note">No classified rows in the analyzed range yet. Re-run the producer with the chain-walk classifier to populate this chart.</p>';
+  if (!bottleneckKinds.length) {
+    bottleneckEl.innerHTML = '<p class="note">No OOG-class contract-broken txs in the analyzed range. (If you see this with a populated dataset, check the chain-walk classifier in reth.)</p>';
   } else {
     const colorByKind = {
       'Stipend2300': COLORS.broken,
@@ -92,9 +109,9 @@ the 2300 stipend pattern, and deep call chains amplified by the 63/64 rule.</p>
       bottleneckKinds.map(k => ({ label: k.kind, count: k.count, share: k.share })),
       'label', 'count',
       {
-        title: 'Contract-Broken Txs by Bottleneck Type',
+        title: 'OOG Contract-Broken Txs by Bottleneck Type',
         xTitle: 'Bottleneck Kind',
-        yTitle: 'Contract-Broken Txs',
+        yTitle: 'OOG Contract-Broken Txs',
         color: bottleneckKinds.map(k => colorByKind[k.kind] || COLORS.neutral),
         yaxis: { tickformat: ',' },
       }

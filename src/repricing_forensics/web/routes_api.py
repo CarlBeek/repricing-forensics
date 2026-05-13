@@ -475,14 +475,19 @@ def forensics_call_depth():
 @router.get("/forensics/bottleneck-kinds")
 @cache_endpoint(_AGGREGATE_TTL)
 def forensics_bottleneck_kinds():
-    """How many contract-broken txs hit each kind of gas-forwarding bottleneck.
+    """How many contract-broken *OOG* txs hit each kind of gas-forwarding
+    bottleneck.
 
-    The producer's chain-walk classifier tags every contract-broken OOG row
-    with the kind of throttle that broke the call chain (Stipend2300 /
-    FixedGas / FractionalGas). Rows whose chain was fully proportional are
-    not contract-broken — the producer bucketed them as wallet_fixable_*
-    and they don't appear in `divergences`. Rows where the classifier
-    didn't produce a kind (older runs) bucket as 'Unclassified'.
+    Only OOG-class breakages (rows with non-NULL `oog_call_depth`) feed
+    this chart — the producer's chain-walk classifier only runs on
+    OOGs, and a "bottleneck" doesn't apply to a tx that reverted for
+    other reasons. The complementary cohort (status-flip without OOG)
+    is reported by `/api/forensics/break-reason` and shown alongside
+    on the dashboard.
+
+    A row with `oog_call_depth` set but `oog_bottleneck_kind` still
+    NULL means the classifier ran but couldn't identify the throttle —
+    rare in current runs; surfaced as 'Unclassified' for visibility.
     """
     rows = query("""
         SELECT
@@ -490,6 +495,7 @@ def forensics_bottleneck_kinds():
             count(*) AS cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND oog_call_depth IS NOT NULL
         GROUP BY 1
         ORDER BY cnt DESC
     """)
@@ -501,6 +507,37 @@ def forensics_bottleneck_kinds():
             "share": round(r["cnt"] / total * 100, 1),
         }
         for r in rows
+    ]
+
+
+@router.get("/forensics/break-reason")
+@cache_endpoint(_AGGREGATE_TTL)
+def forensics_break_reason():
+    """Split contract-broken txs into OOG vs non-OOG-revert.
+
+    Status-flip is a broader category than "the tx ran out of gas": a
+    schedule change can also trigger different revert paths via gas-
+    refund accounting, intrinsic gas thresholds, or floor-gas mechanics
+    (EIP-7623). This endpoint counts how many contract-broken txs were
+    OOGs vs reverts-from-other-causes, so the dashboard doesn't lump
+    them together under one misleading bucket.
+    """
+    row = query("""
+        SELECT
+            count(*) FILTER (WHERE oog_call_depth IS NOT NULL) AS oog,
+            count(*) FILTER (WHERE oog_call_depth IS NULL)     AS non_oog_revert,
+            count(*)                                           AS total
+        FROM divergences
+        WHERE bucket = 'contract_broken'
+    """)[0]
+    total = _int(row["total"]) or 1
+    return [
+        {"reason": "OOG",
+         "count": _int(row["oog"]),
+         "share": round(_int(row["oog"]) / total * 100, 1)},
+        {"reason": "Non-OOG revert",
+         "count": _int(row["non_oog_revert"]),
+         "share": round(_int(row["non_oog_revert"]) / total * 100, 1)},
     ]
 
 
