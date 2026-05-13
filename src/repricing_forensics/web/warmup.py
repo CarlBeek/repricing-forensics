@@ -32,11 +32,25 @@ _log = logging.getLogger(__name__)
 # pass without letting the cache go cold.
 _WARM_INTERVAL_SECONDS = 20.0
 
-# Parallel warm workers. Each worker uses its own DuckDB cursor so
-# they run concurrently against the producer SQLite. Higher counts hit
-# diminishing returns as sqlite_scanner bottlenecks on the underlying
-# SQLite reader, and pile load onto a producer that may be mid-replay.
+# Parallel warm workers for steady-state passes. Each worker uses its
+# own DuckDB cursor so they run concurrently against the producer
+# SQLite. Higher counts hit diminishing returns as sqlite_scanner
+# bottlenecks on the underlying SQLite reader, and pile load onto a
+# producer that may be mid-replay.
 _WARM_CONCURRENCY = 4
+
+# Delay before the warmer's first pass. Right after systemd restart,
+# the OS page cache for the 80 GB producer file is cold and lifespan
+# is paying the full ATTACH cost (observed: ~5 min before uvicorn
+# binds). Firing 4 concurrent queries on top of that just deepens the
+# hole. 60s lets the foreground request path establish a baseline
+# before we start the background load.
+_WARM_FIRST_PASS_DELAY = 60.0
+
+# Concurrency for the first pass only. Single-threaded so we don't
+# multiply the cold-cache cost; the SQL is still uncached at this
+# point, and the producer may still be servicing the lifespan ATTACH.
+_WARM_FIRST_PASS_CONCURRENCY = 1
 
 
 # (callable, kwargs) — calling each tuple refreshes one cached
@@ -102,14 +116,22 @@ def _run_one(label: str, fn: Callable[..., Any], kwargs: dict[str, Any]) -> floa
     return time.monotonic() - t0
 
 
-def warm_cache_once() -> dict[str, float]:
-    """Run one warm pass. Returns per-endpoint elapsed seconds (for
-    logging / diagnostics)."""
+def warm_cache_once(concurrency: int = _WARM_CONCURRENCY,
+                    stop: threading.Event | None = None) -> dict[str, float]:
+    """Run one warm pass with the given concurrency. Returns
+    per-endpoint elapsed seconds (for logging / diagnostics).
+
+    `stop` (optional) is checked between submissions so a shutdown
+    signal during a long pass can short-circuit the rest of the plan
+    — keeps shutdown latency bounded even when individual queries are
+    slow against the cold producer."""
     timings: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=_WARM_CONCURRENCY,
+    with ThreadPoolExecutor(max_workers=max(1, concurrency),
                             thread_name_prefix="warm") as pool:
         futures = {}
         for fn, kwargs in _WARM_PLAN:
+            if stop is not None and stop.is_set():
+                break
             label = f"{fn.__name__}({','.join(f'{k}={v}' for k, v in kwargs.items())})"
             futures[pool.submit(_run_one, label, fn, kwargs)] = label
         for fut, label in futures.items():
@@ -127,19 +149,33 @@ _warmer_thread: threading.Thread | None = None
 
 
 def _warm_loop_target() -> None:
+    # Hold off on the first pass — see _WARM_FIRST_PASS_DELAY. Use the
+    # stop event so a fast shutdown doesn't have to wait through the
+    # full delay.
+    if _stop_event.wait(_WARM_FIRST_PASS_DELAY):
+        _log.info("cache warmer stopped before first pass")
+        return
+
+    pass_count = 0
     while not _stop_event.is_set():
+        # First pass runs sequentially to avoid stacking concurrent
+        # SQL on top of an already-cold producer file. Subsequent
+        # passes ramp up to the steady-state concurrency.
+        concurrency = (_WARM_FIRST_PASS_CONCURRENCY if pass_count == 0
+                       else _WARM_CONCURRENCY)
         t0 = time.monotonic()
         try:
-            timings = warm_cache_once()
+            timings = warm_cache_once(concurrency=concurrency, stop=_stop_event)
             total = time.monotonic() - t0
             slowest = sorted(timings.items(), key=lambda kv: kv[1], reverse=True)[:3]
             _log.info(
-                "cache warmer pass done in %.2fs; slowest: %s",
-                total,
+                "cache warmer pass %d done in %.2fs (concurrency=%d); slowest: %s",
+                pass_count, total, concurrency,
                 ", ".join(f"{n}={t:.2f}s" for n, t in slowest),
             )
         except Exception as exc:
             _log.warning("cache warmer pass failed: %s", exc)
+        pass_count += 1
         # `Event.wait` is interruptible — stop_warmer() can signal mid-sleep.
         _stop_event.wait(_WARM_INTERVAL_SECONDS)
     _log.info("cache warmer stopped")
