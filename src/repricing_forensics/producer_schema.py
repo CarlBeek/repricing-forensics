@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 2  # v2: SQLite storage with JSON for array/struct columns
+SCHEMA_VERSION = 3  # v3: collapsed opcode-totals JSON columns into one
 
 
 class Bucket(str, Enum):
@@ -112,9 +112,11 @@ _TABLES: tuple[tuple[str, str], ...] = (
             gas_delta_max       INTEGER,
             gas_delta_log2_hist TEXT,     -- JSON: array of 12 ints
 
-            -- EIP-7904: per-bucket per-opcode totals (sparse JSON arrays)
-            opcode_count_totals_7904     TEXT, -- JSON: [{"opcode": int, "count": int}, ...]
-            opcode_gas_delta_totals_7904 TEXT, -- JSON: [{"opcode": int, "delta": int}, ...]
+            -- EIP-7904: per-bucket per-opcode totals (sparse JSON list).
+            -- One entry per opcode that executed in this (block, bucket):
+            -- {opcode: u8, count: u64, gas_baseline: u64, gas_schedule: u64}.
+            -- Summed across every frame of every tx in the bucket.
+            opcode_totals_7904 TEXT,
 
             -- EIP-8037: state-gas totals + multiplier histogram + per-category counts
             state_gas_sum           INTEGER,

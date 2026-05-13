@@ -215,6 +215,77 @@ def opcode_impact():
     ]
 
 
+@router.get("/opcode-gas-share")
+@cache_endpoint(_AGGREGATE_TTL)
+def opcode_gas_share():
+    """Fraction of total gas each opcode burned across every analyzed tx.
+
+    Aggregates `block_summaries.opcode_totals_7904` over the whole
+    schedule. The producer's BlockAggregator sums per-frame opcode
+    counts for every tx (not just drill-in) into per-bucket sparse
+    lists; we unnest them here and roll up across (block, bucket).
+
+    Returns top-25 opcodes by gas_schedule share, plus an `Other`
+    rollup of the long tail. Each entry carries:
+      - count        — total executions
+      - gas_baseline — what these executions would have cost under the
+                       baseline schedule
+      - gas_schedule — what they actually cost under the replay schedule
+      - gas_delta    — schedule - baseline (the added cost the EIP introduces)
+      - share        — gas_schedule / total_gas_schedule (percent)
+    """
+    rows = query("""
+        SELECT
+            u.opcode AS opcode,
+            sum(u.count)         AS count,
+            sum(u.gas_baseline)  AS gas_baseline,
+            sum(u.gas_schedule)  AS gas_schedule
+        FROM block_summaries,
+             UNNEST(CAST(opcode_totals_7904 AS JSON)
+                    ::STRUCT(opcode INTEGER, count BIGINT,
+                             gas_baseline BIGINT, gas_schedule BIGINT)[]) AS t(u)
+        WHERE opcode_totals_7904 IS NOT NULL
+          AND opcode_totals_7904 <> '[]'
+        GROUP BY u.opcode
+        ORDER BY gas_schedule DESC
+    """)
+    total_schedule = sum(_int(r["gas_schedule"]) for r in rows) or 1
+
+    top_n = 25
+    top, tail = rows[:top_n], rows[top_n:]
+
+    out = []
+    for r in top:
+        op = int(r["opcode"])
+        gs = _int(r["gas_schedule"])
+        gb = _int(r["gas_baseline"])
+        out.append({
+            "opcode": f"0x{op:02x}",
+            "name": opcode_label(op),
+            "count": _int(r["count"]),
+            "gas_baseline": gb,
+            "gas_schedule": gs,
+            "gas_delta": gs - gb,
+            "share": round(gs / total_schedule * 100, 2),
+        })
+
+    if tail:
+        tail_count = sum(_int(r["count"]) for r in tail)
+        tail_gb = sum(_int(r["gas_baseline"]) for r in tail)
+        tail_gs = sum(_int(r["gas_schedule"]) for r in tail)
+        out.append({
+            "opcode": "other",
+            "name": "Other",
+            "count": tail_count,
+            "gas_baseline": tail_gb,
+            "gas_schedule": tail_gs,
+            "gas_delta": tail_gs - tail_gb,
+            "share": round(tail_gs / total_schedule * 100, 2),
+        })
+
+    return out
+
+
 @router.get("/gas-overhead")
 @cache_endpoint(_AGGREGATE_TTL)
 def gas_overhead():

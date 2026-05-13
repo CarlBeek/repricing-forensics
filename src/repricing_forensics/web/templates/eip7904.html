@@ -26,12 +26,26 @@ break under the proposed schedule and where the breakages concentrate.
 <p>Every re-executed transaction falls into one of these buckets. "Trace-divergent only" means the EVM trace differed from baseline at some intermediate step but the final outcome — gas used, event logs, status — all match, so no observable impact. "Gas-only change" means it succeeded under both schedules but used more gas under EIP-7904. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" means a previously-successful transaction now reverts.</p>
 <div id="funnel"><p class="loading">Loading...</p></div>
 
-<!-- 3. Opcode Impact -->
-<h2>3. Opcode at Divergence Point</h2>
-<p>Which repriced opcode was executing at the exact EVM step where the new-schedule trace first diverges from the baseline. <code>KECCAK256</code> dominates because it is both frequently used and receives a 50% price increase.</p>
+<!-- 3. Opcode Gas Share -->
+<h2>3. Where the Gas Goes — Share by Opcode</h2>
+<p>Of all the gas every analyzed transaction burned under the proposed
+schedule, this shows how much each opcode is responsible for. The eight
+repriced EIP-7904 opcodes (<code>DIV</code>, <code>SDIV</code>,
+<code>MOD</code>, <code>SMOD</code>, <code>ADDMOD</code>,
+<code>MULMOD</code>, <code>EXP</code>, <code>KECCAK256</code>) appear
+inline with everything else, so you can see in one view whether the EIP
+is targeting opcodes that actually use meaningful gas. The Δ column is
+the schedule's added cost over baseline.</p>
 <table id="opcodeTable">
-  <thead><tr><th>Opcode</th><th>Divergent Txs</th><th>Share</th></tr></thead>
-  <tbody id="opcodeBody"><tr><td colspan="3" class="loading">Loading...</td></tr></tbody>
+  <thead><tr>
+    <th>Opcode</th>
+    <th style="text-align:right">Count</th>
+    <th style="text-align:right">Baseline Gas</th>
+    <th style="text-align:right">Schedule Gas</th>
+    <th style="text-align:right">Δ</th>
+    <th style="text-align:right">Share</th>
+  </tr></thead>
+  <tbody id="opcodeBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 
 <!-- 4. Gas Overhead -->
@@ -61,7 +75,7 @@ break under the proposed schedule and where the breakages concentrate.
   const [overview, funnel, opcodes, gas, conc, top10, meta] = await Promise.all([
     fetchJSON('/api/overview'),
     fetchJSON('/api/funnel'),
-    fetchJSON('/api/opcode-impact'),
+    fetchJSON('/api/opcode-gas-share'),
     fetchJSON('/api/gas-overhead'),
     fetchJSON('/api/concentration'),
     fetchJSON('/api/top-contracts?limit=10'),
@@ -163,10 +177,26 @@ break under the proposed schedule and where the breakages concentrate.
     link_colors: linkColors,
   }, { height: 420 });
 
-  // 3. Opcodes
-  document.getElementById('opcodeBody').innerHTML = opcodes.map(o =>
-    `<tr><td><strong>${escHtml(o.name)}</strong></td><td>${fmtCount(o.count)}</td><td>${o.share}%</td></tr>`
-  ).join('');
+  // 3. Opcode gas share. Highlight the eight repriced EIP-7904 opcodes
+  // so they pop visually when intermixed with the rest of the EVM.
+  const REPRICED_7904 = new Set([
+    'DIV', 'SDIV', 'MOD', 'SMOD', 'ADDMOD', 'MULMOD', 'EXP', 'KECCAK256',
+  ]);
+  document.getElementById('opcodeBody').innerHTML = opcodes.map(o => {
+    const repriced = REPRICED_7904.has(o.name);
+    const nameCell = repriced
+      ? `<strong style="color:var(--orange)">${escHtml(o.name)}</strong>`
+      : `<strong>${escHtml(o.name)}</strong>`;
+    const deltaSign = o.gas_delta >= 0 ? '+' : '';
+    return `<tr>
+      <td>${nameCell}</td>
+      <td style="text-align:right">${fmtCount(o.count)}</td>
+      <td style="text-align:right">${fmtGas(o.gas_baseline)}</td>
+      <td style="text-align:right">${fmtGas(o.gas_schedule)}</td>
+      <td style="text-align:right; color:${o.gas_delta > 0 ? 'var(--red)' : 'var(--text-dim)'}">${deltaSign}${fmtGas(o.gas_delta)}</td>
+      <td style="text-align:right">${o.share}%</td>
+    </tr>`;
+  }).join('');
 
   // 4. Gas overhead
   const s = gas.stats;

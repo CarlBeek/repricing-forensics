@@ -414,8 +414,10 @@ class _BucketAcc:
     gas_delta_min: int | None = None
     gas_delta_max: int | None = None
     gas_delta_hist: list[int] = field(default_factory=lambda: [0] * 12)
-    opcode_count_totals: dict[int, int] = field(default_factory=dict)
-    opcode_gas_delta_totals: dict[int, int] = field(default_factory=dict)
+    # Per-opcode aggregates that get serialized into the
+    # block_summaries.opcode_totals_7904 JSON column. Key is opcode byte,
+    # value is (count, gas_baseline, gas_schedule).
+    opcode_totals: dict[int, tuple[int, int, int]] = field(default_factory=dict)
     state_gas_sum: int = 0
     state_gas_spillover_sum: int = 0
     multiplier_hist: list[int] = field(default_factory=lambda: [0] * 12)
@@ -489,11 +491,14 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                 acc.gas_delta_hist[_log2_bin(max(tx.gas_delta, 0))] += 1
                 for op_row in tx.opcode_counts:
                     op = op_row["opcode"]
-                    acc.opcode_count_totals[op] = (
-                        acc.opcode_count_totals.get(op, 0) + op_row["count"])
-                    delta = op_row["gas_schedule"] - op_row["gas_baseline"]
-                    acc.opcode_gas_delta_totals[op] = (
-                        acc.opcode_gas_delta_totals.get(op, 0) + delta)
+                    prev_count, prev_base, prev_sched = acc.opcode_totals.get(
+                        op, (0, 0, 0),
+                    )
+                    acc.opcode_totals[op] = (
+                        prev_count + op_row["count"],
+                        prev_base + op_row["gas_baseline"],
+                        prev_sched + op_row["gas_schedule"],
+                    )
                 acc.state_gas_sum += tx.schedule_state_gas_spent
                 acc.state_gas_spillover_sum += tx.runtime_state_gas_spillover
                 acc.multiplier_hist[_multiplier_bin(tx.min_multiplier_to_succeed)] += 1
@@ -534,23 +539,20 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                 continue
             # SQLite has no native array/struct; serialize as JSON. The
             # consumer reads via DuckDB's json_each() to unnest.
-            opcode_count_list = [
-                {"opcode": op, "count": cnt}
-                for op, cnt in sorted(acc.opcode_count_totals.items())
-            ]
-            opcode_gas_list = [
-                {"opcode": op, "delta": d}
-                for op, d in sorted(acc.opcode_gas_delta_totals.items())
+            opcode_totals_list = [
+                {"opcode": op, "count": cnt,
+                 "gas_baseline": base, "gas_schedule": sched}
+                for op, (cnt, base, sched) in sorted(acc.opcode_totals.items())
             ]
             conn.execute(
                 "INSERT INTO block_summaries VALUES ("
-                "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     SCHEDULE_NAME, block_number, bucket, acc.tx_count,
                     acc.gas_delta_sum, float(acc.gas_delta_sum_sq),
                     acc.gas_delta_min, acc.gas_delta_max,
                     json.dumps(acc.gas_delta_hist),
-                    json.dumps(opcode_count_list), json.dumps(opcode_gas_list),
+                    json.dumps(opcode_totals_list),
                     acc.state_gas_sum, acc.state_gas_spillover_sum,
                     json.dumps(acc.multiplier_hist),
                     acc.tx_count_creation, acc.tx_count_authorization,
