@@ -96,6 +96,7 @@ _WARM_PLAN: list[tuple[Callable[..., Any], dict[str, Any]]] = [
     (routes_api.eip8037_examples,            {"limit": 50, "schedule": S8}),
     (routes_api.eip8037_reservoir,           {"schedule": S8}),
     (routes_api.eip8037_divergence_reasons,  {"schedule": S8}),
+    (routes_api.eip8037_unresolved_breakdown, {"schedule": S8}),
 
     # /affected — only the first page is shown by default.
     (routes_api.affected,                    {"page": 1, "per_page": 100,

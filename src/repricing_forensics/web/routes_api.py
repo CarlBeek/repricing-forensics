@@ -1114,6 +1114,75 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
     ]
 
 
+@router.get("/eip8037/unresolved-breakdown")
+@cache_endpoint(_AGGREGATE_TTL)
+def eip8037_unresolved_breakdown(schedule: str = Query(default=None)):
+    """Decompose the `unresolved_replay_failures` cohort (failed under
+    8037 AND `min_multiplier_to_succeed IS NULL`) across the same five
+    priority categories as `/eip8037/divergence-reasons`, additionally
+    split by whether baseline succeeded.
+
+    Background — the producer's `min_multiplier_to_succeed` is **not**
+    a search. It's just `schedule_gas_used / original_gas_limit` IFF
+    the single-shot replay (run at `original × gas_limit_multiplier`,
+    default `multiplier=1`) succeeded. NULL means the replay failed
+    for any reason at the configured budget. So "unresolved" today
+    means "failed under 8037 at gas_limit × multiplier, and the
+    producer didn't try a higher budget."
+
+    This breakdown answers: of the unresolved 500k+ rows, how many
+    are pre-execution rejections (unfixable by more gas), how many
+    are baseline-already-failing (not a regression), and how many
+    sit in the state-gas cohort (where reservoir lifting / multiplier
+    sweep would actually help).
+    """
+    s = resolve_schedule(schedule)
+    rows = query(f"""
+        WITH categorized AS (
+            SELECT
+                CASE
+                    WHEN coalesce(schedule_total_gas_spent, 0) = 0
+                        THEN 'pre_execution_rejection'
+                    WHEN coalesce(schedule_state_gas_spent, 0)
+                       - coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'runtime_state_gas'
+                    WHEN coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'intrinsic_state_gas_only'
+                    WHEN event_logs_changed
+                        THEN 'event_log_only'
+                    ELSE 'other_gas_accounting'
+                END AS category,
+                baseline_success
+            FROM divergences
+            WHERE schedule_name = '{s}'
+              AND NOT schedule_success
+              AND min_multiplier_to_succeed IS NULL
+        )
+        SELECT
+            category,
+            count(*)                                                          AS txs,
+            sum(CASE WHEN baseline_success THEN 1 ELSE 0 END)                 AS newly_broken_txs,
+            sum(CASE WHEN NOT baseline_success THEN 1 ELSE 0 END)             AS already_failing_txs
+        FROM categorized
+        GROUP BY category
+        ORDER BY txs DESC
+    """)
+    total = sum(_int(r["txs"]) for r in rows) or 1
+    return {
+        "total_unresolved": total,
+        "by_category": [
+            {
+                "category": r["category"],
+                "txs": _int(r["txs"]),
+                "newly_broken_txs": _int(r["newly_broken_txs"]),
+                "already_failing_txs": _int(r["already_failing_txs"]),
+                "share": round(_int(r["txs"]) / total * 100, 1),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/eip8037/state-gas-by-category")
 @cache_endpoint(_AGGREGATE_TTL)
 def eip8037_state_gas_by_category(schedule: str = Query(default=None)):
