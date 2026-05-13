@@ -28,14 +28,12 @@ break under the proposed schedule and where the breakages concentrate.
 
 <!-- 3. Opcode Gas Share -->
 <h2>3. Where the Gas Goes — Share by Opcode</h2>
-<p>Of all the gas every analyzed transaction burned under the proposed
-schedule, this shows how much each opcode is responsible for. The eight
-repriced EIP-7904 opcodes (<code>DIV</code>, <code>SDIV</code>,
-<code>MOD</code>, <code>SMOD</code>, <code>ADDMOD</code>,
-<code>MULMOD</code>, <code>EXP</code>, <code>KECCAK256</code>) appear
-inline with everything else, so you can see in one view whether the EIP
-is targeting opcodes that actually use meaningful gas. The Δ column is
-the schedule's added cost over baseline.</p>
+<p>Each row is an opcode the schedule actually reprices
+(<code>gas_schedule ≠ gas_baseline</code>); rows with no change are
+hidden so the table focuses on the EIP's surface. The Δ column is the
+schedule's added cost over baseline. The <strong>Share</strong> column
+is share of all EVM gas (not just repriced gas), so the rows sum to the
+slice of total gas this EIP touches.</p>
 <table id="opcodeTable">
   <thead><tr>
     <th>Opcode</th>
@@ -43,10 +41,17 @@ the schedule's added cost over baseline.</p>
     <th style="text-align:right">Baseline Gas</th>
     <th style="text-align:right">Schedule Gas</th>
     <th style="text-align:right">Δ</th>
-    <th style="text-align:right">Share</th>
+    <th style="text-align:right">Share of EVM gas</th>
   </tr></thead>
   <tbody id="opcodeBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
+
+<p style="margin-top:24px">For divergent transactions whose first trace
+divergence fell on one of those opcodes, this sankey splits them by
+outcome under the schedule: how many still succeeded vs. failed. Opcodes
+that flip a meaningful share to <em>Failed</em> are the ones the EIP
+breaks via that opcode specifically.</p>
+<div id="opcodeOutcome"><p class="loading">Loading chart...</p></div>
 
 <!-- 4. Gas Overhead -->
 <h2>4. Gas Overhead for Non-Broken Txs</h2>
@@ -73,10 +78,11 @@ the schedule's added cost over baseline.</p>
 <script>
 (async function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
-  const [overview, funnel, opcodes, gas, conc, top10, meta] = await Promise.all([
+  const [overview, funnel, opcodes, opcodeOutcome, gas, conc, top10, meta] = await Promise.all([
     fetchJSON(`/api/overview?${qs}`),
     fetchJSON(`/api/funnel?${qs}`),
     fetchJSON(`/api/opcode-gas-share?${qs}`),
+    fetchJSON(`/api/opcode-outcome?${qs}`),
     fetchJSON(`/api/gas-overhead?${qs}`),
     fetchJSON(`/api/concentration?${qs}`),
     fetchJSON(`/api/top-contracts?limit=10&${qs}`),
@@ -178,26 +184,79 @@ the schedule's added cost over baseline.</p>
     link_colors: linkColors,
   }, { height: 420 });
 
-  // 3. Opcode gas share. Highlight the eight repriced EIP-7904 opcodes
-  // so they pop visually when intermixed with the rest of the EVM.
-  const REPRICED_7904 = new Set([
-    'DIV', 'SDIV', 'MOD', 'SMOD', 'ADDMOD', 'MULMOD', 'EXP', 'KECCAK256',
-  ]);
-  document.getElementById('opcodeBody').innerHTML = opcodes.map(o => {
-    const repriced = REPRICED_7904.has(o.name);
-    const nameCell = repriced
-      ? `<strong style="color:var(--orange)">${escHtml(o.name)}</strong>`
-      : `<strong>${escHtml(o.name)}</strong>`;
-    const deltaSign = o.gas_delta >= 0 ? '+' : '';
-    return `<tr>
-      <td>${nameCell}</td>
-      <td style="text-align:right">${fmtCount(o.count)}</td>
-      <td style="text-align:right">${fmtGas(o.gas_baseline)}</td>
-      <td style="text-align:right">${fmtGas(o.gas_schedule)}</td>
-      <td style="text-align:right; color:${o.gas_delta > 0 ? 'var(--red)' : 'var(--text-dim)'}">${deltaSign}${fmtGas(o.gas_delta)}</td>
-      <td style="text-align:right">${o.share}%</td>
-    </tr>`;
-  }).join('');
+  // 3. Opcode gas share — backend now filters to repriced opcodes only
+  // (gas_schedule != gas_baseline), so every row is part of the EIP's
+  // surface and the prior orange-highlight palette is redundant.
+  if (opcodes.length === 0) {
+    document.getElementById('opcodeBody').innerHTML =
+      '<tr><td colspan="6" class="note">This schedule does not reprice any individual opcodes.</td></tr>';
+  } else {
+    document.getElementById('opcodeBody').innerHTML = opcodes.map(o => {
+      const deltaSign = o.gas_delta >= 0 ? '+' : '';
+      const deltaColor = o.gas_delta > 0 ? 'var(--red)'
+        : o.gas_delta < 0 ? 'var(--green)' : 'var(--text-dim)';
+      return `<tr>
+        <td><strong>${escHtml(o.name)}</strong></td>
+        <td style="text-align:right">${fmtCount(o.count)}</td>
+        <td style="text-align:right">${fmtGas(o.gas_baseline)}</td>
+        <td style="text-align:right">${fmtGas(o.gas_schedule)}</td>
+        <td style="text-align:right; color:${deltaColor}">${deltaSign}${fmtGas(o.gas_delta)}</td>
+        <td style="text-align:right">${o.share}%</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // 3b. Opcode → outcome sankey. One node per opcode on the left, two
+  // outcome nodes on the right (`Succeeded` / `Failed` under the
+  // schedule). Sorted by total txs descending so the heaviest opcodes
+  // anchor the top of the diagram.
+  if (opcodeOutcome.length === 0) {
+    document.getElementById('opcodeOutcome').innerHTML =
+      '<p class="note">No divergences attributed to repriced opcodes for this schedule.</p>';
+  } else {
+    const sankeyLabels = [];
+    const sankeyNodeColors = [];
+    const sankeySources = [];
+    const sankeyTargets = [];
+    const sankeyValues = [];
+    const sankeyLinkColors = [];
+    opcodeOutcome.forEach((o, i) => {
+      sankeyLabels.push(`${o.name}\n${fmtCount(o.succeeded + o.failed)}`);
+      sankeyNodeColors.push(COLORS.changed);
+      if (o.succeeded > 0) {
+        sankeySources.push(i);
+        sankeyTargets.push(-1); // patched after we know succ/fail indices
+        sankeyValues.push(o.succeeded);
+        sankeyLinkColors.push('rgba(74,222,128,0.25)');
+      }
+      if (o.failed > 0) {
+        sankeySources.push(i);
+        sankeyTargets.push(-2);
+        sankeyValues.push(o.failed);
+        sankeyLinkColors.push('rgba(248,113,113,0.3)');
+      }
+    });
+    const succIdx = sankeyLabels.length;
+    const failIdx = succIdx + 1;
+    const succTotal = opcodeOutcome.reduce((a, o) => a + o.succeeded, 0);
+    const failTotal = opcodeOutcome.reduce((a, o) => a + o.failed, 0);
+    sankeyLabels.push(
+      `Succeeded\n${fmtCount(succTotal)}`,
+      `Failed\n${fmtCount(failTotal)}`,
+    );
+    sankeyNodeColors.push(COLORS.saved, COLORS.broken);
+    for (let i = 0; i < sankeyTargets.length; i++) {
+      sankeyTargets[i] = sankeyTargets[i] === -1 ? succIdx : failIdx;
+    }
+    renderSankey('opcodeOutcome', {
+      labels: sankeyLabels,
+      node_colors: sankeyNodeColors,
+      sources: sankeySources,
+      targets: sankeyTargets,
+      values: sankeyValues,
+      link_colors: sankeyLinkColors,
+    }, { height: Math.max(280, opcodeOutcome.length * 50 + 80) });
+  }
 
   // 4. Gas overhead
   const s = gas.stats;

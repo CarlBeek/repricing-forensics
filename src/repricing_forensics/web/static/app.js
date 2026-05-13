@@ -177,7 +177,11 @@ function renderScatter(divId, data, xKey, yKey, opts = {}) {
 }
 
 function renderSankey(divId, data, opts = {}) {
-  const nodeColors = data.labels.map((_, i) => SANKEY_PALETTE[i % SANKEY_PALETTE.length]);
+  // Caller can pass explicit `node_colors` (one per label) when nodes
+  // carry meaning (success-green / fail-red); otherwise rotate the
+  // theme's sankey palette.
+  const nodeColors = data.node_colors
+    || data.labels.map((_, i) => SANKEY_PALETTE[i % SANKEY_PALETTE.length]);
   Plotly.newPlot(divId, [{
     type: 'sankey',
     node: { label: data.labels, color: nodeColors, pad: 20, thickness: 25 },

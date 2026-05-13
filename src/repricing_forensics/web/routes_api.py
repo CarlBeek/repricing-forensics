@@ -240,21 +240,22 @@ def opcode_impact(schedule: str = Query(default=None)):
 @router.get("/opcode-gas-share")
 @cache_endpoint(_AGGREGATE_TTL)
 def opcode_gas_share(schedule: str = Query(default=None)):
-    """Fraction of total gas each opcode burned across every analyzed tx.
+    """Fraction of total gas each *repriced* opcode burned.
 
     Aggregates `block_summaries.opcode_totals_7904` over the whole
-    schedule. The producer's BlockAggregator sums per-frame opcode
-    counts for every tx (not just drill-in) into per-bucket sparse
-    lists; we unnest them here and roll up across (block, bucket).
+    schedule, then filters to opcodes where the schedule's per-op
+    cost differs from baseline (`gas_schedule != gas_baseline`). The
+    `share` denominator is total gas_schedule across **all** opcodes
+    — so the returned shares sum to the slice of EVM gas the EIP's
+    repricing actually touches (rather than renormalising to 100%).
 
-    Returns top-25 opcodes by gas_schedule share, plus an `Other`
-    rollup of the long tail. Each entry carries:
+    Each entry carries:
       - count        — total executions
       - gas_baseline — what these executions would have cost under the
                        baseline schedule
       - gas_schedule — what they actually cost under the replay schedule
       - gas_delta    — schedule - baseline (the added cost the EIP introduces)
-      - share        — gas_schedule / total_gas_schedule (percent)
+      - share        — gas_schedule / total_gas_schedule_all_opcodes (percent)
     """
     s = resolve_schedule(schedule)
     rows = query(f"""
@@ -273,16 +274,17 @@ def opcode_gas_share(schedule: str = Query(default=None)):
         GROUP BY u.opcode
         ORDER BY gas_schedule DESC
     """)
+    # `total_schedule` covers every opcode (repriced or not) so the
+    # returned shares stay comparable to the whole EVM cost surface.
     total_schedule = sum(_int(r["gas_schedule"]) for r in rows) or 1
 
-    top_n = 25
-    top, tail = rows[:top_n], rows[top_n:]
-
     out = []
-    for r in top:
-        op = int(r["opcode"])
+    for r in rows:
         gs = _int(r["gas_schedule"])
         gb = _int(r["gas_baseline"])
+        if gs == gb:
+            continue
+        op = int(r["opcode"])
         out.append({
             "opcode": f"0x{op:02x}",
             "name": opcode_label(op),
@@ -292,22 +294,60 @@ def opcode_gas_share(schedule: str = Query(default=None)):
             "gas_delta": gs - gb,
             "share": round(gs / total_schedule * 100, 2),
         })
-
-    if tail:
-        tail_count = sum(_int(r["count"]) for r in tail)
-        tail_gb = sum(_int(r["gas_baseline"]) for r in tail)
-        tail_gs = sum(_int(r["gas_schedule"]) for r in tail)
-        out.append({
-            "opcode": "other",
-            "name": "Other",
-            "count": tail_count,
-            "gas_baseline": tail_gb,
-            "gas_schedule": tail_gs,
-            "gas_delta": tail_gs - tail_gb,
-            "share": round(tail_gs / total_schedule * 100, 2),
-        })
-
     return out
+
+
+@router.get("/opcode-outcome")
+@cache_endpoint(_AGGREGATE_TTL)
+def opcode_outcome(schedule: str = Query(default=None)):
+    """For each *repriced* opcode, how many divergent txs whose first
+    trace divergence point fell on that opcode still succeeded under
+    the schedule vs. failed.
+
+    `divergence_opcode` on the divergences row identifies the opcode
+    at which the schedule's trace first deviated from baseline; we
+    filter to the set of opcodes the schedule actually reprices (same
+    set the gas-share endpoint surfaces, derived from
+    `opcode_totals_7904`) so the chart focuses on the EIP's surface.
+
+    Returns one row per opcode with `succeeded` / `failed` counts,
+    sorted by total txs. Empty list when the schedule reprices no
+    individual opcodes (e.g. EIP-8037).
+    """
+    s = resolve_schedule(schedule)
+    rows = query(f"""
+        WITH repriced AS (
+            SELECT u.opcode AS op
+            FROM block_summaries,
+                 UNNEST(CAST(opcode_totals_7904 AS JSON)
+                        ::STRUCT(opcode INTEGER, count BIGINT,
+                                 gas_baseline BIGINT, gas_schedule BIGINT)[]) AS t(u)
+            WHERE opcode_totals_7904 IS NOT NULL
+              AND opcode_totals_7904 <> '[]'
+              AND schedule_name = '{s}'
+            GROUP BY u.opcode
+            HAVING sum(u.gas_schedule) <> sum(u.gas_baseline)
+        )
+        SELECT
+            d.divergence_opcode AS opcode_num,
+            count(*) FILTER (WHERE d.schedule_success)     AS succeeded,
+            count(*) FILTER (WHERE NOT d.schedule_success) AS failed
+        FROM divergences d
+        JOIN repriced r ON d.divergence_opcode = r.op
+        WHERE d.schedule_name = '{s}'
+          AND d.divergence_opcode IS NOT NULL
+        GROUP BY d.divergence_opcode
+        ORDER BY succeeded + failed DESC
+    """)
+    return [
+        {
+            "opcode": f"0x{int(r['opcode_num']):02x}",
+            "name": opcode_label(r["opcode_num"]),
+            "succeeded": _int(r["succeeded"]),
+            "failed": _int(r["failed"]),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/gas-overhead")
