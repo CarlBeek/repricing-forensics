@@ -1258,6 +1258,15 @@ def eip8037_examples(
 def _affected_base_cte(s_7904: str, s_8037: str) -> str:
     """Combined 7904 + 8037 affected-contracts CTE.
 
+    Both EIP sides filter to `bucket = 'contract_broken'` — the producer
+    classifier puts a tx in that bucket iff its failure is structural
+    (no amount of outer-gas estimation rescues it). Wallet-fixable
+    cohorts (shallow / deep_chain) are deliberately excluded here: the
+    /affected page is for contracts that need code changes, not for
+    txs that the wallet's gas-estimate retry already resolves. Per-EIP
+    pages (/eip7904, /eip8037) still expose the wallet-fixable cohort
+    separately for completeness.
+
     Pages that aggregate across the two EIPs (landing, /affected) pass
     the producer's 7904 and 8037 schedule names separately; the CTE
     filters each side with its own name. Single-EIP queries can pass
@@ -1277,29 +1286,26 @@ def _affected_base_cte(s_7904: str, s_8037: str) -> str:
         GROUP BY lower(recipient)
     ),
     e8037 AS (
-        SELECT lower(target_address) AS addr,
-               original_limit_failures AS need_higher_limit_8037,
-               reservoir_exhausted_txs AS reservoir_exhausted_8037,
-               status_changed_txs AS status_changed_8037,
-               p95_min_multiplier_to_succeed AS p95_multiplier_8037,
-               min_block AS min_block_8037,
-               max_block AS max_block_8037
-        FROM eip8037_contract_impact
-        WHERE schedule_name = '{s_8037}'
-          AND (original_limit_failures > 0
-               OR status_changed_txs > 0
-               OR reservoir_exhausted_txs > 0)
+        SELECT lower(recipient) AS addr,
+               count(*)                                              AS broken_txs_8037,
+               sum(CASE WHEN status_changed THEN 1 ELSE 0 END)       AS status_changed_8037,
+               avg(gas_delta)                                        AS avg_delta_8037,
+               min(block_number) AS min_block_8037,
+               max(block_number) AS max_block_8037
+        FROM divergences
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_8037}'
+        GROUP BY lower(recipient)
     ),
     affected_combined AS (
         SELECT
             coalesce(e7.addr, e8.addr) AS addr,
-            coalesce(e7.broken_txs_7904, 0) AS broken_txs_7904,
-            coalesce(e7.avg_delta_7904, 0) AS avg_delta_7904,
-            coalesce(e7.total_delta_7904, 0) AS total_delta_7904,
-            coalesce(e8.need_higher_limit_8037, 0) AS need_higher_limit_8037,
-            coalesce(e8.reservoir_exhausted_8037, 0) AS reservoir_exhausted_8037,
+            coalesce(e7.broken_txs_7904, 0)    AS broken_txs_7904,
+            coalesce(e7.avg_delta_7904, 0)     AS avg_delta_7904,
+            coalesce(e7.total_delta_7904, 0)   AS total_delta_7904,
+            coalesce(e8.broken_txs_8037, 0)    AS broken_txs_8037,
             coalesce(e8.status_changed_8037, 0) AS status_changed_8037,
-            e8.p95_multiplier_8037,
+            coalesce(e8.avg_delta_8037, 0)     AS avg_delta_8037,
             least(coalesce(e7.min_block_7904, 99999999999),
                   coalesce(e8.min_block_8037, 99999999999)) AS min_block,
             greatest(coalesce(e7.max_block_7904, 0),
@@ -1335,7 +1341,7 @@ def affected(
     )
     rows = query(cte + f"""
         SELECT * FROM affected_combined
-        ORDER BY broken_txs_7904 DESC, need_higher_limit_8037 DESC
+        ORDER BY broken_txs_7904 DESC, broken_txs_8037 DESC
         LIMIT {int(per_page)} OFFSET {int(offset)}
     """)
 
@@ -1352,10 +1358,9 @@ def affected(
             "broken_txs_7904": _int(r["broken_txs_7904"]),
             "avg_delta_7904": _float(r["avg_delta_7904"]),
             "total_delta_7904": _float(r["total_delta_7904"]),
-            "need_higher_limit_8037": _int(r["need_higher_limit_8037"]),
-            "reservoir_exhausted_8037": _int(r["reservoir_exhausted_8037"]),
+            "broken_txs_8037": _int(r["broken_txs_8037"]),
             "status_changed_8037": _int(r["status_changed_8037"]),
-            "p95_multiplier_8037": _float_or_none(r["p95_multiplier_8037"]),
+            "avg_delta_8037": _float(r["avg_delta_8037"]),
             "min_block": _int(r["min_block"]),
             "max_block": _int(r["max_block"]),
             "owner": "",
@@ -1744,10 +1749,9 @@ def search(
     s_7904 = resolve_schedule(schedule_7904)
     s_8037 = resolve_schedule(schedule_8037)
     rows = query(_affected_base_cte(s_7904, s_8037) + """
-        SELECT addr, broken_txs_7904,
-               need_higher_limit_8037, reservoir_exhausted_8037, status_changed_8037
+        SELECT addr, broken_txs_7904, broken_txs_8037
         FROM affected_combined
-        ORDER BY broken_txs_7904 DESC, need_higher_limit_8037 DESC
+        ORDER BY broken_txs_7904 DESC, broken_txs_8037 DESC
     """)
     results = []
     for r in rows:
@@ -1758,11 +1762,7 @@ def search(
                 "recipient": addr,
                 "name": label_address(addr),
                 "broken_txs_7904": int(r["broken_txs_7904"]),
-                "impact_8037": max(
-                    int(r["need_higher_limit_8037"]),
-                    int(r["reservoir_exhausted_8037"]),
-                    int(r["status_changed_8037"]),
-                ),
+                "broken_txs_8037": int(r["broken_txs_8037"]),
             })
             if len(results) >= 20:
                 break

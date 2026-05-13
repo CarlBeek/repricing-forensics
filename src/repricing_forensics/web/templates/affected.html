@@ -22,7 +22,7 @@
 <h2>Most Affected Contracts</h2>
 <p style="color:var(--text-muted); font-size:0.88em; margin-bottom:12px">
   Combined ranking across EIP-7904 and EIP-8037. Click any row to see per-EIP diagnostics and sample transactions.
-  Wallet-fixable EIP-7904 breakages are excluded; EIP-8037 rows include any contract with status flips, original-limit failures, or reservoir spillover.
+  Wallet-fixable breakages (those a higher gas estimate resolves) are excluded under <strong>both</strong> EIPs — this list is contracts that need code changes.
 </p>
 <div style="overflow-x: auto;">
   <table id="contractTable">
@@ -31,8 +31,8 @@
       <th>Project</th>
       <th>EIP-7904 Broken</th>
       <th>EIP-7904 Avg Δ</th>
-      <th>EIP-8037 Need ↑ Limit</th>
-      <th>EIP-8037 Reservoir</th>
+      <th>EIP-8037 Broken</th>
+      <th>EIP-8037 Avg Δ</th>
     </tr></thead>
     <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
   </table>
@@ -57,8 +57,8 @@ function renderTable(items, page) {
       <td><strong>${escHtml(c.name)}</strong></td>
       <td style="text-align:right">${dashIfZero(c.broken_txs_7904)}</td>
       <td style="text-align:right">${dashIfZero(c.avg_delta_7904, fmtGas)}</td>
-      <td style="text-align:right">${dashIfZero(c.need_higher_limit_8037)}</td>
-      <td style="text-align:right">${dashIfZero(c.reservoir_exhausted_8037)}</td>
+      <td style="text-align:right">${dashIfZero(c.broken_txs_8037)}</td>
+      <td style="text-align:right">${dashIfZero(c.avg_delta_8037, fmtGas)}</td>
     </tr>`
   ).join('');
 }
@@ -103,11 +103,11 @@ function fmtMultiplier(n) {
   const [overview, meta, ov8037] = await Promise.all([
     fetchJSON(`/api/overview?schedule=${s7}`),
     fetchJSON(`/api/metadata?schedule=${s7}&${SCHEDULE_QS}`),
-    fetchJSON(`/api/eip8037/overview?schedule=${s8}`),
+    fetchJSON(`/api/overview?schedule=${s8}`),
   ]);
   renderPosterCards('summaryCards', [
     { value: fmtCount(overview.contract_broken_txs), label: 'EIP-7904 broken txs', color: COLORS.broken },
-    { value: fmtCount(ov8037.original_limit_failures), label: 'EIP-8037 need higher limit', color: COLORS.changed },
+    { value: fmtCount(ov8037.contract_broken_txs), label: 'EIP-8037 broken txs', color: COLORS.broken },
     { value: fmtCount(meta.total_contracts_affected), label: 'Contracts affected (combined)' },
     { value: `${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`, label: 'Block range analyzed' },
   ]);
