@@ -12,3 +12,9 @@ cache/
 exports/
 
 divergences.db
+synthetic.duckdb
+synthetic.duckdb-shm
+synthetic.duckdb-wal
+synthetic.sqlite
+synthetic.sqlite-shm
+synthetic.sqlite-wal
