@@ -98,7 +98,12 @@ function txTable8037(txs) {
 }
 
 (async function() {
-  const data = await fetchJSON(`/api/affected/${encodeURIComponent(ADDRESS)}`);
+  const s7 = encodeURIComponent(SCHEDULE_7904);
+  const s8 = encodeURIComponent(SCHEDULE_8037);
+  const data = await fetchJSON(
+    `/api/affected/${encodeURIComponent(ADDRESS)}`
+    + `?schedule_7904=${s7}&schedule_8037=${s8}`,
+  );
   const el = document.getElementById('contractDetail');
 
   if (!data.found) {

@@ -4,20 +4,14 @@ Consumer entry point for the SQLite-writer + DuckDB-reader architecture
 (see `docs/storage-redesign.md`). The producer (reth-research) writes
 SQLite in WAL mode; the consumer attaches that file read-only via
 DuckDB's `sqlite_scanner` extension and runs analytical queries through
-DuckDB's vectorized engine. SQLite WAL handles writer+readers across
-processes natively, so there's no lock conflict.
+DuckDB's vectorized engine.
 
-There's no consumer-side materialization step — the in-memory catalog
-this module builds is the entire "consumer DB". Views are recreated
-each time `open_session` is called.
-
-Compared to the old `pipeline.py`:
-- No parquet lake read-through.
-- No `normalized_forensics` materialized table.
-- No `wallet_fixable_ids` derivation: the producer already tagged the
-  bucket; queries source from the schedule-scoped `divergences` view
-  for the drill-in cohort and `block_coverage` / `block_summaries`
-  for everything else.
+The producer can write multiple schedules into the same file at once
+(e.g. `7904-prelim` and `eip-8037` running in parallel). Views here
+are **not** filtered by schedule — every `/api/*` endpoint takes a
+`schedule` query parameter and injects `WHERE schedule_name = '...'`
+inline. This keeps the per-schedule routing in the page/endpoint
+layer rather than in a single global session.
 """
 from __future__ import annotations
 
@@ -26,15 +20,11 @@ from pathlib import Path
 
 import duckdb
 
-from .config import default_schedule_name
 
-
-def open_session(producer_db_path: Path, schedule_name: str | None = None
-                 ) -> duckdb.DuckDBPyConnection:
+def open_session(producer_db_path: Path) -> duckdb.DuckDBPyConnection:
     """Open an in-memory DuckDB, attach the producer SQLite file
-    read-only via sqlite_scanner, create schedule-scoped views, return
-    the connection."""
-    schedule_name = schedule_name or default_schedule_name()
+    read-only via sqlite_scanner, create unfiltered views, return the
+    connection."""
     conn = duckdb.connect(":memory:")
     threads = os.environ.get("DUCKDB_THREADS", str(os.cpu_count() or 4))
     conn.execute(f"PRAGMA threads={threads}")
@@ -46,58 +36,53 @@ def open_session(producer_db_path: Path, schedule_name: str | None = None
     conn.execute(
         f"ATTACH '{str(producer_db_path)}' AS producer (TYPE sqlite, READ_ONLY)"
     )
-    create_views(conn, schedule_name)
+    create_views(conn)
     return conn
 
 
-def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
-    """Create the schedule-scoped views the API queries against.
+def create_views(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create unfiltered views over the producer's tables.
 
-    All views live in the consumer's in-memory catalog (the default `memory`
-    database) and filter the producer's tables by `schedule_name`. Reads are
-    transparent to DuckDB's optimizer — predicate pushdown into the attached
-    file works the same as if these queries hit the producer DB directly.
+    Every view keeps `schedule_name` as a column; endpoints filter on
+    it at query time so each request can pick its own schedule. The
+    `eip8037_contract_impact` aggregation groups by
+    `(schedule_name, recipient)` for the same reason.
     """
-    escaped = schedule_name.replace("'", "''")
-
-    # Pass-throughs filtered by schedule.
-    conn.execute(f"""
+    # Pass-throughs.
+    conn.execute("""
         CREATE OR REPLACE VIEW block_coverage AS
         SELECT * FROM producer.block_coverage
-        WHERE schedule_name = '{escaped}'
     """)
-    conn.execute(f"""
+    conn.execute("""
         CREATE OR REPLACE VIEW block_summaries AS
         SELECT * FROM producer.block_summaries
-        WHERE schedule_name = '{escaped}'
     """)
-    conn.execute(f"""
+    conn.execute("""
         CREATE OR REPLACE VIEW divergences AS
         SELECT * FROM producer.divergences
-        WHERE schedule_name = '{escaped}'
     """)
 
     # Frame / opcode / log tables aren't scheduled directly; they hang off
-    # divergences via divergence_id. We materialize the schedule filter
-    # through a join in the view so the consumer-side queries don't have
-    # to remember to filter.
+    # divergences via divergence_id. We surface `schedule_name` on each
+    # row via JOIN so endpoints can filter the same way they filter
+    # `divergences`.
     conn.execute("""
         CREATE OR REPLACE VIEW call_frames AS
-        SELECT f.*
+        SELECT f.*, d.schedule_name
         FROM producer.divergence_call_frames f
-        JOIN divergences d USING (divergence_id)
+        JOIN producer.divergences d USING (divergence_id)
     """)
     conn.execute("""
         CREATE OR REPLACE VIEW opcode_counts AS
-        SELECT o.*
+        SELECT o.*, d.schedule_name
         FROM producer.divergence_opcode_counts o
-        JOIN divergences d USING (divergence_id)
+        JOIN producer.divergences d USING (divergence_id)
     """)
     conn.execute("""
         CREATE OR REPLACE VIEW event_logs AS
-        SELECT l.*
+        SELECT l.*, d.schedule_name
         FROM producer.divergence_event_logs l
-        JOIN divergences d USING (divergence_id)
+        JOIN producer.divergences d USING (divergence_id)
     """)
 
     # Contract metadata is schedule-independent.
@@ -106,14 +91,19 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
         SELECT * FROM producer.contract_metadata
     """)
 
+    # Analysis runs — used by endpoints to discover which schedules
+    # have been recorded.
+    conn.execute("""
+        CREATE OR REPLACE VIEW analysis_runs AS
+        SELECT * FROM producer.analysis_runs
+    """)
+
     # Per-tx EIP-8037 view: every drill-in divergence with the 8037
-    # columns pre-derived (original_limit_failure, target_address). The
-    # old `eip8037_tx_impact` materialized table is gone — DuckDB
-    # recomputes this on each query, which is sub-millisecond.
+    # columns pre-derived (original_limit_failure, target_address).
     conn.execute("""
         CREATE OR REPLACE VIEW eip8037_tx_impact AS
         SELECT
-            divergence_id, tx_hash, block_number, tx_index,
+            divergence_id, schedule_name, tx_hash, block_number, tx_index,
             lower(recipient) AS target_address,
             sender, tx_gas_limit, is_create,
             baseline_success, schedule_success, status_changed,
@@ -143,12 +133,12 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
         FROM divergences
     """)
 
-    # Common derived view: contract-level EIP-8037 impact totals. Lives
-    # here rather than in a materialized table because DuckDB recomputes
-    # this in milliseconds.
+    # Per-(schedule, recipient) EIP-8037 impact totals. Endpoints filter
+    # by `schedule_name` to pick one schedule's view.
     conn.execute("""
         CREATE OR REPLACE VIEW eip8037_contract_impact AS
         SELECT
+            schedule_name,
             lower(recipient) AS target_address,
             count(*)                                          AS divergent_txs,
             sum(CASE WHEN status_changed THEN 1 ELSE 0 END)   AS status_changed_txs,
@@ -179,7 +169,7 @@ def create_views(conn: duckdb.DuckDBPyConnection, schedule_name: str) -> None:
             max(block_number) AS max_block
         FROM divergences
         WHERE recipient IS NOT NULL
-        GROUP BY lower(recipient)
+        GROUP BY schedule_name, lower(recipient)
     """)
 
 

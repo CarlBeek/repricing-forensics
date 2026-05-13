@@ -72,14 +72,15 @@ the schedule's added cost over baseline.</p>
 {% block scripts %}
 <script>
 (async function() {
+  const s = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
   const [overview, funnel, opcodes, gas, conc, top10, meta] = await Promise.all([
-    fetchJSON('/api/overview'),
-    fetchJSON('/api/funnel'),
-    fetchJSON('/api/opcode-gas-share'),
-    fetchJSON('/api/gas-overhead'),
-    fetchJSON('/api/concentration'),
-    fetchJSON('/api/top-contracts?limit=10'),
-    fetchJSON('/api/metadata'),
+    fetchJSON(`/api/overview?${s}`),
+    fetchJSON(`/api/funnel?${s}`),
+    fetchJSON(`/api/opcode-gas-share?${s}`),
+    fetchJSON(`/api/gas-overhead?${s}`),
+    fetchJSON(`/api/concentration?${s}`),
+    fetchJSON(`/api/top-contracts?limit=10&${s}`),
+    fetchJSON(`/api/metadata?${s}`),
   ]);
 
   document.getElementById('subtitle').textContent =

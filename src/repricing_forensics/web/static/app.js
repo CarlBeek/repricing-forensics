@@ -228,7 +228,15 @@ function initSearch(inputId, listId, onSelect) {
     const q = input.value.trim();
     if (q.length < 2) { list.innerHTML = ''; return; }
     debounce = setTimeout(async () => {
-      const results = await fetchJSON(`/api/search?q=${encodeURIComponent(q)}`);
+      // The search endpoint unions 7904 + 8037 affected contracts; pass
+      // both schedule names so the producer's parallel schedules show
+      // up together.
+      const s7 = encodeURIComponent(SCHEDULE_7904);
+      const s8 = encodeURIComponent(SCHEDULE_8037);
+      const results = await fetchJSON(
+        `/api/search?q=${encodeURIComponent(q)}`
+        + `&schedule_7904=${s7}&schedule_8037=${s8}`,
+      );
       list.innerHTML = results.map(r => {
         const tags = [];
         if (r.broken_txs_7904 > 0) tags.push(`<span class="count">7904: ${fmtCount(r.broken_txs_7904)}</span>`);

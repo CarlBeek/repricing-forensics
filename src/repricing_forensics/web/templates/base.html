@@ -51,9 +51,27 @@
       });
     })();
   </script>
+  <script>
+    // Producer-side schedule names exposed to JS. Page-specific pages
+    // (/eip7904, /eip8037) set PAGE_SCHEDULE so their fetchJSON calls
+    // route to one schedule. Multi-EIP pages (landing, /affected) read
+    // the two SCHEDULE_* constants directly.
+    const SCHEDULE_7904 = "{{ schedule_7904 }}";
+    const SCHEDULE_8037 = "{{ schedule_8037 }}";
+    const PAGE_SCHEDULE = {% if schedule %}"{{ schedule }}"{% else %}null{% endif %};
+  </script>
   <script src="/static/app.js?v={{ cache_bust }}"></script>
   <script>
-    fetchJSON('/api/metadata').then(m => {
+    // Metadata for the footer. Single-EIP pages report that schedule's
+    // block range; cross-EIP pages fall back to the 7904 range plus the
+    // combined affected-contracts count (the consumer accepts both
+    // `schedule` and `schedule_7904`/`schedule_8037` params here).
+    const metaUrl = PAGE_SCHEDULE
+      ? `/api/metadata?schedule=${encodeURIComponent(PAGE_SCHEDULE)}`
+      : `/api/metadata?schedule=${encodeURIComponent(SCHEDULE_7904)}`
+        + `&schedule_7904=${encodeURIComponent(SCHEDULE_7904)}`
+        + `&schedule_8037=${encodeURIComponent(SCHEDULE_8037)}`;
+    fetchJSON(metaUrl).then(m => {
       document.getElementById('activeSchedule').textContent = m.schedule_name || '';
       document.getElementById('lastUpdated').textContent =
         'Updated ' + new Date(m.last_updated).toLocaleString();

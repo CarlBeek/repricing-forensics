@@ -8,13 +8,14 @@ from fastapi import APIRouter, Query
 from repricing_forensics.labels import infer_project_label
 
 from .db import (
-    SCHEDULE_NAME,
     cache_endpoint,
     db_mtime,
     label_address,
+    list_schedules,
     query,
     query_df,
     query_scalar,
+    resolve_schedule,
 )
 
 # Cache TTL for /api/* endpoints whose SQL aggregates over the full
@@ -127,16 +128,32 @@ def _hex(value) -> str | None:
     return str(value)
 
 
+# ── Schedules ────────────────────────────────────────────────────────
+
+
+@router.get("/schedules")
+@cache_endpoint(_AGGREGATE_TTL)
+def schedules():
+    """List every schedule the producer has ever recorded, most recent first.
+
+    Pages use this to discover which producer-side schedule names are
+    live (useful for ad-hoc curl and the schedule selector); routine
+    page traffic passes the schedule name as a query param.
+    """
+    return {"schedules": list_schedules()}
+
+
 # ── Briefing endpoints ────────────────────────────────────────────────
 
 
 @router.get("/overview")
 @cache_endpoint(_AGGREGATE_TTL)
-def overview():
+def overview(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
     # All headline counts come from block_coverage's per-bucket totals.
     # The producer's classifier is the single source of truth for which
     # bucket a tx belongs to; the consumer doesn't second-guess it.
-    row = query("""
+    row = query(f"""
         SELECT
             sum(tx_count) AS total_analyzed,
             sum(tx_count - tx_count_unchanged) AS divergent_txs,
@@ -144,6 +161,7 @@ def overview():
             sum(tx_count_wallet_fixable_shallow) AS wallet_fixable_shallow,
             sum(tx_count_wallet_fixable_deep_chain) AS wallet_fixable_deep_chain
         FROM block_coverage
+        WHERE schedule_name = '{s}'
     """)[0]
     total_analyzed = _int(row["total_analyzed"])
     contract_broken = _int(row["contract_broken"])
@@ -166,14 +184,15 @@ def overview():
 
 @router.get("/funnel")
 @cache_endpoint(_AGGREGATE_TTL)
-def funnel():
+def funnel(schedule: str = Query(default=None)):
     """Bucket every divergent tx by observable impact.
 
     `trace_divergent_only` is the previously-mislabelled cohort: txs whose
     intermediate EVM trace differs from baseline but whose final outcome
     (gas used, event logs, status) matches — i.e. no observable change.
     """
-    row = query("""
+    s = resolve_schedule(schedule)
+    row = query(f"""
         SELECT
             sum(tx_count - tx_count_unchanged) AS total,
             sum(tx_count_contract_broken
@@ -183,6 +202,7 @@ def funnel():
             sum(tx_count_gas_only)           AS gas_only_change,
             sum(tx_count_trace_only)         AS trace_divergent_only
         FROM block_coverage
+        WHERE schedule_name = '{s}'
     """)[0]
     return {
         "divergent_txs": _int(row["total"]),
@@ -195,12 +215,14 @@ def funnel():
 
 @router.get("/opcode-impact")
 @cache_endpoint(_AGGREGATE_TTL)
-def opcode_impact():
-    rows = query("""
+def opcode_impact(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         SELECT divergence_opcode AS opcode_num, count(*) AS cnt
         FROM divergences
         WHERE divergence_opcode IS NOT NULL
           AND bucket = 'contract_broken'
+          AND schedule_name = '{s}'
         GROUP BY 1 ORDER BY cnt DESC
     """)
     total = sum(r["cnt"] for r in rows)
@@ -217,7 +239,7 @@ def opcode_impact():
 
 @router.get("/opcode-gas-share")
 @cache_endpoint(_AGGREGATE_TTL)
-def opcode_gas_share():
+def opcode_gas_share(schedule: str = Query(default=None)):
     """Fraction of total gas each opcode burned across every analyzed tx.
 
     Aggregates `block_summaries.opcode_totals_7904` over the whole
@@ -234,7 +256,8 @@ def opcode_gas_share():
       - gas_delta    — schedule - baseline (the added cost the EIP introduces)
       - share        — gas_schedule / total_gas_schedule (percent)
     """
-    rows = query("""
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         SELECT
             u.opcode AS opcode,
             sum(u.count)         AS count,
@@ -246,6 +269,7 @@ def opcode_gas_share():
                              gas_baseline BIGINT, gas_schedule BIGINT)[]) AS t(u)
         WHERE opcode_totals_7904 IS NOT NULL
           AND opcode_totals_7904 <> '[]'
+          AND schedule_name = '{s}'
         GROUP BY u.opcode
         ORDER BY gas_schedule DESC
     """)
@@ -288,7 +312,7 @@ def opcode_gas_share():
 
 @router.get("/gas-overhead")
 @cache_endpoint(_AGGREGATE_TTL)
-def gas_overhead():
+def gas_overhead(schedule: str = Query(default=None)):
     """CDF + stats over the non-broken cohort (gas_only, trace_only,
     event_logs_changed) reconstructed from `block_summaries`'s pre-binned
     log2 histograms.
@@ -298,11 +322,13 @@ def gas_overhead():
     aggregate cohort isn't stored per-tx anymore. CDF fidelity is
     unchanged — it was already plotted from the same log2 bins.
     """
-    rows = query("""
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         SELECT bucket, tx_count, gas_delta_sum, gas_delta_min, gas_delta_max,
                gas_delta_log2_hist
         FROM block_summaries
         WHERE bucket IN ('gas_only', 'trace_only', 'event_logs_changed')
+          AND schedule_name = '{s}'
     """)
     return _gas_delta_aggregate_response(rows)
 
@@ -397,11 +423,13 @@ def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
 
 @router.get("/concentration")
 @cache_endpoint(_AGGREGATE_TTL)
-def concentration():
-    df = query_df("""
+def concentration(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    df = query_df(f"""
         SELECT recipient, count(*) AS broken_txs
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s}'
         GROUP BY recipient ORDER BY broken_txs DESC
     """)
     df["cumulative"] = df["broken_txs"].cumsum()
@@ -421,12 +449,17 @@ def concentration():
 
 @router.get("/top-contracts")
 @cache_endpoint(_AGGREGATE_TTL)
-def top_contracts(limit: int = Query(default=10, le=500)):
+def top_contracts(
+    limit: int = Query(default=10, le=500),
+    schedule: str = Query(default=None),
+):
+    s = resolve_schedule(schedule)
     rows = query(f"""
         SELECT recipient, count(*) AS broken_txs,
                avg(gas_delta) AS avg_delta, sum(gas_delta) AS total_delta
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s}'
         GROUP BY recipient ORDER BY broken_txs DESC LIMIT {int(limit)}
     """)
     return [
@@ -446,10 +479,13 @@ def top_contracts(limit: int = Query(default=10, le=500)):
 
 @router.get("/forensics/time-series")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_time_series():
-    return query("""
+def forensics_time_series(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    return query(f"""
         WITH bounds AS (
-            SELECT min(block_number) AS mn, max(block_number) AS mx FROM block_coverage
+            SELECT min(block_number) AS mn, max(block_number) AS mx
+            FROM block_coverage
+            WHERE schedule_name = '{s}'
         ),
         buckets AS (
             SELECT greatest((mx - mn) / 300, 1) AS bucket_size, mn FROM bounds
@@ -460,6 +496,7 @@ def forensics_time_series():
                 count(*) AS broken
             FROM divergences d, buckets b
             WHERE d.bucket = 'contract_broken'
+              AND d.schedule_name = '{s}'
             GROUP BY block_group
         ),
         total_per_bucket AS (
@@ -467,6 +504,7 @@ def forensics_time_series():
                 b.mn + ((c.block_number - b.mn) // b.bucket_size) * b.bucket_size AS block_group,
                 sum(c.tx_count) AS total_txs
             FROM block_coverage c, buckets b
+            WHERE c.schedule_name = '{s}'
             GROUP BY block_group
         )
         SELECT
@@ -485,14 +523,15 @@ def forensics_time_series():
 
 @router.get("/forensics/gas-delta")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_gas_delta():
+def forensics_gas_delta(schedule: str = Query(default=None)):
     """Gas-delta stats + histogram for the contract-broken cohort.
 
     Contract-broken rows are per-tx in `divergences`, so percentiles are
     exact (unlike the aggregate-cohort percentiles in /api/gas-overhead,
     which approximate from log2 bins).
     """
-    stats = query("""
+    s = resolve_schedule(schedule)
+    stats = query(f"""
         SELECT
             median(gas_delta) as median_delta,
             avg(gas_delta) as mean_delta,
@@ -501,16 +540,18 @@ def forensics_gas_delta():
             percentile_cont(0.90) WITHIN GROUP (ORDER BY gas_delta) as p90,
             percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95,
             percentile_cont(0.99) WITHIN GROUP (ORDER BY gas_delta) as p99
-        FROM divergences WHERE bucket = 'contract_broken'
+        FROM divergences
+        WHERE bucket = 'contract_broken' AND schedule_name = '{s}'
     """)[0]
-    histogram = query("""
+    histogram = query(f"""
         WITH bucketed AS (
             SELECT
                 CASE WHEN gas_delta <= 0 THEN 0
                      ELSE floor(log2(gas_delta))::int
                 END AS log_bin,
                 count(*) AS cnt
-            FROM divergences WHERE bucket = 'contract_broken'
+            FROM divergences
+            WHERE bucket = 'contract_broken' AND schedule_name = '{s}'
             GROUP BY 1
         )
         SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
@@ -532,20 +573,22 @@ def forensics_gas_delta():
 
 @router.get("/forensics/call-depth")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_call_depth():
-    return query("""
+def forensics_call_depth(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    return query(f"""
         SELECT
             coalesce(divergence_call_depth, -1) AS divergence_call_depth,
             count(*) AS divergent_txs
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s}'
         GROUP BY 1 ORDER BY 1
     """)
 
 
 @router.get("/forensics/bottleneck-kinds")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_bottleneck_kinds():
+def forensics_bottleneck_kinds(schedule: str = Query(default=None)):
     """How many contract-broken *OOG* txs hit each kind of gas-forwarding
     bottleneck.
 
@@ -560,13 +603,15 @@ def forensics_bottleneck_kinds():
     NULL means the classifier ran but couldn't identify the throttle —
     rare in current runs; surfaced as 'Unclassified' for visibility.
     """
-    rows = query("""
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         SELECT
             coalesce(oog_bottleneck_kind, 'Unclassified') AS kind,
             count(*) AS cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
           AND oog_call_depth IS NOT NULL
+          AND schedule_name = '{s}'
         GROUP BY 1
         ORDER BY cnt DESC
     """)
@@ -583,7 +628,7 @@ def forensics_bottleneck_kinds():
 
 @router.get("/forensics/break-reason")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_break_reason():
+def forensics_break_reason(schedule: str = Query(default=None)):
     """Split contract-broken txs into OOG vs non-OOG-revert.
 
     Status-flip is a broader category than "the tx ran out of gas": a
@@ -593,13 +638,15 @@ def forensics_break_reason():
     OOGs vs reverts-from-other-causes, so the dashboard doesn't lump
     them together under one misleading bucket.
     """
-    row = query("""
+    s = resolve_schedule(schedule)
+    row = query(f"""
         SELECT
             count(*) FILTER (WHERE oog_call_depth IS NOT NULL) AS oog,
             count(*) FILTER (WHERE oog_call_depth IS NULL)     AS non_oog_revert,
             count(*)                                           AS total
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s}'
     """)[0]
     total = _int(row["total"]) or 1
     return [
@@ -618,7 +665,8 @@ def forensics_break_reason():
 # that OOG'd. We pick the deepest such frame per tx via a row-number
 # window. For most real txs every ancestor frame also has success=FALSE
 # (the OOG bubbles up), but ranking by depth keeps the leaf consistent.
-_FAILING_LEAVES_CTE = """
+def _failing_leaves_cte(s: str) -> str:
+    return f"""
 WITH failing_leaves AS (
     SELECT
         cf.divergence_id,
@@ -632,6 +680,7 @@ WITH failing_leaves AS (
     FROM call_frames cf
     JOIN divergences d USING (divergence_id)
     WHERE d.bucket = 'contract_broken'
+      AND d.schedule_name = '{s}'
       AND cf.success = FALSE
 )
 """
@@ -639,19 +688,22 @@ WITH failing_leaves AS (
 
 @router.get("/forensics/failure-motifs")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_failure_motifs():
+def forensics_failure_motifs(schedule: str = Query(default=None)):
     """Top caller→callee pairs at the failing leaf frame.
 
     `pair_motif` is (caller_project, callee_project). `triple_motif` adds
     the root-frame project for context — useful when the same library
     fails from different top-level entry points.
     """
-    rows = query(_FAILING_LEAVES_CTE + """,
+    s = resolve_schedule(schedule)
+    rows = query(_failing_leaves_cte(s) + f""",
     roots AS (
         SELECT cf.divergence_id, cf.to_address AS root_to
         FROM call_frames cf
         JOIN divergences d USING (divergence_id)
-        WHERE d.bucket = 'contract_broken' AND cf.depth = 0
+        WHERE d.bucket = 'contract_broken'
+          AND d.schedule_name = '{s}'
+          AND cf.depth = 0
     )
     SELECT
         lower(coalesce(fl.from_address, '')) AS caller,
@@ -682,7 +734,7 @@ def forensics_failure_motifs():
 
 @router.get("/forensics/failure-flow")
 @cache_endpoint(_AGGREGATE_TTL)
-def forensics_failure_flow():
+def forensics_failure_flow(schedule: str = Query(default=None)):
     """Sankey: root project → failing caller project → failing callee project.
 
     Sourced from `call_frames` for the contract-broken cohort. Addresses
@@ -690,12 +742,15 @@ def forensics_failure_flow():
     once the producer-side `contract_metadata` table lands we can do
     nicer labeling via codehash.
     """
-    rows = query(_FAILING_LEAVES_CTE + """,
+    s = resolve_schedule(schedule)
+    rows = query(_failing_leaves_cte(s) + f""",
     roots AS (
         SELECT cf.divergence_id, cf.to_address AS root_to
         FROM call_frames cf
         JOIN divergences d USING (divergence_id)
-        WHERE d.bucket = 'contract_broken' AND cf.depth = 0
+        WHERE d.bucket = 'contract_broken'
+          AND d.schedule_name = '{s}'
+          AND cf.depth = 0
     )
     SELECT
         lower(coalesce(r.root_to, ''))       AS root_addr,
@@ -763,8 +818,9 @@ def forensics_failure_flow():
 
 @router.get("/eip8037/overview")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_overview():
-    stats = query("""
+def eip8037_overview(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    stats = query(f"""
         SELECT
             count(*) AS divergent_txs,
             sum(CASE WHEN original_limit_failure THEN 1 ELSE 0 END)
@@ -793,13 +849,20 @@ def eip8037_overview():
                 AS p95_extra_gas_needed,
             max(extra_gas_needed) AS max_extra_gas_needed
         FROM eip8037_tx_impact
+        WHERE schedule_name = '{s}'
     """)[0]
-    total_analyzed = query_scalar("SELECT sum(tx_count) FROM block_coverage", default=0)
-    block_range = query("SELECT min(block_number) AS mn, max(block_number) AS mx FROM block_coverage")
+    total_analyzed = query_scalar(
+        f"SELECT sum(tx_count) FROM block_coverage WHERE schedule_name = '{s}'",
+        default=0,
+    )
+    block_range = query(
+        f"SELECT min(block_number) AS mn, max(block_number) AS mx "
+        f"FROM block_coverage WHERE schedule_name = '{s}'"
+    )
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
 
     return {
-        "schedule_name": SCHEDULE_NAME,
+        "schedule_name": s,
         "total_analyzed": _int(total_analyzed),
         "min_block": _int(br["mn"]),
         "max_block": _int(br["mx"]),
@@ -825,8 +888,9 @@ def eip8037_overview():
 
 @router.get("/eip8037/multiplier-histogram")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_multiplier_histogram():
-    rows = query("""
+def eip8037_multiplier_histogram(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         WITH bucketed AS (
             SELECT
                 CASE
@@ -853,6 +917,7 @@ def eip8037_multiplier_histogram():
                 sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs,
                 max(min_multiplier_to_succeed) AS max_multiplier
             FROM eip8037_tx_impact
+            WHERE schedule_name = '{s}'
             GROUP BY 1, 2
         )
         SELECT * FROM bucketed ORDER BY sort_key
@@ -870,10 +935,11 @@ def eip8037_multiplier_histogram():
 
 @router.get("/eip8037/reservoir")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_reservoir():
+def eip8037_reservoir(schedule: str = Query(default=None)):
     """Reservoir-utilization view: how full does the per-tx state-gas
     reservoir get in practice, and what happens to the overflow tail."""
-    headline = query("""
+    s = resolve_schedule(schedule)
+    headline = query(f"""
         SELECT
             count(*) AS total_txs,
             sum(CASE WHEN runtime_state_gas > 0 THEN 1 ELSE 0 END) AS state_touching_txs,
@@ -887,9 +953,10 @@ def eip8037_reservoir():
             ) FILTER (WHERE schedule_initial_reservoir > 0 AND runtime_state_gas > 0)
                 AS p50_utilization_state_touching
         FROM eip8037_tx_impact
+        WHERE schedule_name = '{s}'
     """)[0]
 
-    util_rows = query("""
+    util_rows = query(f"""
         WITH bucketed AS (
             SELECT
                 CASE
@@ -905,6 +972,7 @@ def eip8037_reservoir():
                 count(*) AS txs,
                 sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs
             FROM eip8037_tx_impact
+            WHERE schedule_name = '{s}'
             GROUP BY 1
         )
         SELECT * FROM bucketed ORDER BY sort_key
@@ -924,13 +992,14 @@ def eip8037_reservoir():
     ]
 
     # Spillover severity (overflow cohort only) — log2-bucketed CDF input.
-    spillover_rows = query("""
+    spillover_rows = query(f"""
         WITH bucketed AS (
             SELECT
                 floor(log2(runtime_state_gas_spillover))::int AS log_bin,
                 count(*) AS cnt
             FROM eip8037_tx_impact
             WHERE runtime_state_gas_spillover > 0
+              AND schedule_name = '{s}'
             GROUP BY 1
         )
         SELECT log_bin, cnt FROM bucketed ORDER BY log_bin
@@ -946,7 +1015,7 @@ def eip8037_reservoir():
         for r in spillover_rows
     ]
 
-    category_rows = query("""
+    category_rows = query(f"""
         SELECT
             coalesce(state_gas_category, 'uncategorized') AS category,
             count(*) AS total_txs,
@@ -955,6 +1024,7 @@ def eip8037_reservoir():
                           THEN 1 ELSE 0 END) AS fits_txs,
             sum(CASE WHEN runtime_state_gas_spillover > 0 THEN 1 ELSE 0 END) AS overflow_txs
         FROM eip8037_tx_impact
+        WHERE schedule_name = '{s}'
         GROUP BY 1
         ORDER BY total_txs DESC
     """)
@@ -985,8 +1055,9 @@ def eip8037_reservoir():
 
 @router.get("/eip8037/state-gas-by-category")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_state_gas_by_category():
-    rows = query("""
+def eip8037_state_gas_by_category(schedule: str = Query(default=None)):
+    s = resolve_schedule(schedule)
+    rows = query(f"""
         SELECT
             state_gas_category,
             count(*) AS txs,
@@ -997,6 +1068,7 @@ def eip8037_state_gas_by_category():
             sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
             avg(min_multiplier_to_succeed) AS avg_min_multiplier_to_succeed
         FROM eip8037_tx_impact
+        WHERE schedule_name = '{s}'
         GROUP BY 1
         ORDER BY total_state_gas_spent DESC, txs DESC
     """)
@@ -1017,13 +1089,18 @@ def eip8037_state_gas_by_category():
 
 @router.get("/eip8037/top-contracts")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_top_contracts(limit: int = Query(default=20, le=500)):
+def eip8037_top_contracts(
+    limit: int = Query(default=20, le=500),
+    schedule: str = Query(default=None),
+):
+    s = resolve_schedule(schedule)
     rows = query(f"""
         SELECT *
         FROM eip8037_contract_impact
-        WHERE original_limit_failures > 0
-           OR status_changed_txs > 0
-           OR total_state_gas_spent > 0
+        WHERE schedule_name = '{s}'
+          AND (original_limit_failures > 0
+               OR status_changed_txs > 0
+               OR total_state_gas_spent > 0)
         ORDER BY original_limit_failures DESC,
                  total_state_gas_spent DESC,
                  status_changed_txs DESC,
@@ -1054,7 +1131,11 @@ def eip8037_top_contracts(limit: int = Query(default=20, le=500)):
 
 @router.get("/eip8037/examples")
 @cache_endpoint(_AGGREGATE_TTL)
-def eip8037_examples(limit: int = Query(default=50, le=500)):
+def eip8037_examples(
+    limit: int = Query(default=50, le=500),
+    schedule: str = Query(default=None),
+):
+    s = resolve_schedule(schedule)
     rows = query(f"""
         SELECT
             tx_hash, block_number, tx_index, target_address, tx_gas_limit,
@@ -1066,9 +1147,10 @@ def eip8037_examples(limit: int = Query(default=50, le=500)):
             schedule_initial_reservoir, runtime_state_gas_spillover,
             reservoir_exhausted
         FROM eip8037_tx_impact
-        WHERE original_limit_failure
-           OR status_changed
-           OR reservoir_exhausted
+        WHERE schedule_name = '{s}'
+          AND (original_limit_failure
+               OR status_changed
+               OR reservoir_exhausted)
         ORDER BY
             CASE
                 WHEN baseline_success AND NOT schedule_success THEN 0
@@ -1112,7 +1194,15 @@ def eip8037_examples(limit: int = Query(default=50, le=500)):
 # ── Affected parties endpoints ────────────────────────────────────────
 
 
-_AFFECTED_BASE_CTE = f"""
+def _affected_base_cte(s_7904: str, s_8037: str) -> str:
+    """Combined 7904 + 8037 affected-contracts CTE.
+
+    Pages that aggregate across the two EIPs (landing, /affected) pass
+    the producer's 7904 and 8037 schedule names separately; the CTE
+    filters each side with its own name. Single-EIP queries can pass
+    the same name twice or use the dedicated endpoints.
+    """
+    return f"""
     WITH e7904 AS (
         SELECT lower(recipient) AS addr,
                count(*) AS broken_txs_7904,
@@ -1122,6 +1212,7 @@ _AFFECTED_BASE_CTE = f"""
                max(block_number) AS max_block_7904
         FROM divergences
         WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_7904}'
         GROUP BY lower(recipient)
     ),
     e8037 AS (
@@ -1133,9 +1224,10 @@ _AFFECTED_BASE_CTE = f"""
                min_block AS min_block_8037,
                max_block AS max_block_8037
         FROM eip8037_contract_impact
-        WHERE original_limit_failures > 0
-           OR status_changed_txs > 0
-           OR reservoir_exhausted_txs > 0
+        WHERE schedule_name = '{s_8037}'
+          AND (original_limit_failures > 0
+               OR status_changed_txs > 0
+               OR reservoir_exhausted_txs > 0)
     ),
     affected_combined AS (
         SELECT
@@ -1162,14 +1254,25 @@ _AFFECTED_BASE_CTE = f"""
 def affected(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
+    schedule_7904: str = Query(default=None),
+    schedule_8037: str = Query(default=None),
 ):
-    """Paginated affected contracts across EIP-7904 and EIP-8037."""
+    """Paginated affected contracts across EIP-7904 and EIP-8037.
+
+    Takes the two schedule names as separate query params because the
+    page joins divergences (7904) with eip8037_contract_impact (8037) —
+    those tables can be written under different schedule names by the
+    producer (e.g. `7904-prelim` and `eip-8037`).
+    """
+    s_7904 = resolve_schedule(schedule_7904)
+    s_8037 = resolve_schedule(schedule_8037)
     offset = (page - 1) * per_page
+    cte = _affected_base_cte(s_7904, s_8037)
     total_count = query_scalar(
-        _AFFECTED_BASE_CTE + " SELECT count(*) FROM affected_combined",
+        cte + " SELECT count(*) FROM affected_combined",
         default=0,
     )
-    rows = query(_AFFECTED_BASE_CTE + f"""
+    rows = query(cte + f"""
         SELECT * FROM affected_combined
         ORDER BY broken_txs_7904 DESC, need_higher_limit_8037 DESC
         LIMIT {int(per_page)} OFFSET {int(offset)}
@@ -1213,9 +1316,15 @@ def _with_shares(rows: list[dict], count_key: str = "count") -> list[dict]:
 
 @router.get("/affected/{address}")
 @cache_endpoint(_AGGREGATE_TTL)
-def affected_detail(address: str):
+def affected_detail(
+    address: str,
+    schedule_7904: str = Query(default=None),
+    schedule_8037: str = Query(default=None),
+):
     """Single contract detail with EIP-7904 and EIP-8037 diagnostics."""
     addr = address.lower()
+    s_7904 = resolve_schedule(schedule_7904)
+    s_8037 = resolve_schedule(schedule_8037)
 
     # ── EIP-7904 stats ──
     # Wallet-fixable txs aren't stored per-recipient anymore (the
@@ -1229,7 +1338,9 @@ def affected_detail(address: str):
                min(block_number) as min_block,
                max(block_number) as max_block
         FROM divergences
-        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_7904}'
+          AND lower(recipient) = '{addr}'
     """)[0]
     eip7904_wallet_n = 0  # No longer tracked per-recipient.
     opcodes_raw = query(f"""
@@ -1237,38 +1348,47 @@ def affected_detail(address: str):
         FROM divergences
         WHERE bucket = 'contract_broken'
           AND divergence_opcode IS NOT NULL
+          AND schedule_name = '{s_7904}'
           AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
     depths_raw = query(f"""
         SELECT coalesce(divergence_call_depth, -1) as depth, count(*) as cnt
         FROM divergences
-        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_7904}'
+          AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
     eip7904_txs = query(f"""
         SELECT tx_hash, block_number, gas_delta
         FROM divergences
-        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_7904}'
+          AND lower(recipient) = '{addr}'
         ORDER BY gas_delta DESC LIMIT 20
     """)
     bottleneck_kinds_raw = query(f"""
         SELECT coalesce(oog_bottleneck_kind, 'Unclassified') as kind, count(*) as cnt
         FROM divergences
-        WHERE bucket = 'contract_broken' AND lower(recipient) = '{addr}'
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = '{s_7904}'
+          AND lower(recipient) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC
     """)
 
     # ── EIP-8037 stats ──
     eip8037_rows = query(f"""
         SELECT * FROM eip8037_contract_impact
-        WHERE lower(target_address) = '{addr}'
+        WHERE schedule_name = '{s_8037}'
+          AND lower(target_address) = '{addr}'
     """)
     eip8037_row = eip8037_rows[0] if eip8037_rows else None
     categories_raw = query(f"""
         SELECT coalesce(state_gas_category, 'uncategorized') as cat, count(*) as cnt
         FROM eip8037_tx_impact
-        WHERE lower(target_address) = '{addr}'
+        WHERE schedule_name = '{s_8037}'
+          AND lower(target_address) = '{addr}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """)
     eip8037_txs = query(f"""
@@ -1276,7 +1396,8 @@ def affected_detail(address: str):
                reservoir_exhausted, state_gas_category,
                runtime_state_gas_spillover, schedule_state_gas_spent
         FROM eip8037_tx_impact
-        WHERE lower(target_address) = '{addr}'
+        WHERE schedule_name = '{s_8037}'
+          AND lower(target_address) = '{addr}'
           AND (original_limit_failure OR status_changed OR reservoir_exhausted)
         ORDER BY
             CASE WHEN baseline_success AND NOT schedule_success THEN 0
@@ -1367,14 +1488,26 @@ def affected_detail(address: str):
 
 
 @router.get("/tx/{tx_hash}")
-def tx_detail(tx_hash: str):
-    """Detailed view of a single broken transaction: gas info, divergence location, call stack."""
+def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
+    """Detailed view of a single broken transaction: gas info, divergence location, call stack.
+
+    When `?schedule=` is given we filter to that schedule's row;
+    otherwise we accept any schedule's row (tx_hash is globally unique,
+    but the producer can write a divergence row per schedule, so the
+    explicit param is the safe way to disambiguate when both schedules
+    flagged the same tx).
+    """
     tx_hash = tx_hash.lower().strip()
+    schedule_filter = ""
+    if schedule:
+        s = resolve_schedule(schedule)
+        schedule_filter = f"AND d.schedule_name = '{s}'"
 
     # Core tx info + 8037 derived fields, all from `divergences` now.
     hot = query(f"""
         SELECT
             d.divergence_id, d.block_number, d.tx_index, d.tx_hash, d.bucket,
+            d.schedule_name,
             d.baseline_success, d.schedule_success, d.status_changed,
             d.event_logs_changed, d.baseline_gas_used, d.schedule_gas_used,
             d.gas_delta, d.tx_gas_limit, d.sender, d.recipient,
@@ -1393,6 +1526,7 @@ def tx_detail(tx_hash: str):
         FROM divergences d
         LEFT JOIN eip8037_tx_impact e USING (divergence_id)
         WHERE lower(hex(d.tx_hash)) = '{tx_hash.removeprefix("0x")}'
+          {schedule_filter}
         LIMIT 1
     """)
     if not hot:
@@ -1481,6 +1615,7 @@ def tx_detail(tx_hash: str):
     return {
         "found": True,
         "tx_hash": tx_hash_hex,
+        "schedule_name": h.get("schedule_name"),
         "block_number": int(h["block_number"]),
         "tx_index": int(h["tx_index"]),
         "sender": h["sender"],
@@ -1536,12 +1671,18 @@ def tx_detail(tx_hash: str):
 
 
 @router.get("/search")
-def search(q: str = Query(default="")):
+def search(
+    q: str = Query(default=""),
+    schedule_7904: str = Query(default=None),
+    schedule_8037: str = Query(default=None),
+):
     """Search affected contracts (EIP-7904 ∪ EIP-8037) by address prefix or name."""
     if not q or len(q) < 2:
         return []
     term = q.lower()
-    rows = query(_AFFECTED_BASE_CTE + """
+    s_7904 = resolve_schedule(schedule_7904)
+    s_8037 = resolve_schedule(schedule_8037)
+    rows = query(_affected_base_cte(s_7904, s_8037) + """
         SELECT addr, broken_txs_7904,
                need_higher_limit_8037, reservoir_exhausted_8037, status_changed_8037
         FROM affected_combined
@@ -1786,10 +1927,16 @@ def debug_data_audit():
 
 
 @router.get("/_debug/divergence-sample")
-def debug_divergence_sample():
+def debug_divergence_sample(schedule: str = Query(default=None)):
     """Diagnostic: confirm the producer is emitting divergence/OOG opcode
-    integers and bottleneck classifications on the drill-in cohort."""
-    counts = query("""
+    integers and bottleneck classifications on the drill-in cohort.
+
+    Scopes to one schedule (defaults to most-recent) so multi-schedule
+    runs report sensible counts; pass `?schedule=` to inspect a specific
+    one.
+    """
+    s = resolve_schedule(schedule)
+    counts = query(f"""
         SELECT
             count(*) AS rows_total,
             count(*) FILTER (WHERE divergence_opcode IS NOT NULL) AS with_opcode_int,
@@ -1797,11 +1944,13 @@ def debug_divergence_sample():
             count(*) FILTER (WHERE divergence_call_depth IS NOT NULL) AS with_call_depth,
             count(*) FILTER (WHERE oog_chain_proportional IS NOT NULL) AS with_chain_classified
         FROM divergences
+        WHERE schedule_name = '{s}'
     """)[0]
-    top_opcodes = query("""
+    top_opcodes = query(f"""
         SELECT divergence_opcode AS op_num, count(*) AS cnt
         FROM divergences
         WHERE divergence_opcode IS NOT NULL
+          AND schedule_name = '{s}'
         GROUP BY 1 ORDER BY cnt DESC LIMIT 10
     """)
     return {
@@ -1820,15 +1969,33 @@ def debug_divergence_sample():
 
 @router.get("/metadata")
 @cache_endpoint(_AGGREGATE_TTL)
-def metadata():
-    block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM block_coverage")
+def metadata(
+    schedule: str = Query(default=None),
+    schedule_7904: str = Query(default=None),
+    schedule_8037: str = Query(default=None),
+):
+    """Metadata for the active page.
+
+    `schedule` scopes the block-range numbers to one schedule's coverage
+    (single-EIP pages pass this). For pages that aggregate across both
+    EIPs (landing, /affected), pass `schedule_7904` and `schedule_8037`
+    so `total_contracts_affected` counts the union of the two cohorts.
+    """
+    s = resolve_schedule(schedule)
+    s_7904 = resolve_schedule(schedule_7904)
+    s_8037 = resolve_schedule(schedule_8037)
+    block_range = query(
+        f"SELECT min(block_number) as mn, max(block_number) as mx "
+        f"FROM block_coverage WHERE schedule_name = '{s}'"
+    )
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
     affected_count = query_scalar(
-        _AFFECTED_BASE_CTE + " SELECT count(*) FROM affected_combined",
+        _affected_base_cte(s_7904, s_8037)
+        + " SELECT count(*) FROM affected_combined",
         default=0,
     )
     return {
-        "schedule_name": SCHEDULE_NAME,
+        "schedule_name": s,
         "min_block": int(br["mn"]) if br["mn"] else 0,
         "max_block": int(br["mx"]) if br["mx"] else 0,
         "last_updated": db_mtime().isoformat(),

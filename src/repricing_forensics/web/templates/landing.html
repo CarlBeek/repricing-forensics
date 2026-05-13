@@ -53,10 +53,17 @@
     return n == null ? 'n/a' : `${Number(n).toFixed(2)}x`;
   }
 
+  // Landing aggregates across both EIPs. 7904 stats come from
+  // /api/overview scoped to SCHEDULE_7904; 8037 stats from
+  // /api/eip8037/overview scoped to SCHEDULE_8037; the combined
+  // affected-contracts count goes through /api/metadata with both
+  // schedule names passed in.
+  const s7 = encodeURIComponent(SCHEDULE_7904);
+  const s8 = encodeURIComponent(SCHEDULE_8037);
   Promise.all([
-    fetchJSON('/api/overview'),
-    fetchJSON('/api/metadata'),
-    fetchJSON('/api/eip8037/overview'),
+    fetchJSON(`/api/overview?schedule=${s7}`),
+    fetchJSON(`/api/metadata?schedule=${s7}&schedule_7904=${s7}&schedule_8037=${s8}`),
+    fetchJSON(`/api/eip8037/overview?schedule=${s8}`),
   ]).then(([ov, meta, ov8037]) => {
     document.getElementById('blockMin').textContent = meta.min_block.toLocaleString();
     document.getElementById('blockMax').textContent = meta.max_block.toLocaleString();

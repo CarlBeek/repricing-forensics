@@ -15,11 +15,10 @@ from typing import Any, Callable, TypeVar
 import duckdb
 import pandas as pd
 
-from repricing_forensics.config import default_paths, default_schedule_name
+from repricing_forensics.config import default_paths
 from repricing_forensics.labels import ADDRESS_PROJECT_LABELS
 from repricing_forensics.source_db import open_session, resolve_producer_db_path
 
-SCHEDULE_NAME = default_schedule_name()
 _log = logging.getLogger(__name__)
 
 _paths = default_paths()
@@ -142,7 +141,7 @@ def get_conn() -> duckdb.DuckDBPyConnection:
             cache_invalidate_all()
     if _conn is None:
         producer_path = resolve_producer_db_path()
-        _conn = open_session(producer_path, SCHEDULE_NAME)
+        _conn = open_session(producer_path)
         _conn_opened_at = time.monotonic()
         cache_invalidate_all()
     return _conn
@@ -181,6 +180,56 @@ def query_scalar(sql: str, default: Any = None) -> Any:
     if row is None:
         return default
     return row[0]
+
+
+# ── Schedule routing ─────────────────────────────────────────────────────
+#
+# The producer can write multiple schedules into one SQLite file (e.g.
+# `7904-prelim` and `eip-8037` running in parallel). The consumer routes
+# every /api/* call to one specific schedule via a `?schedule=NAME`
+# query param. `resolve_schedule()` picks a sensible default when the
+# caller omits the param (typically the producer's only / most recently
+# active schedule) so single-schedule deployments and ad-hoc curl probes
+# keep working without explicit configuration.
+
+_SAFE_SCHEDULE_NAME = __import__("re").compile(r"^[A-Za-z0-9._\-]+$")
+
+
+def list_schedules() -> list[str]:
+    """Distinct schedule_name values the producer has ever written,
+    ordered most-recent first by analysis_runs.run_id."""
+    rows = query("""
+        SELECT schedule_name, max(run_id) AS last_run
+        FROM analysis_runs
+        GROUP BY schedule_name
+        ORDER BY last_run DESC
+    """)
+    return [r["schedule_name"] for r in rows]
+
+
+def resolve_schedule(schedule: str | None) -> str:
+    """Validate or pick a schedule name.
+
+    - If `schedule` is non-empty and matches `[A-Za-z0-9._-]+`, use it.
+      Anything else risks SQL injection since we interpolate the name
+      into WHERE clauses (we can't bind via params here because some
+      queries are wrapped in views / generated dynamically).
+    - If `schedule` is None / empty, fall back to the most recent
+      schedule in `analysis_runs`. This makes single-schedule
+      deployments and ad-hoc probes work without an explicit param.
+    """
+    if schedule:
+        if not _SAFE_SCHEDULE_NAME.fullmatch(schedule):
+            raise ValueError(f"invalid schedule name: {schedule!r}")
+        return schedule
+    candidates = list_schedules()
+    if not candidates:
+        raise RuntimeError(
+            "no analysis_runs rows in the producer DB; can't pick a "
+            "default schedule. Pass ?schedule=NAME explicitly or wait "
+            "for the producer to write at least one run."
+        )
+    return candidates[0]
 
 
 def load_labels() -> dict[str, str]:

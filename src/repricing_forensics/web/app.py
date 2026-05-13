@@ -56,7 +56,7 @@ def producer_info():
     open it? Cheap diagnostic for production triage."""
     import os
     from repricing_forensics.source_db import resolve_producer_db_path, open_session
-    from .db import SCHEDULE_NAME
+    from .db import list_schedules
 
     env_value = os.environ.get("PRODUCER_DB_PATH")
     path = resolve_producer_db_path()
@@ -65,10 +65,9 @@ def producer_info():
         "resolved_path": str(path),
         "exists": path.exists(),
         "size_bytes": path.stat().st_size if path.exists() else None,
-        "schedule_name": SCHEDULE_NAME,
     }
     try:
-        conn = open_session(path, SCHEDULE_NAME)
+        conn = open_session(path)
         tables = [r[0] for r in conn.execute(
             "SELECT table_name FROM duckdb_tables() WHERE database_name = 'producer'"
         ).fetchall()]
@@ -80,6 +79,10 @@ def producer_info():
     except Exception as e:
         info["open_ok"] = False
         info["open_error"] = f"{type(e).__name__}: {e}"
+    try:
+        info["schedules"] = list_schedules()
+    except Exception as e:
+        info["schedules_error"] = f"{type(e).__name__}: {e}"
     return info
 
 
@@ -91,13 +94,13 @@ def perf():
     Also reports WAL/SHM sidecar sizes so we can see whether the WAL
     has grown large (producer not checkpointing).
     """
-    import os
     import sqlite3
     import time
-    from repricing_forensics.source_db import resolve_producer_db_path, open_session
-    from .db import SCHEDULE_NAME, get_conn
+    from repricing_forensics.source_db import resolve_producer_db_path
+    from .db import get_conn, resolve_schedule
 
     path = resolve_producer_db_path()
+    schedule_name = resolve_schedule(None)
     if not path.exists():
         return {"error": "producer DB not found", "resolved_path": str(path)}
 
@@ -140,7 +143,7 @@ def perf():
         with sqlite3.connect(ro_uri, uri=True, timeout=120) as raw:
             n = raw.execute(
                 "SELECT SUM(tx_count) FROM block_coverage WHERE schedule_name = ?",
-                (SCHEDULE_NAME,),
+                (schedule_name,),
             ).fetchone()[0]
         timings["sqlite3_raw_sum_tx_count"] = {
             "result": int(n) if n is not None else None,
@@ -257,6 +260,17 @@ def chain_walk_coverage():
         "call_frames": frame_summary,
         "by_call_type": by_call_type,
     }
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """Surface bad client input (e.g. malformed `?schedule=` values)
+    as a 400 instead of a 500. The schedule guard in
+    `db.resolve_schedule` raises ValueError to reject names that don't
+    match the safe-charset regex."""
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    raise exc
 
 
 @app.exception_handler(Exception)

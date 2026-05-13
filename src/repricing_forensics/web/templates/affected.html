@@ -81,10 +81,16 @@ function renderPagination(total, totalPages, page) {
   el.innerHTML = buttons.join('');
 }
 
+const s7 = encodeURIComponent(SCHEDULE_7904);
+const s8 = encodeURIComponent(SCHEDULE_8037);
+const SCHEDULE_QS = `schedule_7904=${s7}&schedule_8037=${s8}`;
+
 async function loadPage(page) {
   currentPage = page;
   document.getElementById('contractBody').innerHTML = '<tr><td colspan="6" class="loading">Loading...</td></tr>';
-  const data = await fetchJSON(`/api/affected?page=${page}&per_page=${perPage}`);
+  const data = await fetchJSON(
+    `/api/affected?page=${page}&per_page=${perPage}&${SCHEDULE_QS}`,
+  );
   renderTable(data.items, page);
   renderPagination(data.total, data.total_pages, page);
 }
@@ -95,9 +101,9 @@ function fmtMultiplier(n) {
 
 (async function() {
   const [overview, meta, ov8037] = await Promise.all([
-    fetchJSON('/api/overview'),
-    fetchJSON('/api/metadata'),
-    fetchJSON('/api/eip8037/overview'),
+    fetchJSON(`/api/overview?schedule=${s7}`),
+    fetchJSON(`/api/metadata?schedule=${s7}&${SCHEDULE_QS}`),
+    fetchJSON(`/api/eip8037/overview?schedule=${s8}`),
   ]);
   renderPosterCards('summaryCards', [
     { value: fmtCount(overview.contract_broken_txs), label: 'EIP-7904 broken txs', color: COLORS.broken },
