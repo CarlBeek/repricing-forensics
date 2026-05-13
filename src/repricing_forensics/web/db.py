@@ -25,8 +25,21 @@ _log = logging.getLogger(__name__)
 _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None
 _conn_producer_mtime: float | None = None
+_conn_opened_at: float | None = None
 _labels: dict[str, str] = {}
 _db_lock = threading.Lock()
+
+# How long to hold the DuckDB session before recycling it. DuckDB
+# sqlite_scanner keeps a long-lived SQLite shared lock on the attached
+# file; while the lock is held, the producer's `PRAGMA wal_checkpoint`
+# can't TRUNCATE the WAL, and it grows unbounded (we observed 101 GB
+# WAL against a 20 GB main file in production). Recycling the session
+# periodically drops the lock briefly so checkpoints can complete.
+#
+# Tradeoff: each recycle costs an ATTACH + view creation (~5-10s). 5
+# minutes is short enough to keep WAL bounded, long enough to amortize
+# the reattach cost across many requests.
+_CONN_MAX_AGE_SECONDS = 300.0
 
 T = TypeVar("T")
 
@@ -103,27 +116,45 @@ def cache_endpoint(ttl_seconds: float):
 
 
 def get_conn() -> duckdb.DuckDBPyConnection:
-    """Return a shared read-only consumer session.
+    """Return a shared read-only consumer session, recycling it after
+    `_CONN_MAX_AGE_SECONDS` so the underlying SQLite shared lock gets
+    released and the producer's WAL can checkpoint.
 
-    The producer file's mtime changes constantly while reth is replaying
-    — every block commit bumps it — so we *don't* tear down the
-    connection on mtime drift. DuckDB's sqlite_scanner sees fresh data
-    on every query through SQLite WAL anyway. The connection only gets
-    reopened on explicit `close_conn()`."""
-    global _conn
+    DuckDB sees fresh data on every query via SQLite WAL anyway, so we
+    don't need to reopen on producer mtime changes — but we *do* need
+    to release the lock periodically to let the producer's WAL not
+    grow forever (we observed 101 GB WAL when the lock was held for
+    hours)."""
+    global _conn, _conn_opened_at
+    now = time.monotonic()
+    if _conn is not None and _conn_opened_at is not None:
+        if now - _conn_opened_at > _CONN_MAX_AGE_SECONDS:
+            _log.info(
+                "recycling consumer DuckDB session after %.1fs to release "
+                "SQLite shared lock (so producer can checkpoint its WAL)",
+                now - _conn_opened_at,
+            )
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
+            cache_invalidate_all()
     if _conn is None:
         producer_path = resolve_producer_db_path()
         _conn = open_session(producer_path, SCHEDULE_NAME)
+        _conn_opened_at = time.monotonic()
         cache_invalidate_all()
     return _conn
 
 
 def close_conn() -> None:
-    global _conn, _conn_producer_mtime
+    global _conn, _conn_producer_mtime, _conn_opened_at
     if _conn is not None:
         _conn.close()
         _conn = None
         _conn_producer_mtime = None
+        _conn_opened_at = None
     cache_invalidate_all()
 
 
