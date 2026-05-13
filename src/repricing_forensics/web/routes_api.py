@@ -297,59 +297,6 @@ def opcode_gas_share(schedule: str = Query(default=None)):
     return out
 
 
-@router.get("/opcode-outcome")
-@cache_endpoint(_AGGREGATE_TTL)
-def opcode_outcome(schedule: str = Query(default=None)):
-    """For each *repriced* opcode, how many divergent txs whose first
-    trace divergence point fell on that opcode still succeeded under
-    the schedule vs. failed.
-
-    `divergence_opcode` on the divergences row identifies the opcode
-    at which the schedule's trace first deviated from baseline; we
-    filter to the set of opcodes the schedule actually reprices (same
-    set the gas-share endpoint surfaces, derived from
-    `opcode_totals_7904`) so the chart focuses on the EIP's surface.
-
-    Returns one row per opcode with `succeeded` / `failed` counts,
-    sorted by total txs. Empty list when the schedule reprices no
-    individual opcodes (e.g. EIP-8037).
-    """
-    s = resolve_schedule(schedule)
-    rows = query(f"""
-        WITH repriced AS (
-            SELECT u.opcode AS op
-            FROM block_summaries,
-                 UNNEST(CAST(opcode_totals_7904 AS JSON)
-                        ::STRUCT(opcode INTEGER, count BIGINT,
-                                 gas_baseline BIGINT, gas_schedule BIGINT)[]) AS t(u)
-            WHERE opcode_totals_7904 IS NOT NULL
-              AND opcode_totals_7904 <> '[]'
-              AND schedule_name = '{s}'
-            GROUP BY u.opcode
-            HAVING sum(u.gas_schedule) <> sum(u.gas_baseline)
-        )
-        SELECT
-            d.divergence_opcode AS opcode_num,
-            count(*) FILTER (WHERE d.schedule_success)     AS succeeded,
-            count(*) FILTER (WHERE NOT d.schedule_success) AS failed
-        FROM divergences d
-        JOIN repriced r ON d.divergence_opcode = r.op
-        WHERE d.schedule_name = '{s}'
-          AND d.divergence_opcode IS NOT NULL
-        GROUP BY d.divergence_opcode
-        ORDER BY succeeded + failed DESC
-    """)
-    return [
-        {
-            "opcode": f"0x{int(r['opcode_num']):02x}",
-            "name": opcode_label(r["opcode_num"]),
-            "succeeded": _int(r["succeeded"]),
-            "failed": _int(r["failed"]),
-        }
-        for r in rows
-    ]
-
-
 @router.get("/gas-overhead")
 @cache_endpoint(_AGGREGATE_TTL)
 def gas_overhead(schedule: str = Query(default=None)):

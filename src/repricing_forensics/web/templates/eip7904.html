@@ -23,11 +23,23 @@ break under the proposed schedule and where the breakages concentrate.
 
 <!-- 2. The Funnel -->
 <h2>2. Transaction Breakdown</h2>
-<p>Every re-executed transaction falls into one of these buckets. "Trace-divergent only" means the EVM trace differed from baseline at some intermediate step but the final outcome — gas used, event logs, status — all match, so no observable impact. "Gas-only change" means it succeeded under both schedules but used more gas under EIP-7904. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" means a previously-successful transaction now reverts.</p>
+<p>Every re-executed transaction falls into one of these buckets. "Trace-divergent only" means the EVM trace differed from baseline at some intermediate step but the final outcome — gas used, event logs, status — all match, so no observable impact. "Gas-only change" means it succeeded under both schedules but used more gas under EIP-7904. "Event logs changed" means internal outcomes shifted enough to emit different events. "Broken" splits into <strong>Wallet-Fixable</strong> (a higher gas estimate resolves it) and <strong>Contract-Broken</strong> (i.e. not wallet-fixable — needs code changes).</p>
 <div id="funnel"><p class="loading">Loading...</p></div>
 
-<!-- 3. Opcode Gas Share -->
-<h2>3. Where the Gas Goes — Share by Opcode</h2>
+<!-- 3. Broken Cohort Zoom -->
+<h2>3. Broken Transactions — Zoomed In</h2>
+<p>Same flow as section 2 but starting from the <strong>Broken</strong>
+cohort, with two extra levels of detail. <strong>Wallet-Fixable</strong>
+splits into shallow vs deep call chain (deep = the gas requirement
+propagates all the way down via the EIP-150 63/64 rule, so a wallet
+gas-estimate bump still resolves it). <strong>Contract-Broken</strong>
+(i.e. not wallet-fixable) splits into OOG vs Non-OOG revert; OOG txs
+then route into the bottleneck kind the producer's chain-walk
+classifier identified.</p>
+<div id="brokenFlow"><p class="loading">Loading chart...</p></div>
+
+<!-- 4. Opcode Gas Share -->
+<h2>4. Where the Gas Goes — Share by Opcode</h2>
 <p>Each row is an opcode the schedule actually reprices
 (<code>gas_schedule ≠ gas_baseline</code>); rows with no change are
 hidden so the table focuses on the EIP's surface. The Δ column is the
@@ -46,27 +58,20 @@ slice of total gas this EIP touches.</p>
   <tbody id="opcodeBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<p style="margin-top:24px">For divergent transactions whose first trace
-divergence fell on one of those opcodes, this sankey splits them by
-outcome under the schedule: how many still succeeded vs. failed. Opcodes
-that flip a meaningful share to <em>Failed</em> are the ones the EIP
-breaks via that opcode specifically.</p>
-<div id="opcodeOutcome"><p class="loading">Loading chart...</p></div>
-
-<!-- 4. Gas Overhead -->
-<h2>4. Gas Overhead for Non-Broken Txs</h2>
+<!-- 5. Gas Overhead -->
+<h2>5. Gas Overhead for Non-Broken Txs</h2>
 <p>For transactions that still succeed under the new schedule, this shows how much additional gas they consume. The CDF shows that the vast majority see minimal overhead, but a long tail exists.</p>
 <div class="poster-grid" id="gasCards" style="grid-template-columns: repeat(4, 1fr);"></div>
 <div id="gasChart"><p class="loading">Loading chart...</p></div>
 
-<!-- 5. Concentration -->
-<h2>5. Breakage Concentration</h2>
+<!-- 6. Concentration -->
+<h2>6. Breakage Concentration</h2>
 <p>Breakage is not uniformly distributed. A small number of heavily-used contracts account for the majority of broken transactions, which means targeted outreach to a handful of teams can address most of the impact.</p>
 <p id="concNote"></p>
 <div id="concChart"><p class="loading">Loading chart...</p></div>
 
-<!-- 6. Top 10 Contracts -->
-<h2>6. Top 10 Affected Contracts</h2>
+<!-- 7. Top 10 Contracts -->
+<h2>7. Top 10 Affected Contracts</h2>
 <p>The contracts with the most broken transactions (excluding wallet-fixable cases). <a href="/affected">Search all affected contracts</a> or click through to any contract's detail page.</p>
 <table id="top10Table">
   <thead><tr><th>#</th><th>Contract</th><th>Broken Txs</th><th>Avg Gas Δ</th><th>Total Gas Δ</th></tr></thead>
@@ -78,11 +83,13 @@ breaks via that opcode specifically.</p>
 <script>
 (async function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
-  const [overview, funnel, opcodes, opcodeOutcome, gas, conc, top10, meta] = await Promise.all([
+  const [overview, funnel, opcodes, breakReason, bottleneckKinds,
+         gas, conc, top10, meta] = await Promise.all([
     fetchJSON(`/api/overview?${qs}`),
     fetchJSON(`/api/funnel?${qs}`),
     fetchJSON(`/api/opcode-gas-share?${qs}`),
-    fetchJSON(`/api/opcode-outcome?${qs}`),
+    fetchJSON(`/api/forensics/break-reason?${qs}`),
+    fetchJSON(`/api/forensics/bottleneck-kinds?${qs}`),
     fetchJSON(`/api/gas-overhead?${qs}`),
     fetchJSON(`/api/concentration?${qs}`),
     fetchJSON(`/api/top-contracts?limit=10&${qs}`),
@@ -184,7 +191,98 @@ breaks via that opcode specifically.</p>
     link_colors: linkColors,
   }, { height: 420 });
 
-  // 3. Opcode gas share — backend now filters to repriced opcodes only
+  // 3. Broken-cohort zoom sankey. Starts from the Broken node and
+  // pushes its substructure two levels deeper:
+  //   Broken → Wallet-Fixable / Contract-Broken (not wallet-fixable)
+  //          Wallet-Fixable → Shallow / Deep Call Chain
+  //          Contract-Broken → OOG / Non-OOG revert
+  //                            OOG → bottleneck kinds (Static Limit,
+  //                                  EIP-150 63/64, Floor Gas, ...)
+  // Subnodes are only added when the underlying cohort is non-empty,
+  // so older lakes (no chain-walk tags / no classifier output) still
+  // render a coherent — if shorter — diagram.
+  {
+    const flowLabels = [];
+    const flowColors = [];
+    const flowSources = [];
+    const flowTargets = [];
+    const flowValues = [];
+    const flowLinkColors = [];
+
+    function addNode(label, color) {
+      flowLabels.push(label);
+      flowColors.push(color);
+      return flowLabels.length - 1;
+    }
+    function addLink(src, tgt, value, linkColor) {
+      flowSources.push(src);
+      flowTargets.push(tgt);
+      flowValues.push(value);
+      flowLinkColors.push(linkColor);
+    }
+
+    const brokenIdx = addNode(`Broken\n${fmtCount(funnel.broken_txs)}`, COLORS.broken);
+
+    const wfIdx = addNode(`Wallet-Fixable\n${fmtCount(walletFixable)}`, COLORS.call_tree);
+    addLink(brokenIdx, wfIdx, walletFixable, 'rgba(204,144,32,0.18)');
+
+    const cbIdx = addNode(
+      `Contract-Broken\n(not wallet-fixable)\n${fmtCount(contractBroken)}`,
+      COLORS.broken,
+    );
+    addLink(brokenIdx, cbIdx, contractBroken, 'rgba(255,184,48,0.25)');
+
+    // Wallet-fixable subsplit. When the producer's chain-walk classifier
+    // hasn't tagged any rows, both sub-counts are 0 — skip the split.
+    if (walletShallow + walletDeepChain > 0) {
+      if (walletShallow > 0) {
+        const idx = addNode(`Shallow\n${fmtCount(walletShallow)}`, COLORS.call_tree);
+        addLink(wfIdx, idx, walletShallow, 'rgba(204,144,32,0.10)');
+      }
+      if (walletDeepChain > 0) {
+        const idx = addNode(`Deep Call Chain\n${fmtCount(walletDeepChain)}`, COLORS.call_tree);
+        addLink(wfIdx, idx, walletDeepChain, 'rgba(204,144,32,0.18)');
+      }
+    }
+
+    // Contract-Broken → OOG / Non-OOG revert (from /api/forensics/break-reason,
+    // already scoped to bucket = contract_broken).
+    const oogRow    = breakReason.find(r => r.reason === 'OOG');
+    const nonOogRow = breakReason.find(r => r.reason === 'Non-OOG revert');
+    const oogCount    = oogRow ? oogRow.count : 0;
+    const nonOogCount = nonOogRow ? nonOogRow.count : 0;
+    let oogIdx = null;
+    if (oogCount > 0) {
+      oogIdx = addNode(`OOG\n${fmtCount(oogCount)}`, COLORS.broken);
+      addLink(cbIdx, oogIdx, oogCount, 'rgba(255,184,48,0.22)');
+    }
+    if (nonOogCount > 0) {
+      const idx = addNode(`Non-OOG revert\n${fmtCount(nonOogCount)}`, COLORS.changed);
+      addLink(cbIdx, idx, nonOogCount, 'rgba(204,144,32,0.18)');
+    }
+
+    // OOG → bottleneck kinds. The bottleneck endpoint is already
+    // scoped to (contract_broken AND oog_call_depth IS NOT NULL),
+    // so its totals line up with the OOG node above.
+    if (oogIdx !== null) {
+      bottleneckKinds.forEach(b => {
+        if (b.count <= 0) return;
+        const idx = addNode(`${b.kind}\n${fmtCount(b.count)}`, COLORS.broken);
+        addLink(oogIdx, idx, b.count, 'rgba(255,184,48,0.14)');
+      });
+    }
+
+    renderSankey('brokenFlow', {
+      labels: flowLabels,
+      node_colors: flowColors,
+      sources: flowSources,
+      targets: flowTargets,
+      values: flowValues,
+      link_colors: flowLinkColors,
+    }, { height: 460 });
+  }
+
+  // 4. Opcode gas share — backend now filters to repriced opcodes only
   // (gas_schedule != gas_baseline), so every row is part of the EIP's
   // surface and the prior orange-highlight palette is redundant.
   if (opcodes.length === 0) {
@@ -206,59 +304,8 @@ breaks via that opcode specifically.</p>
     }).join('');
   }
 
-  // 3b. Opcode → outcome sankey. One node per opcode on the left, two
-  // outcome nodes on the right (`Succeeded` / `Failed` under the
-  // schedule). Sorted by total txs descending so the heaviest opcodes
-  // anchor the top of the diagram.
-  if (opcodeOutcome.length === 0) {
-    document.getElementById('opcodeOutcome').innerHTML =
-      '<p class="note">No divergences attributed to repriced opcodes for this schedule.</p>';
-  } else {
-    const sankeyLabels = [];
-    const sankeyNodeColors = [];
-    const sankeySources = [];
-    const sankeyTargets = [];
-    const sankeyValues = [];
-    const sankeyLinkColors = [];
-    opcodeOutcome.forEach((o, i) => {
-      sankeyLabels.push(`${o.name}\n${fmtCount(o.succeeded + o.failed)}`);
-      sankeyNodeColors.push(COLORS.changed);
-      if (o.succeeded > 0) {
-        sankeySources.push(i);
-        sankeyTargets.push(-1); // patched after we know succ/fail indices
-        sankeyValues.push(o.succeeded);
-        sankeyLinkColors.push('rgba(74,222,128,0.25)');
-      }
-      if (o.failed > 0) {
-        sankeySources.push(i);
-        sankeyTargets.push(-2);
-        sankeyValues.push(o.failed);
-        sankeyLinkColors.push('rgba(248,113,113,0.3)');
-      }
-    });
-    const succIdx = sankeyLabels.length;
-    const failIdx = succIdx + 1;
-    const succTotal = opcodeOutcome.reduce((a, o) => a + o.succeeded, 0);
-    const failTotal = opcodeOutcome.reduce((a, o) => a + o.failed, 0);
-    sankeyLabels.push(
-      `Succeeded\n${fmtCount(succTotal)}`,
-      `Failed\n${fmtCount(failTotal)}`,
-    );
-    sankeyNodeColors.push(COLORS.saved, COLORS.broken);
-    for (let i = 0; i < sankeyTargets.length; i++) {
-      sankeyTargets[i] = sankeyTargets[i] === -1 ? succIdx : failIdx;
-    }
-    renderSankey('opcodeOutcome', {
-      labels: sankeyLabels,
-      node_colors: sankeyNodeColors,
-      sources: sankeySources,
-      targets: sankeyTargets,
-      values: sankeyValues,
-      link_colors: sankeyLinkColors,
-    }, { height: Math.max(280, opcodeOutcome.length * 50 + 80) });
-  }
 
-  // 4. Gas overhead
+  // 5. Gas overhead
   const s = gas.stats;
   renderPosterCards('gasCards', [
     { value: fmtGas(s.median_delta), label: 'Median Extra Gas', color: COLORS.changed },
@@ -284,7 +331,7 @@ breaks via that opcode specifically.</p>
     height: 400,
   }), { responsive: true });
 
-  // 5. Concentration
+  // 6. Concentration
   const n95 = conc.find(c => c.cum_pct >= 95);
   document.getElementById('concNote').innerHTML = n95
     ? `Breakage is highly concentrated: <strong>top ${n95.rank} contracts account for 95%</strong> of all broken transactions.`
@@ -305,7 +352,7 @@ breaks via that opcode specifically.</p>
     shapes: [{ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 95, y1: 95, line: { dash: 'dash', color: COLORS.neutral } }],
   }), { responsive: true });
 
-  // 6. Top 10
+  // 7. Top 10
   document.getElementById('top10Body').innerHTML = top10.map((c, i) => `
     <tr>
       <td>${i + 1}</td>
