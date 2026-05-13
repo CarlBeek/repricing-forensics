@@ -196,13 +196,23 @@ _SAFE_SCHEDULE_NAME = __import__("re").compile(r"^[A-Za-z0-9._\-]+$")
 
 
 def list_schedules() -> list[str]:
-    """Distinct schedule_name values the producer has ever written,
-    ordered most-recent first by analysis_runs.run_id."""
+    """Distinct schedule_name values the producer has data for, ordered
+    most-recent first.
+
+    Reads from `block_coverage` rather than `analysis_runs` because the
+    producer populates block_coverage as soon as it commits block-level
+    data, while `analysis_runs` rows are written at run-boundary time
+    only. A producer that's mid-first-replay can have millions of
+    block_coverage rows and zero analysis_runs rows, and we want the
+    consumer to surface those schedules right away. Ordering by
+    `max(block_number)` per schedule keeps the most-recently-active
+    schedule first, which matches the prior `max(run_id)` ordering.
+    """
     rows = query("""
-        SELECT schedule_name, max(run_id) AS last_run
-        FROM analysis_runs
+        SELECT schedule_name, max(block_number) AS last_block
+        FROM block_coverage
         GROUP BY schedule_name
-        ORDER BY last_run DESC
+        ORDER BY last_block DESC
     """)
     return [r["schedule_name"] for r in rows]
 

@@ -1979,25 +1979,29 @@ def metadata(
     `schedule` scopes the block-range numbers to one schedule's coverage
     (single-EIP pages pass this). For pages that aggregate across both
     EIPs (landing, /affected), pass `schedule_7904` and `schedule_8037`
-    so `total_contracts_affected` counts the union of the two cohorts.
+    so `total_contracts_affected` counts the union of the two cohorts;
+    when only `schedule` is given we skip the cross-EIP count rather
+    than fail (single-EIP pages don't surface it).
     """
     s = resolve_schedule(schedule)
-    s_7904 = resolve_schedule(schedule_7904)
-    s_8037 = resolve_schedule(schedule_8037)
     block_range = query(
         f"SELECT min(block_number) as mn, max(block_number) as mx "
         f"FROM block_coverage WHERE schedule_name = '{s}'"
     )
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
-    affected_count = query_scalar(
-        _affected_base_cte(s_7904, s_8037)
-        + " SELECT count(*) FROM affected_combined",
-        default=0,
-    )
+    affected_count: int = 0
+    if schedule_7904 and schedule_8037:
+        s_7904 = resolve_schedule(schedule_7904)
+        s_8037 = resolve_schedule(schedule_8037)
+        affected_count = _int(query_scalar(
+            _affected_base_cte(s_7904, s_8037)
+            + " SELECT count(*) FROM affected_combined",
+            default=0,
+        ))
     return {
         "schedule_name": s,
         "min_block": int(br["mn"]) if br["mn"] else 0,
         "max_block": int(br["mx"]) if br["mx"] else 0,
         "last_updated": db_mtime().isoformat(),
-        "total_contracts_affected": _int(affected_count),
+        "total_contracts_affected": affected_count,
     }

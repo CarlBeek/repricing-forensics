@@ -273,6 +273,17 @@ async def value_error_handler(request: Request, exc: ValueError):
     raise exc
 
 
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request: Request, exc: RuntimeError):
+    """`resolve_schedule()` raises RuntimeError when no `?schedule=` is
+    given and `block_coverage` has no rows yet — i.e. the producer
+    hasn't committed any data. Turn that into a 503 (so the client
+    knows to retry once data arrives) rather than a 500."""
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+    raise exc
+
+
 @app.exception_handler(Exception)
 async def producer_unavailable_handler(request: Request, exc: Exception):
     """Convert producer-DB-access failures (missing file, ATTACH errors,
