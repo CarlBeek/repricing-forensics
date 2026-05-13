@@ -9,12 +9,21 @@ from repricing_forensics.labels import infer_project_label
 
 from .db import (
     SCHEDULE_NAME,
+    cache_endpoint,
     db_mtime,
     label_address,
     query,
     query_df,
     query_scalar,
 )
+
+# Cache TTL for /api/* endpoints whose SQL aggregates over the full
+# producer DB. Under heavy reth replay write load, these queries can
+# take 30-60s — cache them so the dashboard renders fast and refreshes
+# on a cadence. 30s is short enough that the data feels live; long
+# enough that subsequent page loads / multi-endpoint dashboards reuse
+# results within a single render.
+_AGGREGATE_TTL = 30.0
 
 router = APIRouter(prefix="/api")
 
@@ -122,6 +131,7 @@ def _hex(value) -> str | None:
 
 
 @router.get("/overview")
+@cache_endpoint(_AGGREGATE_TTL)
 def overview():
     # All headline counts come from block_coverage's per-bucket totals.
     # The producer's classifier is the single source of truth for which
@@ -155,6 +165,7 @@ def overview():
 
 
 @router.get("/funnel")
+@cache_endpoint(_AGGREGATE_TTL)
 def funnel():
     """Bucket every divergent tx by observable impact.
 
@@ -183,6 +194,7 @@ def funnel():
 
 
 @router.get("/opcode-impact")
+@cache_endpoint(_AGGREGATE_TTL)
 def opcode_impact():
     rows = query("""
         SELECT divergence_opcode AS opcode_num, count(*) AS cnt
@@ -204,6 +216,7 @@ def opcode_impact():
 
 
 @router.get("/gas-overhead")
+@cache_endpoint(_AGGREGATE_TTL)
 def gas_overhead():
     """CDF + stats over the non-broken cohort (gas_only, trace_only,
     event_logs_changed) reconstructed from `block_summaries`'s pre-binned
@@ -312,6 +325,7 @@ def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
 
 
 @router.get("/concentration")
+@cache_endpoint(_AGGREGATE_TTL)
 def concentration():
     df = query_df("""
         SELECT recipient, count(*) AS broken_txs
@@ -335,6 +349,7 @@ def concentration():
 
 
 @router.get("/top-contracts")
+@cache_endpoint(_AGGREGATE_TTL)
 def top_contracts(limit: int = Query(default=10, le=500)):
     rows = query(f"""
         SELECT recipient, count(*) AS broken_txs,
@@ -359,6 +374,7 @@ def top_contracts(limit: int = Query(default=10, le=500)):
 
 
 @router.get("/forensics/time-series")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_time_series():
     return query("""
         WITH bounds AS (
@@ -397,6 +413,7 @@ def forensics_time_series():
 
 
 @router.get("/forensics/gas-delta")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_gas_delta():
     """Gas-delta stats + histogram for the contract-broken cohort.
 
@@ -443,6 +460,7 @@ def forensics_gas_delta():
 
 
 @router.get("/forensics/call-depth")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_call_depth():
     return query("""
         SELECT
@@ -455,6 +473,7 @@ def forensics_call_depth():
 
 
 @router.get("/forensics/bottleneck-kinds")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_bottleneck_kinds():
     """How many contract-broken txs hit each kind of gas-forwarding bottleneck.
 
@@ -511,6 +530,7 @@ WITH failing_leaves AS (
 
 
 @router.get("/forensics/failure-motifs")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_failure_motifs():
     """Top caller→callee pairs at the failing leaf frame.
 
@@ -553,6 +573,7 @@ def forensics_failure_motifs():
 
 
 @router.get("/forensics/failure-flow")
+@cache_endpoint(_AGGREGATE_TTL)
 def forensics_failure_flow():
     """Sankey: root project → failing caller project → failing callee project.
 
@@ -633,6 +654,7 @@ def forensics_failure_flow():
 
 
 @router.get("/eip8037/overview")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_overview():
     stats = query("""
         SELECT
@@ -694,6 +716,7 @@ def eip8037_overview():
 
 
 @router.get("/eip8037/multiplier-histogram")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_multiplier_histogram():
     rows = query("""
         WITH bucketed AS (
@@ -738,6 +761,7 @@ def eip8037_multiplier_histogram():
 
 
 @router.get("/eip8037/reservoir")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_reservoir():
     """Reservoir-utilization view: how full does the per-tx state-gas
     reservoir get in practice, and what happens to the overflow tail."""
@@ -852,6 +876,7 @@ def eip8037_reservoir():
 
 
 @router.get("/eip8037/state-gas-by-category")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_state_gas_by_category():
     rows = query("""
         SELECT
@@ -883,6 +908,7 @@ def eip8037_state_gas_by_category():
 
 
 @router.get("/eip8037/top-contracts")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_top_contracts(limit: int = Query(default=20, le=500)):
     rows = query(f"""
         SELECT *
@@ -919,6 +945,7 @@ def eip8037_top_contracts(limit: int = Query(default=20, le=500)):
 
 
 @router.get("/eip8037/examples")
+@cache_endpoint(_AGGREGATE_TTL)
 def eip8037_examples(limit: int = Query(default=50, le=500)):
     rows = query(f"""
         SELECT
@@ -1023,6 +1050,7 @@ _AFFECTED_BASE_CTE = f"""
 
 
 @router.get("/affected")
+@cache_endpoint(_AGGREGATE_TTL)
 def affected(
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=100, ge=1, le=500),
@@ -1076,6 +1104,7 @@ def _with_shares(rows: list[dict], count_key: str = "count") -> list[dict]:
 
 
 @router.get("/affected/{address}")
+@cache_endpoint(_AGGREGATE_TTL)
 def affected_detail(address: str):
     """Single contract detail with EIP-7904 and EIP-8037 diagnostics."""
     addr = address.lower()
@@ -1682,6 +1711,7 @@ def debug_divergence_sample():
 
 
 @router.get("/metadata")
+@cache_endpoint(_AGGREGATE_TTL)
 def metadata():
     block_range = query("SELECT min(block_number) as mn, max(block_number) as mx FROM block_coverage")
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}

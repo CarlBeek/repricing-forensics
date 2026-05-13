@@ -6,9 +6,11 @@ of truth; the consumer never materializes anything.
 """
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import duckdb
 import pandas as pd
@@ -18,6 +20,7 @@ from repricing_forensics.labels import ADDRESS_PROJECT_LABELS
 from repricing_forensics.source_db import open_session, resolve_producer_db_path
 
 SCHEDULE_NAME = default_schedule_name()
+_log = logging.getLogger(__name__)
 
 _paths = default_paths()
 _conn: duckdb.DuckDBPyConnection | None = None
@@ -25,25 +28,93 @@ _conn_producer_mtime: float | None = None
 _labels: dict[str, str] = {}
 _db_lock = threading.Lock()
 
+T = TypeVar("T")
+
+# Per-key TTL cache. When reth is mid-replay, reads through DuckDB's
+# sqlite_scanner can fight the writer for SQLite shared locks; even a
+# `SELECT count(*) FROM block_coverage` ends up tens-of-seconds slow.
+# We cache aggregate results with a short TTL so the dashboard stays
+# responsive even when the underlying query is slow.
+_cache_lock = threading.Lock()
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+def cached(key: str, ttl_seconds: float, fn: Callable[[], T]) -> T:
+    """Return a cached value for `key` if it's fresh; otherwise run
+    `fn()` and cache the result.
+
+    On `fn()` failure, return the stale value if we have one, else
+    re-raise — this keeps the dashboard rendering during a transient
+    producer outage without hiding a persistent fault."""
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+    if hit is not None:
+        expiry, value = hit
+        if expiry > now:
+            return value
+    # Cache miss or stale.
+    try:
+        value = fn()
+    except Exception as exc:
+        if hit is not None:
+            _log.warning(
+                "cached(%s) refresh failed, serving stale value: %s",
+                key, exc,
+            )
+            return hit[1]
+        raise
+    with _cache_lock:
+        _cache[key] = (now + ttl_seconds, value)
+    return value
+
+
+def cache_invalidate_all() -> None:
+    """Drop every cached entry. Called on connection reset / shutdown."""
+    with _cache_lock:
+        _cache.clear()
+
+
+def cache_endpoint(ttl_seconds: float):
+    """Decorator: cache the wrapped endpoint's return value by
+    (function name, sorted kwargs) tuple for `ttl_seconds`.
+
+    Use on /api/* handlers whose underlying SQL is slow under heavy
+    producer write load — the dashboard reads through DuckDB
+    sqlite_scanner, which races SQLite's writer lock and ends up
+    tens-of-seconds slow during reth replay.
+
+    Returns serialized-result-shaped objects (list/dict/etc.); the
+    cache stores them as-is and FastAPI re-encodes per request.
+    """
+    def decorator(fn):
+        import functools
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            # Args are typically empty (FastAPI passes via kwargs); join
+            # both for safety. Path-param values stringify cleanly.
+            arg_key = ",".join(repr(a) for a in args)
+            kw_key = ",".join(f"{k}={v!r}" for k, v in sorted(kwargs.items()))
+            key = f"{fn.__module__}.{fn.__qualname__}({arg_key};{kw_key})"
+            return cached(key, ttl_seconds, lambda: fn(*args, **kwargs))
+        return wrapper
+    return decorator
+
 
 def get_conn() -> duckdb.DuckDBPyConnection:
-    """Return a shared read-only consumer session, reopening if the
-    producer file has been replaced since last access."""
-    global _conn, _conn_producer_mtime
-    producer_path = resolve_producer_db_path()
-    try:
-        mtime = producer_path.stat().st_mtime
-    except FileNotFoundError:
-        mtime = None
-    if _conn is not None and mtime != _conn_producer_mtime:
-        try:
-            _conn.close()
-        except Exception:
-            pass
-        _conn = None
+    """Return a shared read-only consumer session.
+
+    The producer file's mtime changes constantly while reth is replaying
+    — every block commit bumps it — so we *don't* tear down the
+    connection on mtime drift. DuckDB's sqlite_scanner sees fresh data
+    on every query through SQLite WAL anyway. The connection only gets
+    reopened on explicit `close_conn()`."""
+    global _conn
     if _conn is None:
+        producer_path = resolve_producer_db_path()
         _conn = open_session(producer_path, SCHEDULE_NAME)
-        _conn_producer_mtime = mtime
+        cache_invalidate_all()
     return _conn
 
 
@@ -53,6 +124,7 @@ def close_conn() -> None:
         _conn.close()
         _conn = None
         _conn_producer_mtime = None
+    cache_invalidate_all()
 
 
 def query(sql: str) -> list[dict[str, Any]]:
