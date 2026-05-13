@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from .db import close_conn, get_conn, load_labels
 from .routes_api import router as api_router
 from .routes_pages import router as pages_router
+from .warmup import start_warmer, stop_warmer
 
 _WEB_DIR = Path(__file__).resolve().parent
 _CACHE_BUST = str(int(time.time()))
@@ -35,8 +37,24 @@ async def lifespan(app: FastAPI):
         load_labels()
     except Exception as e:
         _log.warning("Label load failed at startup: %s", e)
-    yield
-    close_conn()
+
+    # Background cache warmer — re-runs the cached endpoint set on a
+    # cadence shorter than the cache TTL, so dashboards never wait on
+    # a cold query. Disable with WARM_CACHE=0 (e.g. for tests / local
+    # debugging where you want to observe raw query latency).
+    warmer_active = os.environ.get("WARM_CACHE", "1").lower() not in ("0", "false", "no")
+    if warmer_active:
+        start_warmer()
+
+    try:
+        yield
+    finally:
+        # Stop the warmer before close_conn() — its threads may still
+        # hold DuckDB cursors, and closing the parent conn out from
+        # under them triggers an internal DuckDB error.
+        if warmer_active:
+            stop_warmer()
+        close_conn()
 
 
 app = FastAPI(title="Gas Repricing Impact Analysis", lifespan=lifespan)
@@ -158,7 +176,7 @@ def perf():
     # 2. DuckDB through the cached sqlite_scanner attach (what /api/* uses).
     t0 = time.monotonic()
     try:
-        conn = get_conn()
+        conn = get_conn().cursor()
         n = conn.execute(
             "SELECT COUNT(*) FROM block_coverage"
         ).fetchone()[0]
@@ -173,7 +191,7 @@ def perf():
 
     t0 = time.monotonic()
     try:
-        conn = get_conn()
+        conn = get_conn().cursor()
         n = conn.execute(
             "SELECT SUM(tx_count) FROM block_coverage"
         ).fetchone()[0]
