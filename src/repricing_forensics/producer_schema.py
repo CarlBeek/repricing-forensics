@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 5  # v5: split status_changed into break/rescue directions; added schedule_rescued bucket
+SCHEMA_VERSION = 6  # v6: added inconclusive_needs_higher_sweep bucket
 
 
 class Bucket(str, Enum):
@@ -41,20 +41,25 @@ class Bucket(str, Enum):
     TRACE_ONLY = "trace_only"
     GAS_ONLY = "gas_only"
     EVENT_LOGS_CHANGED = "event_logs_changed"
-    SCHEMA_RESCUED = "schedule_rescued"  # baseline failed, schedule succeeded
+    SCHEDULE_RESCUED = "schedule_rescued"  # baseline failed, schedule succeeded
     WALLET_FIXABLE_SHALLOW = "wallet_fixable_shallow"
     WALLET_FIXABLE_DEEP_CHAIN = "wallet_fixable_deep_chain"
+    # status flipped to failure, highest tier-sweep multiplier still halted
+    # OOG, no fixed/fractional/stipend bottleneck proven — needs rerunning
+    # with a higher --research.gas-limit-multipliers ceiling before deciding.
+    INCONCLUSIVE_NEEDS_HIGHER_SWEEP = "inconclusive_needs_higher_sweep"
     CONTRACT_BROKEN = "contract_broken"
 
 
 DRILL_IN_BUCKETS: tuple[str, ...] = (
     Bucket.EVENT_LOGS_CHANGED.value,
+    Bucket.INCONCLUSIVE_NEEDS_HIGHER_SWEEP.value,
     Bucket.CONTRACT_BROKEN.value,
 )
 AGGREGATE_ONLY_BUCKETS: tuple[str, ...] = (
     Bucket.TRACE_ONLY.value,
     Bucket.GAS_ONLY.value,
-    Bucket.SCHEMA_RESCUED.value,
+    Bucket.SCHEDULE_RESCUED.value,
     Bucket.WALLET_FIXABLE_SHALLOW.value,
     Bucket.WALLET_FIXABLE_DEEP_CHAIN.value,
 )
@@ -96,6 +101,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
             tx_count_schedule_rescued          INTEGER NOT NULL,
             tx_count_wallet_fixable_shallow    INTEGER NOT NULL,
             tx_count_wallet_fixable_deep_chain INTEGER NOT NULL,
+            tx_count_inconclusive_needs_higher_sweep INTEGER NOT NULL,
             tx_count_contract_broken           INTEGER NOT NULL,
             PRIMARY KEY (schedule_name, block_number, block_hash)
         )
