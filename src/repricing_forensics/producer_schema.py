@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 3  # v3: collapsed opcode-totals JSON columns into one
+SCHEMA_VERSION = 5  # v5: split status_changed into break/rescue directions; added schedule_rescued bucket
 
 
 class Bucket(str, Enum):
@@ -41,6 +41,7 @@ class Bucket(str, Enum):
     TRACE_ONLY = "trace_only"
     GAS_ONLY = "gas_only"
     EVENT_LOGS_CHANGED = "event_logs_changed"
+    SCHEMA_RESCUED = "schedule_rescued"  # baseline failed, schedule succeeded
     WALLET_FIXABLE_SHALLOW = "wallet_fixable_shallow"
     WALLET_FIXABLE_DEEP_CHAIN = "wallet_fixable_deep_chain"
     CONTRACT_BROKEN = "contract_broken"
@@ -53,6 +54,7 @@ DRILL_IN_BUCKETS: tuple[str, ...] = (
 AGGREGATE_ONLY_BUCKETS: tuple[str, ...] = (
     Bucket.TRACE_ONLY.value,
     Bucket.GAS_ONLY.value,
+    Bucket.SCHEMA_RESCUED.value,
     Bucket.WALLET_FIXABLE_SHALLOW.value,
     Bucket.WALLET_FIXABLE_DEEP_CHAIN.value,
 )
@@ -91,6 +93,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
             tx_count_trace_only                INTEGER NOT NULL,
             tx_count_gas_only                  INTEGER NOT NULL,
             tx_count_event_logs_changed        INTEGER NOT NULL,
+            tx_count_schedule_rescued          INTEGER NOT NULL,
             tx_count_wallet_fixable_shallow    INTEGER NOT NULL,
             tx_count_wallet_fixable_deep_chain INTEGER NOT NULL,
             tx_count_contract_broken           INTEGER NOT NULL,

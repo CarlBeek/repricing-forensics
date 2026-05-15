@@ -153,11 +153,18 @@ def overview(schedule: str = Query(default=None)):
     # All headline counts come from block_coverage's per-bucket totals.
     # The producer's classifier is the single source of truth for which
     # bucket a tx belongs to; the consumer doesn't second-guess it.
+    #
+    # `schedule_rescued` counts the *beneficial* outcome flip (baseline
+    # failed, schedule succeeded). It's deliberately excluded from the
+    # `broken_txs` and `breakage_rate` totals — the schedule made these
+    # txs work, they're not a failure mode of the EIP. The dashboard can
+    # surface it as a separate "rescued by schedule" metric.
     row = query(f"""
         SELECT
             sum(tx_count) AS total_analyzed,
             sum(tx_count - tx_count_unchanged) AS divergent_txs,
             sum(tx_count_contract_broken) AS contract_broken,
+            sum(tx_count_schedule_rescued) AS schedule_rescued,
             sum(tx_count_wallet_fixable_shallow) AS wallet_fixable_shallow,
             sum(tx_count_wallet_fixable_deep_chain) AS wallet_fixable_deep_chain
         FROM block_coverage
@@ -165,6 +172,7 @@ def overview(schedule: str = Query(default=None)):
     """)[0]
     total_analyzed = _int(row["total_analyzed"])
     contract_broken = _int(row["contract_broken"])
+    schedule_rescued = _int(row["schedule_rescued"])
     wallet_fixable_shallow = _int(row["wallet_fixable_shallow"])
     wallet_fixable_deep_chain = _int(row["wallet_fixable_deep_chain"])
     wallet_fixable = wallet_fixable_shallow + wallet_fixable_deep_chain
@@ -177,8 +185,10 @@ def overview(schedule: str = Query(default=None)):
         "wallet_fixable_shallow_txs": wallet_fixable_shallow,
         "wallet_fixable_deep_chain_txs": wallet_fixable_deep_chain,
         "contract_broken_txs": contract_broken,
+        "schedule_rescued_txs": schedule_rescued,
         "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
         "contract_breakage_rate": round(contract_broken / total_analyzed * 100, 2) if total_analyzed else 0,
+        "rescue_rate": round(schedule_rescued / total_analyzed * 100, 2) if total_analyzed else 0,
     }
 
 
@@ -198,6 +208,7 @@ def funnel(schedule: str = Query(default=None)):
             sum(tx_count_contract_broken
                 + tx_count_wallet_fixable_shallow
                 + tx_count_wallet_fixable_deep_chain) AS broken,
+            sum(tx_count_schedule_rescued)   AS schedule_rescued,
             sum(tx_count_event_logs_changed) AS event_log_changed,
             sum(tx_count_gas_only)           AS gas_only_change,
             sum(tx_count_trace_only)         AS trace_divergent_only
@@ -207,6 +218,7 @@ def funnel(schedule: str = Query(default=None)):
     return {
         "divergent_txs": _int(row["total"]),
         "broken_txs": _int(row["broken"]),
+        "schedule_rescued": _int(row["schedule_rescued"]),
         "event_log_changed": _int(row["event_log_changed"]),
         "gas_only_change": _int(row["gas_only_change"]),
         "trace_divergent_only": _int(row["trace_divergent_only"]),
