@@ -20,9 +20,10 @@
 <!-- A3 — Anchor: how the population splits under 8037                  -->
 <!-- ────────────────────────────────────────────────────────────────── -->
 <h2>1. Impact at a glance</h2>
-<p>Every replayed transaction in the analyzed window classified by the
-   producer into one bucket. Five user-facing categories, in order
-   from "no user-visible impact" to "needs a code change":</p>
+<p>Every replayed transaction in the analyzed window, flowing from the
+   full population into the impact category the producer's classifier
+   assigned it — from "no user-visible impact" on the lighter links to
+   "needs a code change" on the brightest.</p>
 <div id="impactBar" style="margin-top:14px"><p class="loading">Loading...</p></div>
 <div class="poster-grid" id="impactCards" style="margin-top:8px"></div>
 <p id="rescuedNote" class="note" style="margin-top:8px"></p>
@@ -124,16 +125,6 @@ function fmtBytes(n) {
   return n.toLocaleString() + ' B';
 }
 
-// Semantic-but-monochrome palette for the impact bar — picks readable
-// amber shades that the eye reads left→right as "fine → broken".
-const IMPACT_COLORS = {
-  unaffected:          'rgba(255,184,48,0.18)',
-  paid_more_no_change: 'rgba(255,184,48,0.40)',
-  observable_change:   'rgba(255,184,48,0.60)',
-  wallet_fixable:      'rgba(255,184,48,0.78)',
-  contract_broken:     'rgba(255,184,48,1.00)',
-};
-
 (async function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
   const [
@@ -156,31 +147,59 @@ const IMPACT_COLORS = {
     + `${overview.min_block.toLocaleString()}–${overview.max_block.toLocaleString()}`
     + ` (${fmtCount(impact.total)} transactions analyzed)`;
 
-  // ── A3: Impact stacked bar ──────────────────────────────────────────
+  // ── A3: Impact Sankey ───────────────────────────────────────────────
+  // All transactions → {Unaffected, Affected}; Affected fans out into the
+  // four user-facing impact categories. Same shape as the 7904 funnel.
   const segs = impact.segments;
   const total = impact.total || 1;
-  Plotly.newPlot('impactBar',
-    segs.map(s => ({
-      x: [s.share],
-      y: ['All transactions'],
-      name: s.label,
-      type: 'bar',
-      orientation: 'h',
-      marker: { color: IMPACT_COLORS[s.key] || COLORS.changed },
-      hovertext: `${s.label}: ${fmtCount(s.count)} txs (${s.share.toFixed(2)}%)`,
-      hoverinfo: 'text',
-      text: s.share >= 4 ? `${s.label}<br>${s.share.toFixed(1)}%` : '',
-      textposition: 'inside',
-      insidetextanchor: 'middle',
-    })),
-    layout({
-      barmode: 'stack',
-      xaxis: { title: '% of analyzed transactions', range: [0, 100], ticksuffix: '%' },
-      yaxis: { showticklabels: false },
-      height: 130,
-      margin: { l: 10, r: 16, t: 18, b: 50 },
-      showlegend: false,
-    }), { responsive: true });
+  const seg = key => segs.find(s => s.key === key) || { count: 0, label: key };
+  const unaffected = seg('unaffected').count;
+  const affected = total - unaffected;
+  const fanout = ['paid_more_no_change', 'observable_change', 'wallet_fixable', 'contract_broken'];
+  const fanColors = {
+    paid_more_no_change: COLORS.saved,
+    observable_change:   COLORS.event_logs,
+    wallet_fixable:      COLORS.call_tree,
+    contract_broken:     COLORS.broken,
+  };
+  const fanLink = {
+    paid_more_no_change: 'rgba(255,208,112,0.12)',
+    observable_change:   'rgba(138,112,48,0.14)',
+    wallet_fixable:      'rgba(204,144,32,0.16)',
+    contract_broken:     'rgba(255,184,48,0.28)',
+  };
+
+  // Node 0 = All, 1 = Unaffected, 2 = Affected, then one node per fanout cat.
+  const sankeyLabels = [
+    `All transactions\n${fmtCount(total)}`,
+    `Unaffected\n${fmtCount(unaffected)}`,
+    `Affected by 8037\n${fmtCount(affected)}`,
+  ];
+  const sankeyNodeColors = ['#3f3f46', '#3f3f46', COLORS.changed];
+  const sankeySources = [0, 0];
+  const sankeyTargets = [1, 2];
+  const sankeyValues = [unaffected, affected];
+  const sankeyLinkColors = ['rgba(90,74,32,0.18)', 'rgba(255,184,48,0.16)'];
+
+  fanout.forEach(key => {
+    const s = seg(key);
+    const idx = sankeyLabels.length;
+    sankeyLabels.push(`${s.label}\n${fmtCount(s.count)}`);
+    sankeyNodeColors.push(fanColors[key] || COLORS.changed);
+    sankeySources.push(2);
+    sankeyTargets.push(idx);
+    sankeyValues.push(s.count);
+    sankeyLinkColors.push(fanLink[key] || 'rgba(255,184,48,0.18)');
+  });
+
+  renderSankey('impactBar', {
+    labels: sankeyLabels,
+    node_colors: sankeyNodeColors,
+    sources: sankeySources,
+    targets: sankeyTargets,
+    values: sankeyValues,
+    link_colors: sankeyLinkColors,
+  }, { height: 420 });
 
   // KPI strip
   renderPosterCards('impactCards', segs.map(s => ({
