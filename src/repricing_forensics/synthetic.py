@@ -273,8 +273,8 @@ def _scenario_contract_broken_fractional() -> _Tx:
 
 
 def _scenario_8037_reservoir_exhausted() -> _Tx:
-    return _Tx(
-        bucket=Bucket.GAS_ONLY.value, recipient=FRESH_CONTRACT,
+    tx = _Tx(
+        bucket=Bucket.CONTRACT_BROKEN.value, recipient=FRESH_CONTRACT,
         gas_delta=8_500,
         baseline_gas_used=210_000, schedule_gas_used=218_500,
         tx_gas_limit=300_000, is_create=True,
@@ -285,6 +285,14 @@ def _scenario_8037_reservoir_exhausted() -> _Tx:
         reservoir_exhausted=True,
         min_multiplier_to_succeed=1.05,
     )
+    # Top-level CREATE frame at depth 0 — exercises the A4 deployment
+    # ceiling chart: a 4_000-byte deployed contract that succeeded.
+    tx.frames = [
+        _frame(0, None, 0, EOA_SENDER, FRESH_CONTRACT, "CREATE", "",
+               gas_provided=218_500, gas_used=218_500, success=True,
+               deployed_bytecode_len=4_000),
+    ]
+    return tx
 
 
 def _scenario_8037_needs_higher_multiplier() -> _Tx:
@@ -352,6 +360,7 @@ def _frame(
     gas_requested_on_stack: int | None = None,
     eip150_cap_binding: bool | None = None,
     state_gas_running: int | None = None,
+    deployed_bytecode_len: int | None = None,
 ) -> dict:
     sel = bytes.fromhex(selector_hex.removeprefix("0x")) if selector_hex else None
     return dict(
@@ -368,6 +377,7 @@ def _frame(
         gas_requested_on_stack=gas_requested_on_stack,
         eip150_cap_binding=eip150_cap_binding,
         state_gas_running=state_gas_running,
+        deployed_bytecode_len=deployed_bytecode_len,
     )
 
 
@@ -612,7 +622,7 @@ def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
     for f in tx.frames:
         conn.execute(
             "INSERT INTO divergence_call_frames VALUES ("
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 div_id, f["call_index"], f["parent_call_index"], f["depth"],
                 f["from_address"], f["to_address"], f["code_address"],
@@ -622,6 +632,7 @@ def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
                 f["parent_gas_at_call"], f["gas_requested_on_stack"],
                 None if f["eip150_cap_binding"] is None else int(f["eip150_cap_binding"]),
                 f["state_gas_running"],
+                f.get("deployed_bytecode_len"),
             ),
         )
 

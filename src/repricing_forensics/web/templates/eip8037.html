@@ -2,249 +2,395 @@
 {% block title %}EIP-8037 State Gas Analysis{% endblock %}
 
 {% block content %}
-<h1>EIP-8037 State Gas Analysis</h1>
+<h1>EIP-8037: State Creation Repricing</h1>
 <p class="subtitle" id="subtitle">Loading...</p>
 
-<h2>1. Original Limit Fit</h2>
-<p>Transactions here were replayed with the native EIP-8037 state-gas schedule. The fit metrics answer whether the original transaction gas limit still works, and how much more outer gas would be needed when it does not.</p>
-<div class="poster-grid" id="fitCards"><p class="loading">Loading...</p></div>
-
-<h2>2. State Gas and Reservoir</h2>
-<p>Runtime state gas is the state-gas component after subtracting state gas charged at transaction start. Spillover means runtime state gas exceeded the initial reservoir and had to be paid from regular gas.</p>
-<div class="poster-grid" id="stateCards"><p class="loading">Loading...</p></div>
-
-<h2>3. Reservoir Mechanics</h2>
-<div class="note" style="border-left: 3px solid var(--orange); padding: 12px 16px; margin: 16px 0; background: var(--bg-card)">
-  <strong>By spec, the reservoir is currently dormant on mainnet.</strong> EIP-8037 sizes the reservoir as
-  <code>max(0, tx.gas − intrinsic_state_gas − TX_MAX_GAS_LIMIT)</code>; EIP-7825 caps <code>tx.gas</code> at 16.7M so
-  <code>schedule_initial_reservoir = 0</code> for every historical tx. State-gas charges currently come from
-  <code>gas_left</code> at the new <code>CPSB = 1530</code> rate. The reservoir mechanism activates once consensus relaxes
-  the cap to let txs declare <code>tx.gas &gt; TX_MAX_GAS_LIMIT</code> for state-only spend.
+<div class="note" style="border-left: 3px solid var(--accent); padding: 12px 16px; margin: 16px 0; background: var(--bg-card)">
+  <strong>What EIP-8037 does.</strong> It charges state creation by the byte
+  (CPSB = 1530 gas/byte) and segregates that charge into a second gas
+  dimension so blocks are capped by <code>max(regular_gas, state_gas)</code>.
+  New accounts, new storage slots, EIP-7702 authorizations, and contract
+  deployments all get materially more expensive. The reservoir mechanism
+  that lets txs declare <em>extra</em> gas for state-only work is
+  spec'd but currently dormant — EIP-7825's per-tx cap forces the
+  reservoir to zero on every historical tx in this window.
 </div>
 
-<h3 style="margin-top:24px">3a. Why these txs diverged</h3>
-<p>Divergent txs under EIP-8037 split into five mutually-exclusive buckets, prioritized in order so each tx lands in exactly one. <code>runtime_state_gas</code> and <code>intrinsic_state_gas_only</code> are the cohort actually exercising EIP-8037's headline mechanic; <code>event_log_only</code> + <code>other_gas_accounting</code> are tracking ancillary divergences the schedule induces (different refund timing, OOG cascades) without charging state gas; <code>pre_execution_rejection</code> is the EVM refusing the tx outright (e.g. adjusted <code>gas_limit</code> &lt; baseline intrinsic).</p>
-<div id="divergenceReasonChart"><p class="loading">Loading chart...</p></div>
-<table id="reasonTable" style="margin-top:12px">
-  <thead><tr>
-    <th>Category</th>
-    <th style="text-align:right">Txs</th>
-    <th style="text-align:right">Status flipped</th>
-    <th style="text-align:right">Newly broken</th>
-    <th style="text-align:right">Total state gas</th>
-  </tr></thead>
-  <tbody id="reasonBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
-</table>
+<!-- ────────────────────────────────────────────────────────────────── -->
+<!-- A3 — Anchor: how the population splits under 8037                  -->
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>1. Impact at a glance</h2>
+<p>Every replayed transaction in the analyzed window classified by the
+   producer into one bucket. Five user-facing categories, in order
+   from "no user-visible impact" to "needs a code change":</p>
+<div id="impactBar" style="margin-top:14px"><p class="loading">Loading...</p></div>
+<div class="poster-grid" id="impactCards" style="margin-top:8px"></div>
+<p id="rescuedNote" class="note" style="margin-top:8px"></p>
 
-<h3 style="margin-top:24px">3b. Spillover severity (overflow cohort only)</h3>
-<p>For transactions whose state operations exceeded the reservoir, this CDF shows how much excess was charged against regular gas. Since the reservoir is <code>0</code> for every historical tx, <strong>overflow</strong> here is equivalent to "the tx incurred any runtime state gas at all" — so this is effectively a CDF of runtime state-gas magnitude.</p>
-<div id="spilloverChart"><p class="loading">Loading chart...</p></div>
+<!-- ────────────────────────────────────────────────────────────────── -->
+<!-- A2 — Cost per operation                                            -->
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2 style="margin-top:36px">2. Cost per operation, today vs. 8037</h2>
+<p>State-touching operations get materially more expensive. Each bar shows
+   the operation's total gas cost: the un-shaded portion is the regular
+   gas (unchanged), the shaded portion is the new state-gas charge.</p>
+<div id="costComparisonChart"><p class="loading">Loading...</p></div>
+<div id="costComparisonTable" style="margin-top:8px"></div>
 
-<h3 style="margin-top:24px">3c. By state-gas category</h3>
-<p>Which kinds of state-touching transactions dominate the state-gas surface, and which fit vs overflow. With the reservoir dormant, every state-touching tx falls into "overflow" — fits-vs-overflow becomes "did this tx exercise state-gas at all" until the cap lifts.</p>
-<div id="categoryReservoirChart"><p class="loading">Loading chart...</p></div>
+<!-- ────────────────────────────────────────────────────────────────── -->
+<!-- A1 — State growth                                                  -->
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2 style="margin-top:36px">3. State growth in the analyzed window</h2>
+<p>Per day, new state bytes that EIP-8037 would charge for under its
+   <code>1 byte = 1530 gas</code> rule. This is the EIP's primary
+   accounting unit and the quantity it aims to bound. Reference line:
+   the EIP's target growth rate of 120 GiB/year (≈ 329 MiB/day).</p>
+<div id="stateGrowthChart"><p class="loading">Loading...</p></div>
+<p id="stateGrowthSummary" class="note" style="margin-top:8px"></p>
 
-<h2>4. Minimum Gas-Limit Multiplier</h2>
-<p>For transactions that need more outer gas, this buckets the minimum multiplier observed in replay. "Unresolved" means the replay still failed or halted for a non-gas reason at the configured inflated limit.</p>
+<!-- ────────────────────────────────────────────────────────────────── -->
+<!-- A4 — Deployment ceiling                                            -->
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2 style="margin-top:36px">4. Contract deployment under the EIP-7825 cap</h2>
+<p>Every successful CREATE/CREATE2 frame in the cohort (top-level
+   deployments and sub-call deployments alike), plotted by exact
+   deployed-bytecode size against the 8037 gas the frame consumed. The
+   dashed line is EIP-7825's per-tx limit (<code>16.7M</code>);
+   anything that crosses it is impossible without the reservoir
+   activating.</p>
+<div id="deploymentChart"><p class="loading">Loading...</p></div>
+<p id="deploymentSummary" class="note" style="margin-top:8px"></p>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<!-- Mechanics — moved below the fold                                   -->
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2 style="margin-top:48px">Mechanics</h2>
+<p>Below the anchors, the producer-side classifier details. These charts
+   answer "<em>how</em> does 8037 bite" once you've already decided
+   <em>that</em> it bites.</p>
+
+<h3 style="margin-top:18px">Gas-limit multiplier needed to make a tx fit</h3>
+<p>For transactions that don't fit under their original gas limit, the
+   bucket distribution of the multiplier required.</p>
 <div id="multiplierChart"><p class="loading">Loading chart...</p></div>
 
-<h2>5. State Gas Categories</h2>
+<h3 style="margin-top:18px">State-gas spent by category</h3>
+<p>Which kinds of state-touching transactions dominate the new gas surface.</p>
 <div id="categoryChart"><p class="loading">Loading chart...</p></div>
 <table>
-  <thead><tr><th>Category</th><th>Txs</th><th>Total State Gas</th><th>Runtime State Gas</th><th>Spillover</th><th>Reservoir Exhausted</th></tr></thead>
-  <tbody id="categoryBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+  <thead><tr><th>Category</th><th>Txs</th><th>Total State Gas</th><th>Runtime State Gas</th><th>Spillover</th></tr></thead>
+  <tbody id="categoryBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<h2>6. Top Contracts by Original-Limit Risk</h2>
+<h3 style="margin-top:18px">Reservoir activation (dormant today)</h3>
+<div class="note" style="border-left: 3px solid var(--text-muted); padding: 10px 14px; margin: 12px 0; background: var(--bg-card)">
+  By spec, the reservoir is sized as
+  <code>max(0, tx.gas − intrinsic_state_gas − TX_MAX_GAS_LIMIT)</code>;
+  EIP-7825 caps <code>tx.gas</code> at 16.7M so
+  <code>schedule_initial_reservoir = 0</code> for every historical tx.
+  State-gas charges currently come from <code>gas_left</code> at the new
+  <code>CPSB = 1530</code> rate. The reservoir mechanism activates once
+  consensus relaxes the cap.
+</div>
+
+<h3 style="margin-top:18px">Highest-impact contracts</h3>
+<p class="note">Per the
+  <a href="/about">audit doc</a>, this surface still contains classifier
+  false-positives until the producer-side fixes land. Read it as
+  "contracts to investigate," not "contracts confirmed broken."</p>
 <table>
-  <thead><tr><th>Contract</th><th>Original-Limit Failures</th><th>Status Changes</th><th>State Gas</th><th>p95 Multiplier</th><th>Max Extra Gas</th></tr></thead>
-  <tbody id="contractBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+  <thead><tr><th>Contract</th><th>Limit failures</th><th>Status flips</th><th>State gas</th><th>p95 multiplier</th></tr></thead>
+  <tbody id="contractBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
 </table>
 
-<h2>7. Highest-Risk Transactions</h2>
+<h3 style="margin-top:18px">Highest-risk individual transactions</h3>
 <table>
-  <thead><tr><th>Tx</th><th>Target</th><th>Gas Limit</th><th>Schedule Used</th><th>Multiplier</th><th>State Gas</th><th>Spillover</th></tr></thead>
-  <tbody id="exampleBody"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+  <thead><tr><th>Tx</th><th>Target</th><th>Gas limit</th><th>Gas used (8037)</th><th>Multiplier</th><th>State gas</th></tr></thead>
+  <tbody id="exampleBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 {% endblock %}
 
 {% block scripts %}
 <script>
 function fmtMultiplier(n) {
-  return n == null ? 'n/a' : `${Number(n).toFixed(3)}x`;
+  return n == null ? 'n/a' : `${Number(n).toFixed(2)}×`;
 }
+
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= (1024**3)) return (n / (1024**3)).toFixed(2) + ' GiB';
+  if (n >= (1024**2)) return (n / (1024**2)).toFixed(2) + ' MiB';
+  if (n >= 1024)      return (n / 1024).toFixed(2) + ' KiB';
+  return n.toLocaleString() + ' B';
+}
+
+// Semantic-but-monochrome palette for the impact bar — picks readable
+// amber shades that the eye reads left→right as "fine → broken".
+const IMPACT_COLORS = {
+  unaffected:          'rgba(255,184,48,0.18)',
+  paid_more_no_change: 'rgba(255,184,48,0.40)',
+  observable_change:   'rgba(255,184,48,0.60)',
+  wallet_fixable:      'rgba(255,184,48,0.78)',
+  contract_broken:     'rgba(255,184,48,1.00)',
+};
 
 (async function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
-  const [overview, buckets, categories, contracts, examples, reservoir, reasons] = await Promise.all([
+  const [
+    overview, impact, cost, growth, deploy,
+    buckets, categories, contracts, examples,
+  ] = await Promise.all([
     fetchJSON(`/api/eip8037/overview?${qs}`),
+    fetchJSON(`/api/eip8037/impact-breakdown?${qs}`),
+    fetchJSON(`/api/eip8037/cost-comparison`),
+    fetchJSON(`/api/eip8037/state-growth?${qs}`),
+    fetchJSON(`/api/eip8037/deployment-ceiling?${qs}`),
     fetchJSON(`/api/eip8037/multiplier-histogram?${qs}`),
     fetchJSON(`/api/eip8037/state-gas-by-category?${qs}`),
     fetchJSON(`/api/eip8037/top-contracts?limit=20&${qs}`),
     fetchJSON(`/api/eip8037/examples?limit=50&${qs}`),
-    fetchJSON(`/api/eip8037/reservoir?${qs}`),
-    fetchJSON(`/api/eip8037/divergence-reasons?${qs}`),
   ]);
 
   document.getElementById('subtitle').textContent =
-    `${overview.schedule_name} across blocks ${overview.min_block.toLocaleString()}-${overview.max_block.toLocaleString()}`;
+    `${overview.schedule_name} across blocks `
+    + `${overview.min_block.toLocaleString()}–${overview.max_block.toLocaleString()}`
+    + ` (${fmtCount(impact.total)} transactions analyzed)`;
 
-  renderPosterCards('fitCards', [
-    { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
-    { value: fmtCount(overview.original_limit_failures), label: 'Need More Outer Gas', color: COLORS.changed },
-    { value: fmtMultiplier(overview.p95_min_multiplier_to_succeed), label: 'p95 Minimum Multiplier', color: COLORS.changed },
-    { value: fmtCount(overview.unresolved_replay_failures), label: 'Unresolved Replay Failures', color: COLORS.broken },
-  ]);
-
-  renderPosterCards('stateCards', [
-    { value: fmtGas(overview.total_state_gas_spent), label: 'Total State Gas' },
-    { value: fmtGas(overview.total_runtime_state_gas), label: 'Runtime State Gas' },
-    { value: fmtGas(overview.total_runtime_state_gas_spillover), label: 'Runtime Spillover', color: COLORS.broken },
-    { value: fmtCount(overview.reservoir_exhausted_txs), label: 'Reservoir Exhausted Txs', color: COLORS.broken },
-  ]);
-
-  // ── 3a. Divergence-reason split ──────────────────────────────────────
-  // Five mutually-exclusive priority buckets, ordered to keep the
-  // state-gas activations leftmost on the chart so the EIP-8037
-  // headline mechanic gets visual primacy.
-  const REASON_ORDER = [
-    'runtime_state_gas',
-    'intrinsic_state_gas_only',
-    'event_log_only',
-    'other_gas_accounting',
-    'pre_execution_rejection',
-  ];
-  const REASON_LABELS = {
-    runtime_state_gas:        'Runtime state-gas',
-    intrinsic_state_gas_only: 'Intrinsic state-gas only',
-    event_log_only:           'Event-log only',
-    other_gas_accounting:     'Other gas accounting',
-    pre_execution_rejection:  'Pre-execution rejection',
-  };
-  const REASON_COLORS = {
-    runtime_state_gas:        COLORS.changed,
-    intrinsic_state_gas_only: COLORS.changed,
-    event_log_only:           COLORS.neutral,
-    other_gas_accounting:     COLORS.neutral,
-    pre_execution_rejection:  COLORS.broken,
-  };
-  const byCategory = Object.fromEntries(reasons.map(r => [r.category, r]));
-  const reasonRows = REASON_ORDER
-    .map(cat => byCategory[cat])
-    .filter(Boolean);
-
-  Plotly.newPlot('divergenceReasonChart', [{
-    x: reasonRows.map(r => REASON_LABELS[r.category] || r.category),
-    y: reasonRows.map(r => r.txs),
-    type: 'bar',
-    marker: { color: reasonRows.map(r => REASON_COLORS[r.category]) },
-    hovertext: reasonRows.map(r =>
-      `${REASON_LABELS[r.category] || r.category}<br>`
-      + `${fmtCount(r.txs)} txs<br>`
-      + `${fmtCount(r.newly_broken_txs)} newly broken<br>`
-      + `${fmtCount(r.status_changed_txs)} status flips<br>`
-      + `${fmtGas(r.total_state_gas_spent)} total state gas`),
-    hoverinfo: 'text',
-  }], layout({
-    title: { text: 'Divergent txs by reason (mutually exclusive)' },
-    xaxis: { title: '' },
-    yaxis: { title: 'Transactions (log)', type: 'log', tickformat: ',' },
-    height: 380,
-  }), { responsive: true });
-
-  const totalDivergent = reasonRows.reduce((a, r) => a + r.txs, 0) || 1;
-  document.getElementById('reasonBody').innerHTML = reasonRows.map(r => `
-    <tr>
-      <td><strong>${escHtml(REASON_LABELS[r.category] || r.category)}</strong><br>
-        <span class="note">${(r.txs / totalDivergent * 100).toFixed(1)}% of divergent</span></td>
-      <td style="text-align:right">${fmtCount(r.txs)}</td>
-      <td style="text-align:right">${fmtCount(r.status_changed_txs)}</td>
-      <td style="text-align:right; color:${r.newly_broken_txs > 0 ? 'var(--red)' : 'var(--text-dim)'}">${fmtCount(r.newly_broken_txs)}</td>
-      <td style="text-align:right">${fmtGas(r.total_state_gas_spent)}</td>
-    </tr>
-  `).join('');
-
-  // 3b. Spillover severity CDF — log x, conditional on spillover > 0
-  const spillHist = reservoir.spillover_histogram;
-  if (spillHist.length === 0) {
-    document.getElementById('spilloverChart').innerHTML =
-      '<p class="note">No transactions overflow the reservoir in this dataset.</p>';
-  } else {
-    let spillCum = 0;
-    const spillCmf = spillHist.map(b => { spillCum += b.density; return spillCum * 100; });
-    Plotly.newPlot('spilloverChart', [{
-      x: spillHist.map(b => b.bin_start),
-      y: spillCmf,
-      mode: 'lines+markers',
-      marker: { size: 5, color: COLORS.broken },
-      line: { color: COLORS.broken, width: 2 },
-      hovertext: spillHist.map((b, i) =>
-        `spillover ${b.label} gas: ${fmtCount(b.count)} txs (${spillCmf[i].toFixed(1)}% cumulative)`),
-      hoverinfo: 'text',
-    }], layout({
-      title: { text: 'Spillover-gas CDF (overflow cohort)' },
-      xaxis: { title: 'Spillover gas (log)', type: 'log', tickformat: ',', exponentformat: 'none' },
-      yaxis: { title: 'Cumulative %', range: [0, 105], ticksuffix: '%' },
-      height: 380,
-    }), { responsive: true });
-  }
-
-  // 3c. Per-category fits-vs-overflow stacked bar
-  const cats = reservoir.category_split.filter(c => (c.fits_txs + c.overflow_txs) > 0);
-  Plotly.newPlot('categoryReservoirChart', [
-    {
-      x: cats.map(c => c.category),
-      y: cats.map(c => c.fits_txs),
-      name: 'Fits in reservoir',
+  // ── A3: Impact stacked bar ──────────────────────────────────────────
+  const segs = impact.segments;
+  const total = impact.total || 1;
+  Plotly.newPlot('impactBar',
+    segs.map(s => ({
+      x: [s.share],
+      y: ['All transactions'],
+      name: s.label,
       type: 'bar',
-      marker: { color: COLORS.saved },
-      hovertext: cats.map(c => `${c.category}: ${fmtCount(c.fits_txs)} fit`),
+      orientation: 'h',
+      marker: { color: IMPACT_COLORS[s.key] || COLORS.changed },
+      hovertext: `${s.label}: ${fmtCount(s.count)} txs (${s.share.toFixed(2)}%)`,
+      hoverinfo: 'text',
+      text: s.share >= 4 ? `${s.label}<br>${s.share.toFixed(1)}%` : '',
+      textposition: 'inside',
+      insidetextanchor: 'middle',
+    })),
+    layout({
+      barmode: 'stack',
+      xaxis: { title: '% of analyzed transactions', range: [0, 100], ticksuffix: '%' },
+      yaxis: { showticklabels: false },
+      height: 130,
+      margin: { l: 10, r: 16, t: 18, b: 50 },
+      showlegend: false,
+    }), { responsive: true });
+
+  // KPI strip
+  renderPosterCards('impactCards', segs.map(s => ({
+    value: fmtCount(s.count),
+    label: s.label,
+    color: s.key === 'contract_broken'
+              ? 'var(--accent)'
+            : s.key === 'wallet_fixable'
+              ? 'var(--text-secondary)' : undefined,
+  })));
+
+  const r = impact.schedule_rescued || 0;
+  document.getElementById('rescuedNote').innerHTML = r > 0
+    ? `Sidebar: <strong>${fmtCount(r)}</strong> transactions failed under baseline
+       but <em>succeed</em> under 8037 (beneficial flips, counted separately).`
+    : '';
+
+  // ── A2: Cost-per-operation ─────────────────────────────────────────
+  const ops = cost.operations;
+  const opLabels = ops.map(o => o.label);
+  Plotly.newPlot('costComparisonChart', [
+    {
+      x: opLabels, y: ops.map(o => o.baseline_regular),
+      name: 'Today (regular gas)',
+      type: 'bar', offsetgroup: 'today',
+      marker: { color: 'rgba(255,184,48,0.35)' },
+      hovertext: ops.map(o => `Today: ${fmtGas(o.baseline_total)} gas`),
       hoverinfo: 'text',
     },
     {
-      x: cats.map(c => c.category),
-      y: cats.map(c => c.overflow_txs),
-      name: 'Overflow',
-      type: 'bar',
-      marker: { color: COLORS.broken },
-      hovertext: cats.map(c => `${c.category}: ${fmtCount(c.overflow_txs)} overflow`),
+      x: opLabels, y: ops.map(o => o.schedule_regular),
+      name: '8037 — regular gas (unchanged)',
+      type: 'bar', offsetgroup: '8037',
+      marker: { color: 'rgba(255,184,48,0.35)' },
+      hovertext: ops.map(o => `Regular: ${fmtGas(o.schedule_regular)} gas`),
       hoverinfo: 'text',
+    },
+    {
+      x: opLabels, y: ops.map(o => o.schedule_state),
+      name: '8037 — new state-gas charge',
+      type: 'bar', offsetgroup: '8037',
+      marker: { color: COLORS.broken },
+      hovertext: ops.map(o => `State gas: ${fmtGas(o.schedule_state)}`),
+      hoverinfo: 'text',
+      text: ops.map(o => o.multiplier ? `${o.multiplier.toFixed(1)}×` : ''),
+      textposition: 'outside',
     },
   ], layout({
-    title: { text: 'State-touching txs by category: fits vs overflow' },
     barmode: 'stack',
-    xaxis: { title: 'state_gas_category' },
-    yaxis: { title: 'Transactions', tickformat: ',' },
-    height: 420,
-    showlegend: true,
+    yaxis: { title: 'Gas', type: 'log', tickformat: ',d' },
+    xaxis: { title: '' },
+    height: 460,
+    margin: { l: 80, r: 16, t: 30, b: 110 },
   }), { responsive: true });
 
+  document.getElementById('costComparisonTable').innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Operation</th>
+        <th style="text-align:right">Today</th>
+        <th style="text-align:right">Under 8037 — regular</th>
+        <th style="text-align:right">+ state gas</th>
+        <th style="text-align:right">Total under 8037</th>
+        <th style="text-align:right">×</th>
+      </tr></thead>
+      <tbody>
+        ${ops.map(o => `
+          <tr>
+            <td><strong>${escHtml(o.label)}</strong><br>
+              <span class="note">${escHtml(o.detail)}</span></td>
+            <td style="text-align:right">${fmtGas(o.baseline_total)}</td>
+            <td style="text-align:right">${fmtGas(o.schedule_regular)}</td>
+            <td style="text-align:right;color:var(--accent)">${fmtGas(o.schedule_state)}</td>
+            <td style="text-align:right"><strong>${fmtGas(o.schedule_total)}</strong></td>
+            <td style="text-align:right">${o.multiplier ? o.multiplier.toFixed(2) + '×' : 'n/a'}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+
+  // ── A1: State growth ───────────────────────────────────────────────
+  if (growth.summary && growth.daily.length > 0) {
+    const xs = growth.daily.map(d => new Date(d.day_ts * 1000));
+    const ys = growth.daily.map(d => d.state_bytes_added);
+    Plotly.newPlot('stateGrowthChart', [
+      {
+        x: xs, y: ys,
+        type: 'bar',
+        name: 'Observed (bytes added)',
+        marker: { color: COLORS.changed },
+        hovertext: growth.daily.map(d =>
+          `${new Date(d.day_ts * 1000).toISOString().slice(0,10)}<br>`
+          + `${fmtBytes(d.state_bytes_added)} added across ${d.blocks} blocks`),
+        hoverinfo: 'text',
+      },
+    ], layout({
+      yaxis: { title: 'New state bytes / day', tickformat: '.2s' },
+      xaxis: { title: '' },
+      shapes: [{
+        type: 'line', xref: 'paper', x0: 0, x1: 1,
+        y0: growth.summary.target_bytes_per_day,
+        y1: growth.summary.target_bytes_per_day,
+        line: { dash: 'dash', color: COLORS.broken, width: 1 },
+      }],
+      annotations: [{
+        xref: 'paper', x: 1, xanchor: 'right',
+        y: growth.summary.target_bytes_per_day, yanchor: 'bottom',
+        text: `target: ${fmtBytes(growth.summary.target_bytes_per_day)}/day (120 GiB/yr)`,
+        showarrow: false, font: { color: COLORS.broken, size: 11 },
+      }],
+      height: 360,
+    }), { responsive: true });
+    const s = growth.summary;
+    document.getElementById('stateGrowthSummary').innerHTML =
+      `Observed: <strong>${fmtBytes(s.mean_bytes_per_day)}/day</strong> mean over
+       ${s.days_observed} day(s), ${fmtCount(s.blocks)} blocks. Extrapolated:
+       <strong>${s.implied_annual_gib} GiB/yr</strong>
+       (target <strong>${s.target_annual_gib} GiB/yr</strong>).`;
+  } else {
+    document.getElementById('stateGrowthChart').innerHTML =
+      '<p class="note">No state-growth data in window yet — populated as the producer fills <code>block_summaries.state_gas_sum</code>.</p>';
+  }
+
+  // ── A4: Deployment ceiling ─────────────────────────────────────────
+  const dep = deploy;
+  if (dep.samples.length > 0) {
+    // Split root vs sub-call so the user can tell which dots are which
+    // entry point. Root creates use a filled marker; sub-call creates
+    // use an open marker (different opacity is enough at small sizes).
+    const root = dep.samples.filter(s => s.is_root_create);
+    const sub = dep.samples.filter(s => !s.is_root_create);
+    const mkHover = s =>
+      `${s.call_type} • ${s.is_root_create ? 'top-level tx' : 'sub-call'}<br>`
+      + `bytecode: ${s.bytes.toLocaleString()} B (${(s.bytes / 1024).toFixed(2)} KiB)<br>`
+      + `frame gas: ${fmtGas(s.schedule_gas)}<br>`
+      + `tx state-gas total: ${fmtGas(s.tx_state_gas)}<br>`
+      + (s.size_source === 'approx' ? '<em>size approximated (pre-v7 DB)</em>' : '');
+    const traces = [];
+    if (root.length) traces.push({
+      name: 'Top-level CREATE tx',
+      x: root.map(s => s.bytes), y: root.map(s => s.schedule_gas),
+      mode: 'markers', type: 'scatter',
+      marker: { size: 7, color: COLORS.broken, line: { width: 0 } },
+      hovertext: root.map(mkHover), hoverinfo: 'text',
+    });
+    if (sub.length) traces.push({
+      name: 'Sub-call CREATE',
+      x: sub.map(s => s.bytes), y: sub.map(s => s.schedule_gas),
+      mode: 'markers', type: 'scatter',
+      marker: { size: 6, color: 'rgba(255,184,48,0.45)', line: { width: 0 } },
+      hovertext: sub.map(mkHover), hoverinfo: 'text',
+    });
+    Plotly.newPlot('deploymentChart', traces, layout({
+      xaxis: { title: 'Deployed bytecode size (bytes)' },
+      yaxis: { title: 'Frame gas used under 8037', type: 'log', tickformat: '.2s' },
+      shapes: [{
+        type: 'line', xref: 'paper', x0: 0, x1: 1,
+        y0: dep.tx_max_gas_limit, y1: dep.tx_max_gas_limit,
+        line: { dash: 'dash', color: COLORS.broken, width: 1 },
+      }],
+      annotations: [{
+        xref: 'paper', x: 1, xanchor: 'right',
+        y: dep.tx_max_gas_limit, yanchor: 'bottom',
+        text: `EIP-7825 cap: ${fmtGas(dep.tx_max_gas_limit)}`,
+        showarrow: false, font: { color: COLORS.broken, size: 11 },
+      }],
+      height: 440,
+      showlegend: true,
+    }), { responsive: true });
+    const sm = dep.summary;
+    const sizeNote = sm.with_exact_bytecode_size === sm.total_deployments_in_cohort
+      ? 'All bytecode sizes are exact (producer schema v7+).'
+      : `<strong>${fmtCount(sm.with_exact_bytecode_size)}</strong> of
+         ${fmtCount(sm.total_deployments_in_cohort)} have exact bytecode size;
+         the rest are approximated (pre-v7 DB rows).`;
+    document.getElementById('deploymentSummary').innerHTML =
+      `${fmtCount(sm.total_deployments_in_cohort)} successful CREATE/CREATE2 frames
+       in cohort; <strong>${fmtCount(sm.over_eip7825_cap)}</strong>
+       (${sm.share_over_cap}%) cross the EIP-7825 cap under 8037. ${sizeNote}`;
+  } else {
+    document.getElementById('deploymentChart').innerHTML =
+      '<p class="note">No successful CREATE/CREATE2 frames in cohort yet.</p>';
+  }
+
+  // ── Mechanics: multiplier histogram ────────────────────────────────
   Plotly.newPlot('multiplierChart', [{
     x: buckets.map(b => b.bucket),
     y: buckets.map(b => b.txs),
     type: 'bar',
     marker: { color: buckets.map(b => b.bucket === 'unresolved' ? COLORS.broken : COLORS.changed) },
-    hovertext: buckets.map(b => `${b.bucket}: ${fmtCount(b.txs)} txs<br>${fmtCount(b.status_changed_txs)} status changes`),
+    hovertext: buckets.map(b => `${b.bucket}: ${fmtCount(b.txs)} txs`),
     hoverinfo: 'text',
   }], layout({
-    title: { text: 'Minimum Gas-Limit Multiplier Buckets' },
-    xaxis: { title: 'Multiplier Bucket' },
-    yaxis: { title: 'Divergent Txs', tickformat: ',' },
-    height: 400,
+    xaxis: { title: 'Required gas-limit multiplier' },
+    yaxis: { title: 'Divergent txs', tickformat: ',' },
+    height: 360,
   }), { responsive: true });
 
+  // ── Mechanics: state-gas categories ────────────────────────────────
   Plotly.newPlot('categoryChart', [{
     x: categories.map(c => c.category),
     y: categories.map(c => c.total_state_gas_spent),
     type: 'bar',
     marker: { color: COLORS.changed },
-    hovertext: categories.map(c => `${c.category}<br>${fmtCount(c.txs)} txs<br>${fmtGas(c.total_state_gas_spent)} state gas`),
+    hovertext: categories.map(c =>
+      `${c.category}<br>${fmtCount(c.txs)} txs<br>${fmtGas(c.total_state_gas_spent)} state gas`),
     hoverinfo: 'text',
   }], layout({
-    title: { text: 'State Gas by Category' },
-    xaxis: { title: 'Category' },
-    yaxis: { title: 'Total State Gas', tickformat: ',' },
-    height: 420,
+    xaxis: { title: 'state_gas_category' },
+    yaxis: { title: 'Total state gas', tickformat: ',' },
+    height: 360,
   }), { responsive: true });
 
   document.getElementById('categoryBody').innerHTML = categories.map(c => `
@@ -254,32 +400,28 @@ function fmtMultiplier(n) {
       <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
       <td style="text-align:right">${fmtGas(c.total_runtime_state_gas)}</td>
       <td style="text-align:right">${fmtGas(c.total_runtime_state_gas_spillover)}</td>
-      <td style="text-align:right">${fmtCount(c.reservoir_exhausted_txs)}</td>
-    </tr>
-  `).join('');
+    </tr>`).join('');
 
   document.getElementById('contractBody').innerHTML = contracts.map(c => `
     <tr onclick="location.href='/affected/${encodeURIComponent(c.target_address)}'">
-      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:var(--text-dim)">${(c.target_address || '').slice(0, 12)}...</span></td>
+      <td><strong>${escHtml(c.name)}</strong><br>
+        <span class="mono" style="color:var(--text-dim)">${(c.target_address || '').slice(0, 12)}...</span></td>
       <td style="text-align:right">${fmtCount(c.original_limit_failures)}</td>
       <td style="text-align:right">${fmtCount(c.status_changed_txs)}</td>
       <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
       <td style="text-align:right">${fmtMultiplier(c.p95_min_multiplier_to_succeed)}</td>
-      <td style="text-align:right">${fmtGas(c.max_extra_gas_needed)}</td>
-    </tr>
-  `).join('');
+    </tr>`).join('');
 
   document.getElementById('exampleBody').innerHTML = examples.map(e => `
     <tr onclick="location.href='/tx/${encodeURIComponent(e.tx_hash)}'">
-      <td><span class="mono">${e.tx_hash.slice(0, 12)}...</span><br><span class="note">block ${e.block_number.toLocaleString()}</span></td>
+      <td><span class="mono">${e.tx_hash.slice(0, 12)}...</span><br>
+        <span class="note">block ${e.block_number.toLocaleString()}</span></td>
       <td><strong>${escHtml(e.target_name)}</strong></td>
       <td style="text-align:right">${fmtGas(e.tx_gas_limit)}</td>
       <td style="text-align:right">${fmtGas(e.schedule_gas_used)}</td>
       <td style="text-align:right">${fmtMultiplier(e.min_multiplier_to_succeed)}</td>
       <td style="text-align:right">${fmtGas(e.schedule_state_gas_spent)}</td>
-      <td style="text-align:right">${fmtGas(e.runtime_state_gas_spillover)}</td>
-    </tr>
-  `).join('');
+    </tr>`).join('');
 })();
 </script>
 {% endblock %}

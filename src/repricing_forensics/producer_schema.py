@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 6  # v6: added inconclusive_needs_higher_sweep bucket
+SCHEMA_VERSION = 7  # v7: added divergence_call_frames.deployed_bytecode_len
 
 
 class Bucket(str, Enum):
@@ -224,6 +224,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
             gas_requested_on_stack INTEGER,
             eip150_cap_binding     INTEGER,  -- 0/1/NULL
             state_gas_running      INTEGER,
+            deployed_bytecode_len  INTEGER,  -- non-NULL only on successful CREATE/CREATE2
             PRIMARY KEY (divergence_id, call_index)
         )
     """),

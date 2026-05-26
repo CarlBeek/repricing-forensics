@@ -842,6 +842,323 @@ def forensics_failure_flow(schedule: str = Query(default=None)):
 # ── EIP-8037 state-gas endpoints ──────────────────────────────────────
 
 
+@router.get("/eip8037/impact-breakdown")
+@cache_endpoint(_AGGREGATE_TTL)
+def eip8037_impact_breakdown(schedule: str = Query(default=None)):
+    """Headline anchor: every historical tx in the analyzed window,
+    bucketed by the user-facing impact of EIP-8037.
+
+    Sourced from `block_coverage`'s per-bucket counts (the producer's
+    classifier owns the bucketing). We collapse the producer's nine
+    buckets into five user-visible categories, in order from "no
+    user-visible impact" → "needs code change":
+
+      unaffected               — tx didn't diverge under 8037
+      paid_more_no_change      — gas_only + trace_only (more expensive,
+                                 same outcome and event logs)
+      observable_change        — event_logs_changed (different events
+                                 emitted; observable to integrators)
+      wallet_fixable           — bumping the wallet's gas-limit estimate
+                                 resolves it
+      contract_broken          — needs a code change (incl. the
+                                 inconclusive_needs_higher_sweep cohort,
+                                 which is a more-investigation flag, not
+                                 a fixability finding)
+
+    `schedule_rescued` is reported separately as a positive sidebar (8037
+    fixed these baseline failures) rather than mixed into the failure
+    surface.
+    """
+    s = resolve_schedule(schedule)
+    row = query_sqlite("""
+        SELECT
+            sum(tx_count) AS total,
+            sum(tx_count_unchanged) AS unaffected,
+            sum(tx_count_gas_only + tx_count_trace_only) AS paid_more_no_change,
+            sum(tx_count_event_logs_changed) AS observable_change,
+            sum(tx_count_wallet_fixable_shallow + tx_count_wallet_fixable_deep_chain)
+                AS wallet_fixable,
+            sum(tx_count_contract_broken + tx_count_inconclusive_needs_higher_sweep)
+                AS contract_broken,
+            sum(tx_count_schedule_rescued) AS schedule_rescued
+        FROM block_coverage
+        WHERE schedule_name = ?
+    """, (s,))[0]
+
+    total = _int(row["total"]) or 1
+    segments = [
+        ("unaffected",          "Unaffected",                   _int(row["unaffected"])),
+        ("paid_more_no_change", "Pays more, same outcome",      _int(row["paid_more_no_change"])),
+        ("observable_change",   "Event-log difference",         _int(row["observable_change"])),
+        ("wallet_fixable",      "Wallet must raise gas-limit",  _int(row["wallet_fixable"])),
+        ("contract_broken",     "Needs contract change",        _int(row["contract_broken"])),
+    ]
+    return {
+        "total": _int(row["total"]),
+        "segments": [
+            {
+                "key": k,
+                "label": label,
+                "count": n,
+                "share": round(n / total * 100, 3),
+            }
+            for k, label, n in segments
+        ],
+        "schedule_rescued": _int(row["schedule_rescued"]),
+    }
+
+
+@router.get("/eip8037/state-growth")
+@cache_endpoint(_AGGREGATE_TTL)
+def eip8037_state_growth(schedule: str = Query(default=None)):
+    """Daily state-bytes added in the analyzed window, derived from the
+    producer's per-(block, bucket) `state_gas_sum`. Dividing by CPSB
+    converts the 8037 state-gas charge back to bytes — the EIP's primary
+    accounting unit. The resulting series is "new state bytes per day
+    under the 8037 schedule's definition of state creation".
+
+    Reported alongside the EIP's target growth rate (120 GiB/year ≈ 329
+    MiB/day) so the chart caption can compare actual vs target. The
+    window can be quite short for a fresh run; the implied "annualized"
+    rate at the bottom of the response simply extrapolates the observed
+    daily mean.
+    """
+    s = resolve_schedule(schedule)
+    CPSB = 1530
+    rows = query_sqlite("""
+        SELECT
+            bc.timestamp,
+            bc.block_number,
+            coalesce(sum(bs.state_gas_sum), 0) AS state_gas_sum
+        FROM block_coverage bc
+        LEFT JOIN block_summaries bs
+            ON bs.schedule_name = bc.schedule_name
+            AND bs.block_number = bc.block_number
+        WHERE bc.schedule_name = ?
+        GROUP BY bc.timestamp, bc.block_number
+        ORDER BY bc.timestamp, bc.block_number
+    """, (s,))
+    if not rows:
+        return {"daily": [], "summary": None}
+
+    # Bucket per UTC day. Producer timestamps are unix seconds.
+    from collections import defaultdict
+    daily_bytes: dict[int, int] = defaultdict(int)
+    daily_blocks: dict[int, int] = defaultdict(int)
+    for r in rows:
+        ts = _int(r["timestamp"])
+        day = ts - (ts % 86_400)
+        daily_bytes[day] += _int(r["state_gas_sum"]) // CPSB
+        daily_blocks[day] += 1
+
+    daily = [
+        {
+            "day_ts": d,
+            "state_bytes_added": daily_bytes[d],
+            "blocks": daily_blocks[d],
+            "mib": round(daily_bytes[d] / (1024 * 1024), 3),
+        }
+        for d in sorted(daily_bytes)
+    ]
+    total_bytes = sum(daily_bytes.values())
+    total_days = len(daily) or 1
+    mean_per_day = total_bytes / total_days
+    return {
+        "daily": daily,
+        "summary": {
+            "blocks": sum(daily_blocks.values()),
+            "days_observed": total_days,
+            "total_state_bytes": total_bytes,
+            "mean_bytes_per_day": round(mean_per_day, 1),
+            "implied_annual_gib": round(mean_per_day * 365 / (1024 ** 3), 2),
+            "target_bytes_per_day": round(120 * (1024 ** 3) / 365, 1),
+            "target_annual_gib": 120,
+            "cpsb": CPSB,
+        },
+    }
+
+
+@router.get("/eip8037/deployment-ceiling")
+@cache_endpoint(_AGGREGATE_TTL)
+def eip8037_deployment_ceiling(schedule: str = Query(default=None)):
+    """Scatter every successful CREATE / CREATE2 frame in the cohort
+    against the EIP-7825 per-tx cap, with deployed-bytecode size on the
+    x-axis and 8037 gas used on the y-axis.
+
+    Data source: `call_frames.deployed_bytecode_len` (added in
+    producer schema v7) records the actual runtime-code length emitted
+    by each successful CREATE/CREATE2 frame. Top-level CREATE txs and
+    sub-call CREATEs are both included — both shapes are deployments
+    in the EIP-8037 sense.
+
+    `schedule_gas` is the frame's own `gas_used` (revm's frame-level
+    accounting). For top-level CREATE this is essentially the tx's gas
+    used minus tx-intrinsic; for sub-call CREATEs it's the deployment's
+    marginal cost to its parent. Either way it's the right "what does
+    deploying a contract of size N actually cost under 8037" number.
+
+    A row with `deployed_bytecode_len IS NULL` came from a producer
+    run on schema < v7 — surfaced as the legacy approximation
+    (bytecode size derived from baseline gas-used) so dashboards don't
+    go blank during schema rollover.
+    """
+    s = resolve_schedule(schedule)
+    TX_MAX_GAS_LIMIT = 16_777_216  # 2^24, EIP-7825 cap
+    rows = query(f"""
+        SELECT
+            cf.deployed_bytecode_len,
+            cf.gas_used        AS frame_gas_used,
+            cf.gas_provided    AS frame_gas_provided,
+            cf.call_type,
+            d.schedule_gas_used,
+            d.baseline_gas_used,
+            d.schedule_state_gas_spent,
+            d.tx_gas_limit,
+            d.schedule_success,
+            (cf.depth = 0)     AS is_root_create
+        FROM call_frames cf
+        JOIN divergences d USING (divergence_id)
+        WHERE cf.schedule_name = '{s}'
+          AND cf.call_type IN ('CREATE', 'CREATE2')
+          AND cf.success = 1
+        ORDER BY cf.gas_used DESC
+        LIMIT 5000
+    """)
+
+    samples = []
+    over_cap = 0
+    have_real_size = 0
+    for r in rows:
+        if r["deployed_bytecode_len"] is not None:
+            bytes_ = _int(r["deployed_bytecode_len"])
+            size_source = "exact"
+            have_real_size += 1
+        else:
+            # Legacy fallback for pre-v7 DBs: derive from baseline gas.
+            # 200 gas/byte CODEDEPOSIT + ~53k overhead (intrinsic 32k + init+payload).
+            baseline = _int(r["baseline_gas_used"])
+            bytes_ = max(0, (baseline - 53_000) // 200)
+            size_source = "approx"
+        sched = _int(r["frame_gas_used"])
+        if sched > TX_MAX_GAS_LIMIT:
+            over_cap += 1
+        samples.append({
+            "bytes":          bytes_,
+            "size_source":    size_source,
+            "schedule_gas":   sched,
+            "call_type":      r["call_type"],
+            "is_root_create": bool(r["is_root_create"]),
+            "tx_gas_used":    _int(r["schedule_gas_used"]),
+            "tx_state_gas":   _int(r["schedule_state_gas_spent"]),
+            "tx_gas_limit":   _int(r["tx_gas_limit"]),
+            "tx_success":     bool(r["schedule_success"]),
+        })
+    total = len(samples)
+    return {
+        "tx_max_gas_limit": TX_MAX_GAS_LIMIT,
+        "samples": samples,
+        "summary": {
+            "total_deployments_in_cohort": total,
+            "with_exact_bytecode_size":    have_real_size,
+            "over_eip7825_cap":            over_cap,
+            "share_over_cap":              round(over_cap / total * 100, 2) if total else 0.0,
+        },
+    }
+
+
+@router.get("/eip8037/cost-comparison")
+def eip8037_cost_comparison(schedule: str = Query(default=None)):
+    """Static cost comparison for canonical state-touching operations.
+
+    Numbers come from the EIP-8037 constants currently shipped in the
+    reth-research schedule (`crates/research/src/schedule/eip8037.rs`):
+    CPSB=1530, 64 state bytes per storage slot, 120 per new account,
+    23 per 7702 auth base. Baseline figures are the pre-8037 gas costs
+    for the operation as defined in the EIPs they replace (SSTORE_SET=20k,
+    NEW_ACCOUNT=25k, PER_AUTH_BASE_COST=12.5k, CODEDEPOSIT=200/byte).
+
+    No DB lookup — this is the "what is the new cost per op" anchor.
+    Surfaced via an endpoint so the constants stay one source-of-truth
+    (the Rust schedule struct) and the template doesn't hand-encode
+    numbers that drift.
+    """
+    CPSB = 1530
+    STATE_BYTES_STORAGE_SET = 64
+    STATE_BYTES_NEW_ACCOUNT = 120
+    STATE_BYTES_AUTH_BASE = 23
+
+    storage_state_gas = STATE_BYTES_STORAGE_SET * CPSB           # 97,920
+    new_account_state_gas = STATE_BYTES_NEW_ACCOUNT * CPSB       # 183,600
+    auth_existing_state_gas = STATE_BYTES_AUTH_BASE * CPSB       # 35,190
+    auth_new_acc_state_gas = (
+        STATE_BYTES_NEW_ACCOUNT + STATE_BYTES_AUTH_BASE) * CPSB  # 218,790
+    deploy_bytes = 24_576  # contract size at the runtime cap
+
+    ops = [
+        {
+            "key": "sstore",
+            "label": "Cold SSTORE (0 → non-zero)",
+            "detail": "First write to a storage slot",
+            "baseline_regular": 20_000,
+            "baseline_state":   0,
+            "schedule_regular": 20_000,
+            "schedule_state":   storage_state_gas,
+        },
+        {
+            "key": "new_account",
+            "label": "New account (CALL with value)",
+            "detail": "ETH transfer creating a new EOA",
+            "baseline_regular": 25_000,
+            "baseline_state":   0,
+            "schedule_regular": 25_000,
+            "schedule_state":   new_account_state_gas,
+        },
+        {
+            "key": "auth_existing",
+            "label": "EIP-7702 SetCode (existing target)",
+            "detail": "Per authorization, delegate already exists",
+            "baseline_regular": 12_500,
+            "baseline_state":   0,
+            "schedule_regular": 12_500,
+            "schedule_state":   auth_existing_state_gas,
+        },
+        {
+            "key": "auth_new",
+            "label": "EIP-7702 SetCode (new target)",
+            "detail": "Per authorization, target account is new",
+            "baseline_regular": 37_500,  # 12.5k auth + 25k new account
+            "baseline_state":   0,
+            "schedule_regular": 37_500,
+            "schedule_state":   auth_new_acc_state_gas,
+        },
+        {
+            "key": "deploy_24k",
+            "label": "Contract deployment (24 kB)",
+            "detail": "Maximum-size contract at the EIP-170 cap",
+            "baseline_regular": 32_000 + deploy_bytes * 200,
+            "baseline_state":   0,
+            "schedule_regular": 32_000 + deploy_bytes * 200,
+            "schedule_state":   new_account_state_gas + deploy_bytes * CPSB,
+        },
+    ]
+    for op in ops:
+        baseline_total = op["baseline_regular"] + op["baseline_state"]
+        schedule_total = op["schedule_regular"] + op["schedule_state"]
+        op["baseline_total"] = baseline_total
+        op["schedule_total"] = schedule_total
+        op["multiplier"] = (schedule_total / baseline_total) if baseline_total else None
+
+    return {
+        "constants": {
+            "cpsb": CPSB,
+            "state_bytes_per_storage_set": STATE_BYTES_STORAGE_SET,
+            "state_bytes_per_new_account": STATE_BYTES_NEW_ACCOUNT,
+            "state_bytes_per_auth_base":   STATE_BYTES_AUTH_BASE,
+        },
+        "operations": ops,
+    }
+
+
 @router.get("/eip8037/overview")
 @cache_endpoint(_AGGREGATE_TTL)
 def eip8037_overview(schedule: str = Query(default=None)):
