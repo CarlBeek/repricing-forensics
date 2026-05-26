@@ -15,6 +15,8 @@ from .db import (
     query,
     query_df,
     query_scalar,
+    query_sqlite,
+    query_sqlite_scalar,
     resolve_schedule,
 )
 
@@ -164,7 +166,7 @@ def overview(schedule: str = Query(default=None)):
     # bottleneck either way. Surfaced separately so reviewers can plan a
     # re-run with a higher `--research.gas-limit-multipliers` ceiling
     # before treating them as contract-broken.
-    row = query(f"""
+    row = query_sqlite("""
         SELECT
             sum(tx_count) AS total_analyzed,
             sum(tx_count - tx_count_unchanged) AS divergent_txs,
@@ -174,8 +176,8 @@ def overview(schedule: str = Query(default=None)):
             sum(tx_count_wallet_fixable_shallow) AS wallet_fixable_shallow,
             sum(tx_count_wallet_fixable_deep_chain) AS wallet_fixable_deep_chain
         FROM block_coverage
-        WHERE schedule_name = '{s}'
-    """)[0]
+        WHERE schedule_name = ?
+    """, (s,))[0]
     total_analyzed = _int(row["total_analyzed"])
     contract_broken = _int(row["contract_broken"])
     inconclusive = _int(row["inconclusive"])
@@ -211,7 +213,7 @@ def funnel(schedule: str = Query(default=None)):
     (gas used, event logs, status) matches — i.e. no observable change.
     """
     s = resolve_schedule(schedule)
-    row = query(f"""
+    row = query_sqlite("""
         SELECT
             sum(tx_count - tx_count_unchanged) AS total,
             sum(tx_count_contract_broken
@@ -223,8 +225,8 @@ def funnel(schedule: str = Query(default=None)):
             sum(tx_count_gas_only)           AS gas_only_change,
             sum(tx_count_trace_only)         AS trace_divergent_only
         FROM block_coverage
-        WHERE schedule_name = '{s}'
-    """)[0]
+        WHERE schedule_name = ?
+    """, (s,))[0]
     return {
         "divergent_txs": _int(row["total"]),
         "broken_txs": _int(row["broken"]),
@@ -281,22 +283,29 @@ def opcode_gas_share(schedule: str = Query(default=None)):
       - share        — gas_schedule / total_gas_schedule_all_opcodes (percent)
     """
     s = resolve_schedule(schedule)
-    rows = query(f"""
-        SELECT
-            u.opcode AS opcode,
-            sum(u.count)         AS count,
-            sum(u.gas_baseline)  AS gas_baseline,
-            sum(u.gas_schedule)  AS gas_schedule
-        FROM block_summaries,
-             UNNEST(CAST(opcode_totals_7904 AS JSON)
-                    ::STRUCT(opcode INTEGER, count BIGINT,
-                             gas_baseline BIGINT, gas_schedule BIGINT)[]) AS t(u)
+    import json
+
+    summary_rows = query_sqlite("""
+        SELECT opcode_totals_7904
+        FROM block_summaries
         WHERE opcode_totals_7904 IS NOT NULL
           AND opcode_totals_7904 <> '[]'
-          AND schedule_name = '{s}'
-        GROUP BY u.opcode
-        ORDER BY gas_schedule DESC
-    """)
+          AND schedule_name = ?
+    """, (s,))
+    totals: dict[int, dict[str, int]] = {}
+    for row in summary_rows:
+        try:
+            entries = json.loads(row["opcode_totals_7904"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for entry in entries:
+            op = int(entry.get("opcode", 0))
+            acc = totals.setdefault(op, {"opcode": op, "count": 0,
+                                         "gas_baseline": 0, "gas_schedule": 0})
+            acc["count"] += _int(entry.get("count"))
+            acc["gas_baseline"] += _int(entry.get("gas_baseline"))
+            acc["gas_schedule"] += _int(entry.get("gas_schedule"))
+    rows = sorted(totals.values(), key=lambda r: r["gas_schedule"], reverse=True)
     # `total_schedule` covers every opcode (repriced or not) so the
     # returned shares stay comparable to the whole EVM cost surface.
     total_schedule = sum(_int(r["gas_schedule"]) for r in rows) or 1
@@ -333,13 +342,13 @@ def gas_overhead(schedule: str = Query(default=None)):
     unchanged — it was already plotted from the same log2 bins.
     """
     s = resolve_schedule(schedule)
-    rows = query(f"""
+    rows = query_sqlite("""
         SELECT bucket, tx_count, gas_delta_sum, gas_delta_min, gas_delta_max,
                gas_delta_log2_hist
         FROM block_summaries
         WHERE bucket IN ('gas_only', 'trace_only', 'event_logs_changed')
-          AND schedule_name = '{s}'
-    """)
+          AND schedule_name = ?
+    """, (s,))
     return _gas_delta_aggregate_response(rows)
 
 
@@ -435,26 +444,27 @@ def _percentile_from_log2_hist(hist: list[int], p: float) -> float:
 @cache_endpoint(_AGGREGATE_TTL)
 def concentration(schedule: str = Query(default=None)):
     s = resolve_schedule(schedule)
-    df = query_df(f"""
+    rows = query_sqlite("""
         SELECT recipient, count(*) AS broken_txs
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s}'
+          AND schedule_name = ?
         GROUP BY recipient ORDER BY broken_txs DESC
-    """)
-    df["cumulative"] = df["broken_txs"].cumsum()
-    total = df["broken_txs"].sum()
-    df["cum_pct"] = df["cumulative"] / total * 100 if total else 0
-    return [
-        {
+    """, (s,))
+    total = sum(_int(r["broken_txs"]) for r in rows)
+    cumulative = 0
+    out = []
+    for i, row in enumerate(rows[:50]):
+        cumulative += _int(row["broken_txs"])
+        cum_pct = cumulative / total * 100 if total else 0
+        out.append({
             "rank": i + 1,
             "recipient": row["recipient"] if isinstance(row["recipient"], str) else None,
             "name": label_address(row["recipient"]),
             "broken_txs": _int(row["broken_txs"]),
-            "cum_pct": round(_float(row["cum_pct"]), 2),
-        }
-        for i, row in df.head(50).iterrows()
-    ]
+            "cum_pct": round(cum_pct, 2),
+        })
+    return out
 
 
 @router.get("/top-contracts")
@@ -464,14 +474,14 @@ def top_contracts(
     schedule: str = Query(default=None),
 ):
     s = resolve_schedule(schedule)
-    rows = query(f"""
+    rows = query_sqlite(f"""
         SELECT recipient, count(*) AS broken_txs,
                avg(gas_delta) AS avg_delta, sum(gas_delta) AS total_delta
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s}'
+          AND schedule_name = ?
         GROUP BY recipient ORDER BY broken_txs DESC LIMIT {int(limit)}
-    """)
+    """, (s,))
     return [
         {
             "recipient": r["recipient"],
@@ -614,17 +624,17 @@ def forensics_bottleneck_kinds(schedule: str = Query(default=None)):
     rare in current runs; surfaced as 'Unclassified' for visibility.
     """
     s = resolve_schedule(schedule)
-    rows = query(f"""
+    rows = query_sqlite("""
         SELECT
             coalesce(oog_bottleneck_kind, 'Unclassified') AS kind,
             count(*) AS cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
           AND oog_call_depth IS NOT NULL
-          AND schedule_name = '{s}'
+          AND schedule_name = ?
         GROUP BY 1
         ORDER BY cnt DESC
-    """)
+    """, (s,))
     total = sum(r["cnt"] for r in rows) or 1
     return [
         {
@@ -649,15 +659,15 @@ def forensics_break_reason(schedule: str = Query(default=None)):
     them together under one misleading bucket.
     """
     s = resolve_schedule(schedule)
-    row = query(f"""
+    row = query_sqlite("""
         SELECT
-            count(*) FILTER (WHERE oog_call_depth IS NOT NULL) AS oog,
-            count(*) FILTER (WHERE oog_call_depth IS NULL)     AS non_oog_revert,
-            count(*)                                           AS total
+            sum(CASE WHEN oog_call_depth IS NOT NULL THEN 1 ELSE 0 END) AS oog,
+            sum(CASE WHEN oog_call_depth IS NULL THEN 1 ELSE 0 END)     AS non_oog_revert,
+            count(*)                                                    AS total
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s}'
-    """)[0]
+          AND schedule_name = ?
+    """, (s,))[0]
     total = _int(row["total"]) or 1
     return [
         {"reason": "OOG",
@@ -2137,20 +2147,23 @@ def metadata(
     than fail (single-EIP pages don't surface it).
     """
     s = resolve_schedule(schedule)
-    block_range = query(
-        f"SELECT min(block_number) as mn, max(block_number) as mx "
-        f"FROM block_coverage WHERE schedule_name = '{s}'"
+    block_range = query_sqlite(
+        "SELECT min(block_number) as mn, max(block_number) as mx "
+        "FROM block_coverage WHERE schedule_name = ?",
+        (s,),
     )
     br = block_range[0] if block_range else {"mn": 0, "mx": 0}
     affected_count: int = 0
     if schedule_7904 and schedule_8037:
         s_7904 = resolve_schedule(schedule_7904)
         s_8037 = resolve_schedule(schedule_8037)
-        affected_count = _int(query_scalar(
-            _affected_base_cte(s_7904, s_8037)
-            + " SELECT count(*) FROM affected_combined",
-            default=0,
-        ))
+        affected_count = _int(query_sqlite_scalar("""
+            SELECT count(DISTINCT lower(recipient))
+            FROM divergences
+            WHERE bucket = 'contract_broken'
+              AND schedule_name IN (?, ?)
+              AND recipient IS NOT NULL
+        """, (s_7904, s_8037), default=0))
     return {
         "schedule_name": s,
         "min_block": int(br["mn"]) if br["mn"] else 0,

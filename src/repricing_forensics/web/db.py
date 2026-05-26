@@ -7,6 +7,8 @@ of truth; the consumer never materializes anything.
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -274,6 +276,39 @@ def query_scalar(sql: str, default: Any = None) -> Any:
     return row[0]
 
 
+def _sqlite_conn() -> sqlite3.Connection:
+    """Open a short-lived read-only SQLite connection to the producer DB.
+
+    Use this for small indexed aggregates that do not need DuckDB. It
+    avoids DuckDB sqlite_scanner's expensive cold ATTACH path, which can
+    leave the web process unavailable for minutes on the production DB.
+    """
+    path = resolve_producer_db_path()
+    timeout = float(os.environ.get("SQLITE_READ_TIMEOUT", "30"))
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+def query_sqlite(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    """Execute SQL through raw SQLite and return rows as dicts."""
+    with _sqlite_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_sqlite_scalar(
+    sql: str,
+    params: tuple[Any, ...] = (),
+    default: Any = None,
+) -> Any:
+    """Execute SQL through raw SQLite and return the first scalar."""
+    with _sqlite_conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return default if row is None else row[0]
+
+
 # ── Schedule routing ─────────────────────────────────────────────────────
 #
 # The producer can write multiple schedules into one SQLite file (e.g.
@@ -300,7 +335,7 @@ def list_schedules() -> list[str]:
     `max(block_number)` per schedule keeps the most-recently-active
     schedule first, which matches the prior `max(run_id)` ordering.
     """
-    rows = query("""
+    rows = query_sqlite("""
         SELECT schedule_name, max(block_number) AS last_block
         FROM block_coverage
         GROUP BY schedule_name

@@ -52,7 +52,7 @@ jobs:
         run: |
           PRODUCER_DB_PATH="$HOME/reth/divergences.sqlite"
           sudo mkdir -p /etc/systemd/system/eip7904-web.service.d
-          printf "[Service]\nEnvironment=PRODUCER_DB_PATH=%s\nTimeoutStopSec=20\n" "$PRODUCER_DB_PATH" \
+          printf "[Service]\nEnvironment=PRODUCER_DB_PATH=%s\nEnvironment=WARM_CACHE=0\nTimeoutStopSec=20\n" "$PRODUCER_DB_PATH" \
             | sudo tee /etc/systemd/system/eip7904-web.service.d/producer.conf > /dev/null
           sudo systemctl daemon-reload
 
