@@ -130,6 +130,27 @@ def _hex(value) -> str | None:
     return str(value)
 
 
+def _percentile(values: list, p: float) -> float | None:
+    """Linear-interpolated percentile, matching DuckDB's `percentile_cont`.
+
+    Used where we've moved a point-lookup endpoint off DuckDB (which has
+    `percentile_cont`) onto raw SQLite (which doesn't). The input row
+    count is bounded — these run on a single contract's cohort — so
+    sorting in Python is cheap.
+    """
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    if len(vals) == 1:
+        return float(vals[0])
+    k = (len(vals) - 1) * p
+    lo = math.floor(k)
+    hi = math.ceil(k)
+    if lo == hi:
+        return float(vals[int(k)])
+    return float(vals[lo]) * (hi - k) + float(vals[hi]) * (k - lo)
+
+
 # ── Schedules ────────────────────────────────────────────────────────
 
 
@@ -1812,7 +1833,18 @@ def affected_detail(
     schedule_7904: str = Query(default=None),
     schedule_8037: str = Query(default=None),
 ):
-    """Single contract detail with EIP-7904 and EIP-8037 diagnostics."""
+    """Single contract detail with EIP-7904 and EIP-8037 diagnostics.
+
+    Runs as indexed point lookups through raw SQLite (`recipient = ?`,
+    served by `idx_div_recipient`) rather than DuckDB. The previous
+    DuckDB path went through the `eip8037_contract_impact` view, which
+    GROUP BYs the entire `divergences` table before filtering to one
+    address — fine for a small DB, tens-of-seconds on the production
+    file while reth is mid-replay. Percentiles that the view computed
+    with `percentile_cont` are recomputed in Python (`_percentile`)
+    since SQLite lacks the function; the per-contract cohort is small
+    enough to sort in-process.
+    """
     addr = address.lower()
     s_7904 = resolve_schedule(schedule_7904)
     s_8037 = resolve_schedule(schedule_8037)
@@ -1820,86 +1852,130 @@ def affected_detail(
     # ── EIP-7904 stats ──
     # Wallet-fixable txs aren't stored per-recipient anymore (the
     # producer aggregates them into block_summaries). The contract
-    # detail page only needs contract-broken data.
-    eip7904_stats = query(f"""
+    # detail page only needs contract-broken data. `recipient` is stored
+    # lowercase (`{:#x}`), so an exact match uses idx_div_recipient.
+    eip7904_stats = query_sqlite("""
         SELECT count(*) as broken_txs,
                avg(gas_delta) as avg_delta,
                sum(gas_delta) as total_delta,
-               percentile_cont(0.95) WITHIN GROUP (ORDER BY gas_delta) as p95_delta,
                min(block_number) as min_block,
                max(block_number) as max_block
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s_7904}'
-          AND lower(recipient) = '{addr}'
-    """)[0]
+          AND schedule_name = ?
+          AND recipient = ?
+    """, (s_7904, addr))[0]
+    # p95 gas-delta: SQLite has no percentile_cont, so pull the deltas
+    # (bounded per-contract cohort) and interpolate in Python.
+    eip7904_deltas = [
+        r["gas_delta"] for r in query_sqlite("""
+            SELECT gas_delta FROM divergences
+            WHERE bucket = 'contract_broken'
+              AND schedule_name = ? AND recipient = ?
+        """, (s_7904, addr))
+    ]
+    eip7904_p95_delta = _percentile(eip7904_deltas, 0.95)
     eip7904_wallet_n = 0  # No longer tracked per-recipient.
-    opcodes_raw = query(f"""
+    opcodes_raw = query_sqlite("""
         SELECT divergence_opcode AS op_num, count(*) AS cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
           AND divergence_opcode IS NOT NULL
-          AND schedule_name = '{s_7904}'
-          AND lower(recipient) = '{addr}'
+          AND schedule_name = ?
+          AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
-    """)
-    depths_raw = query(f"""
+    """, (s_7904, addr))
+    depths_raw = query_sqlite("""
         SELECT coalesce(divergence_call_depth, -1) as depth, count(*) as cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s_7904}'
-          AND lower(recipient) = '{addr}'
+          AND schedule_name = ?
+          AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
-    """)
-    eip7904_txs = query(f"""
+    """, (s_7904, addr))
+    eip7904_txs = query_sqlite("""
         SELECT tx_hash, block_number, gas_delta
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s_7904}'
-          AND lower(recipient) = '{addr}'
+          AND schedule_name = ?
+          AND recipient = ?
         ORDER BY gas_delta DESC LIMIT 20
-    """)
-    bottleneck_kinds_raw = query(f"""
+    """, (s_7904, addr))
+    bottleneck_kinds_raw = query_sqlite("""
         SELECT coalesce(oog_bottleneck_kind, 'Unclassified') as kind, count(*) as cnt
         FROM divergences
         WHERE bucket = 'contract_broken'
-          AND schedule_name = '{s_7904}'
-          AND lower(recipient) = '{addr}'
+          AND schedule_name = ?
+          AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC
-    """)
+    """, (s_7904, addr))
 
     # ── EIP-8037 stats ──
-    eip8037_rows = query(f"""
-        SELECT * FROM eip8037_contract_impact
-        WHERE schedule_name = '{s_8037}'
-          AND lower(target_address) = '{addr}'
-    """)
-    eip8037_row = eip8037_rows[0] if eip8037_rows else None
-    categories_raw = query(f"""
+    # Aggregate directly over the recipient-filtered divergences instead
+    # of the eip8037_contract_impact view (which aggregates the whole
+    # table). The derived `original_limit_failure` predicate is inlined
+    # to match the view: NOT would_fit (NULL→treated as fits) AND state
+    # gas was actually charged.
+    eip8037_agg = query_sqlite("""
+        SELECT
+            count(*) AS divergent_txs,
+            sum(CASE WHEN status_changed = 1 THEN 1 ELSE 0 END) AS status_changed_txs,
+            sum(CASE WHEN coalesce(would_fit_in_original_limit, 1) = 0
+                      AND coalesce(schedule_state_gas_spent, 0) > 0
+                     THEN 1 ELSE 0 END) AS original_limit_failures,
+            sum(CASE WHEN schedule_success = 1
+                      AND would_fit_in_original_limit = 0
+                     THEN 1 ELSE 0 END) AS fixable_with_more_outer_gas,
+            sum(CASE WHEN reservoir_exhausted = 1 THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
+            sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            max(min_multiplier_to_succeed) AS max_min_multiplier_to_succeed,
+            max(CASE WHEN schedule_success = 1
+                      AND coalesce(would_fit_in_original_limit, 1) = 0
+                     THEN schedule_gas_used - tx_gas_limit ELSE NULL END)
+                AS max_extra_gas_needed
+        FROM divergences
+        WHERE schedule_name = ?
+          AND recipient = ?
+    """, (s_8037, addr))[0]
+    eip8037_div = _int(eip8037_agg["divergent_txs"])
+    eip8037_row = eip8037_agg if eip8037_div > 0 else None
+    # p95 multiplier in Python (bounded per-contract cohort).
+    eip8037_multipliers = [
+        r["min_multiplier_to_succeed"] for r in query_sqlite("""
+            SELECT min_multiplier_to_succeed FROM divergences
+            WHERE schedule_name = ? AND recipient = ?
+              AND min_multiplier_to_succeed IS NOT NULL
+        """, (s_8037, addr))
+    ]
+    eip8037_p95_multiplier = _percentile(eip8037_multipliers, 0.95)
+    categories_raw = query_sqlite("""
         SELECT coalesce(state_gas_category, 'uncategorized') as cat, count(*) as cnt
-        FROM eip8037_tx_impact
-        WHERE schedule_name = '{s_8037}'
-          AND lower(target_address) = '{addr}'
+        FROM divergences
+        WHERE schedule_name = ?
+          AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
-    """)
-    eip8037_txs = query(f"""
+    """, (s_8037, addr))
+    eip8037_txs = query_sqlite("""
         SELECT tx_hash, block_number, tx_gas_limit, min_multiplier_to_succeed,
                reservoir_exhausted, state_gas_category,
                runtime_state_gas_spillover, schedule_state_gas_spent
-        FROM eip8037_tx_impact
-        WHERE schedule_name = '{s_8037}'
-          AND lower(target_address) = '{addr}'
-          AND (original_limit_failure OR status_changed OR reservoir_exhausted)
+        FROM divergences
+        WHERE schedule_name = ?
+          AND recipient = ?
+          AND ((coalesce(would_fit_in_original_limit, 1) = 0
+                  AND coalesce(schedule_state_gas_spent, 0) > 0)
+               OR status_changed = 1
+               OR reservoir_exhausted = 1)
         ORDER BY
-            CASE WHEN baseline_success AND NOT schedule_success THEN 0
-                 WHEN original_limit_failure THEN 1
-                 WHEN reservoir_exhausted THEN 2 ELSE 3 END,
+            CASE WHEN baseline_success = 1 AND schedule_success = 0 THEN 0
+                 WHEN coalesce(would_fit_in_original_limit, 1) = 0
+                      AND coalesce(schedule_state_gas_spent, 0) > 0 THEN 1
+                 WHEN reservoir_exhausted = 1 THEN 2 ELSE 3 END,
             coalesce(min_multiplier_to_succeed, 999999) DESC
         LIMIT 20
-    """)
+    """, (s_8037, addr))
 
     eip7904_broken = _int(eip7904_stats["broken_txs"])
-    eip8037_div = _int(eip8037_row["divergent_txs"]) if eip8037_row else 0
     # Wallet-fixable-only contracts aren't 7904-affected in any actionable
     # sense: the wallet auto-resolves it via eth_estimateGas, no code change
     # needed. Don't show them as affected.
@@ -1920,7 +1996,7 @@ def affected_detail(
             "wallet_fixable_txs": eip7904_wallet_n,
             "avg_delta": _float(eip7904_stats["avg_delta"]),
             "total_delta": _float(eip7904_stats["total_delta"]),
-            "p95_delta": _float(eip7904_stats["p95_delta"]),
+            "p95_delta": _float(eip7904_p95_delta),
             "min_block": _int(eip7904_stats["min_block"]),
             "max_block": _int(eip7904_stats["max_block"]),
             "opcodes": _with_shares([
@@ -1954,7 +2030,7 @@ def affected_detail(
             "fixable_with_more_outer_gas": _int(eip8037_row["fixable_with_more_outer_gas"]) if eip8037_row else 0,
             "reservoir_exhausted_txs": _int(eip8037_row["reservoir_exhausted_txs"]) if eip8037_row else 0,
             "total_state_gas_spent": _int(eip8037_row["total_state_gas_spent"]) if eip8037_row else 0,
-            "p95_min_multiplier_to_succeed": _float_or_none(eip8037_row["p95_min_multiplier_to_succeed"]) if eip8037_row else None,
+            "p95_min_multiplier_to_succeed": eip8037_p95_multiplier if eip8037_row else None,
             "max_min_multiplier_to_succeed": _float_or_none(eip8037_row["max_min_multiplier_to_succeed"]) if eip8037_row else None,
             "max_extra_gas_needed": _int(eip8037_row["max_extra_gas_needed"]) if eip8037_row else 0,
             "categories": _with_shares([
@@ -1979,6 +2055,7 @@ def affected_detail(
 
 
 @router.get("/tx/{tx_hash}")
+@cache_endpoint(_AGGREGATE_TTL)
 def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
     """Detailed view of a single broken transaction: gas info, divergence location, call stack.
 
@@ -1987,53 +2064,83 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
     but the producer can write a divergence row per schedule, so the
     explicit param is the safe way to disambiguate when both schedules
     flagged the same tx).
+
+    Runs through raw SQLite as an indexed point lookup (`tx_hash = ?`,
+    served by `idx_div_tx_hash`). The previous DuckDB query matched on
+    `lower(hex(tx_hash)) = ...`, a computed expression no index can
+    serve — so every tx page scanned the whole `divergences` table
+    through the sqlite_scanner (tens of seconds on the production file).
+    The 8037 fields that the `eip8037_tx_impact` view derived
+    (`extra_gas_needed`, `estimated_min_gas_limit`) are recomputed in
+    Python from the raw `divergences` columns, so we read one base table
+    with no JOIN.
     """
     tx_hash = tx_hash.lower().strip()
-    schedule_filter = ""
+    try:
+        tx_bytes = bytes.fromhex(tx_hash.removeprefix("0x"))
+    except ValueError:
+        return {"found": False}
+
+    where = "tx_hash = ?"
+    params: list = [tx_bytes]
     if schedule:
         s = resolve_schedule(schedule)
-        schedule_filter = f"AND d.schedule_name = '{s}'"
+        where += " AND schedule_name = ?"
+        params.append(s)
 
-    # Core tx info + 8037 derived fields, all from `divergences` now.
-    hot = query(f"""
+    # Core tx info, all from `divergences` (no view JOIN needed).
+    hot_rows = query_sqlite(f"""
         SELECT
-            d.divergence_id, d.block_number, d.tx_index, d.tx_hash, d.bucket,
-            d.schedule_name,
-            d.baseline_success, d.schedule_success, d.status_changed,
-            d.event_logs_changed, d.baseline_gas_used, d.schedule_gas_used,
-            d.gas_delta, d.tx_gas_limit, d.sender, d.recipient,
-            d.divergence_contract, d.divergence_call_depth, d.divergence_opcode,
-            d.oog_contract, d.oog_call_depth, d.oog_opcode, d.oog_pattern,
-            d.oog_gas_remaining, d.oog_chain_proportional,
-            d.oog_bottleneck_depth, d.oog_bottleneck_kind,
-            e.would_fit_in_original_limit, e.min_multiplier_to_succeed,
-            e.extra_gas_needed, e.estimated_min_gas_limit,
-            d.schedule_total_gas_spent, d.schedule_state_gas_spent,
-            d.schedule_initial_state_gas, d.runtime_state_gas,
-            d.schedule_initial_reservoir, d.runtime_state_gas_spillover,
-            d.schedule_floor_gas, d.schedule_gas_refunded,
-            d.baseline_total_gas_spent, d.baseline_gas_refunded,
-            d.state_gas_category, d.reservoir_exhausted
-        FROM divergences d
-        LEFT JOIN eip8037_tx_impact e USING (divergence_id)
-        WHERE lower(hex(d.tx_hash)) = '{tx_hash.removeprefix("0x")}'
-          {schedule_filter}
+            divergence_id, block_number, tx_index, tx_hash, bucket,
+            schedule_name,
+            baseline_success, schedule_success, status_changed,
+            event_logs_changed, baseline_gas_used, schedule_gas_used,
+            gas_delta, tx_gas_limit, sender, recipient,
+            divergence_contract, divergence_call_depth, divergence_opcode,
+            oog_contract, oog_call_depth, oog_opcode, oog_pattern,
+            oog_gas_remaining, oog_chain_proportional,
+            oog_bottleneck_depth, oog_bottleneck_kind,
+            would_fit_in_original_limit, min_multiplier_to_succeed,
+            schedule_total_gas_spent, schedule_state_gas_spent,
+            schedule_initial_state_gas, runtime_state_gas,
+            schedule_initial_reservoir, runtime_state_gas_spillover,
+            schedule_floor_gas, schedule_gas_refunded,
+            baseline_total_gas_spent, baseline_gas_refunded,
+            state_gas_category, reservoir_exhausted
+        FROM divergences
+        WHERE {where}
         LIMIT 1
-    """)
-    if not hot:
+    """, tuple(params))
+    if not hot_rows:
         return {"found": False}
-    h = hot[0]
+    h = hot_rows[0]
     div_id = h["divergence_id"]
 
-    # Per-frame call stack from the normalized frames table (replaces the
-    # JSON blob in the old artifacts_7904).
-    frames = query(f"""
+    # Derive the two 8037 fields the eip8037_tx_impact view computed, so
+    # the JSON shape is unchanged now that we read divergences directly.
+    _would_fit = h.get("would_fit_in_original_limit")
+    _min_mult = h.get("min_multiplier_to_succeed")
+    _sched_ok = bool(h.get("schedule_success"))
+    _fits = 1 if _would_fit is None else _would_fit  # view coalesces NULL→TRUE
+    extra_gas_needed = (
+        _int(h.get("schedule_gas_used")) - _int(h.get("tx_gas_limit"))
+        if _sched_ok and _fits == 0 else None
+    )
+    estimated_min_gas_limit = (
+        math.ceil(_int(h.get("tx_gas_limit")) * _min_mult)
+        if _sched_ok and _min_mult is not None and _int(h.get("tx_gas_limit")) > 0
+        else None
+    )
+
+    # Per-frame call stack from the normalized frames table, keyed by the
+    # divergence_id PK (fast indexed lookup).
+    frames = query_sqlite("""
         SELECT call_index, depth, from_address, to_address, call_type,
                selector, gas_provided, gas_used, success
-        FROM call_frames
-        WHERE divergence_id = {div_id}
+        FROM divergence_call_frames
+        WHERE divergence_id = ?
         ORDER BY call_index
-    """)
+    """, (div_id,))
     call_stack = []
     for fr in frames:
         sel_bytes = fr.get("selector") or b""
@@ -2060,13 +2167,13 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
         0x08: "ADDMOD", 0x09: "MULMOD", 0x0a: "EXP", 0x20: "KECCAK256",
     }
     placeholders = ", ".join(str(op) for op in REPRICED_OP_BYTES)
-    op_rows = query(f"""
+    op_rows = query_sqlite(f"""
         SELECT opcode, sum(count) AS count,
                sum(gas_schedule) - sum(gas_baseline) AS gas_delta
-        FROM opcode_counts
-        WHERE divergence_id = {div_id} AND opcode IN ({placeholders})
+        FROM divergence_opcode_counts
+        WHERE divergence_id = ? AND opcode IN ({placeholders})
         GROUP BY opcode
-    """)
+    """, (div_id,))
     gas_breakdown = []
     for r in op_rows:
         op = int(r["opcode"])
@@ -2081,11 +2188,11 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
 
     # Cross-frame opcode totals for SLOAD/SSTORE/CALL/LOG/total — used by
     # the op_counts panel on the tx page.
-    counts_by_op = {r["opcode"]: _int(r["count"]) for r in query(f"""
+    counts_by_op = {r["opcode"]: _int(r["count"]) for r in query_sqlite("""
         SELECT opcode, sum(count) AS count
-        FROM opcode_counts WHERE divergence_id = {div_id}
+        FROM divergence_opcode_counts WHERE divergence_id = ?
         GROUP BY opcode
-    """)}
+    """, (div_id,))}
     total_ops = sum(counts_by_op.values())
     log_count = sum(counts_by_op.get(op, 0) for op in (0xa0, 0xa1, 0xa2, 0xa3, 0xa4))
     call_count = sum(counts_by_op.get(op, 0)
@@ -2112,8 +2219,8 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
         "sender": h["sender"],
         "recipient": h["recipient"],
         "recipient_name": label_address(h["recipient"]),
-        "baseline_success": h["baseline_success"],
-        "schedule_success": h["schedule_success"],
+        "baseline_success": bool(h["baseline_success"]),
+        "schedule_success": bool(h["schedule_success"]),
         "baseline_gas_used": int(h["baseline_gas_used"]),
         "schedule_gas_used": int(h["schedule_gas_used"]),
         "gas_delta": int(h["gas_delta"]),
@@ -2133,16 +2240,17 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
                        if h.get("oog_opcode") is not None else ""),
             "pattern": h.get("oog_pattern") or "",
             "gas_remaining": h.get("oog_gas_remaining"),
-            "chain_proportional": h.get("oog_chain_proportional"),
+            "chain_proportional": (None if h.get("oog_chain_proportional") is None
+                                   else bool(h.get("oog_chain_proportional"))),
             "bottleneck_depth": h.get("oog_bottleneck_depth"),
             "bottleneck_kind": h.get("oog_bottleneck_kind"),
         } if h.get("oog_contract") else None,
         "op_counts": op_counts,
         "eip8037": {
-            "would_fit_in_original_limit": h.get("would_fit_in_original_limit"),
+            "would_fit_in_original_limit": (None if _would_fit is None else bool(_would_fit)),
             "min_multiplier_to_succeed": _float_or_none(h.get("min_multiplier_to_succeed")),
-            "extra_gas_needed": _int(h.get("extra_gas_needed")),
-            "estimated_min_gas_limit": _int(h.get("estimated_min_gas_limit")),
+            "extra_gas_needed": _int(extra_gas_needed),
+            "estimated_min_gas_limit": _int(estimated_min_gas_limit),
             "schedule_total_gas_spent": _int(h.get("schedule_total_gas_spent")),
             "schedule_state_gas_spent": _int(h.get("schedule_state_gas_spent")),
             "schedule_initial_state_gas": _int(h.get("schedule_initial_state_gas")),
@@ -2154,7 +2262,8 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
             "baseline_total_gas_spent": _int(h.get("baseline_total_gas_spent")),
             "baseline_gas_refunded": _int(h.get("baseline_gas_refunded")),
             "state_gas_category": h.get("state_gas_category"),
-            "reservoir_exhausted": h.get("reservoir_exhausted"),
+            "reservoir_exhausted": (None if h.get("reservoir_exhausted") is None
+                                    else bool(h.get("reservoir_exhausted"))),
         },
         "call_stack": call_stack,
         "gas_breakdown": gas_breakdown,
