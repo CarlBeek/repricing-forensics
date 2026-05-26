@@ -81,127 +81,131 @@ slice of total gas this EIP touches.</p>
 
 {% block scripts %}
 <script>
-(async function() {
+(function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
-  const [overview, funnel, opcodes, breakReason, bottleneckKinds,
-         gas, conc, top10, meta] = await Promise.all([
-    fetchJSON(`/api/overview?${qs}`),
-    fetchJSON(`/api/funnel?${qs}`),
-    fetchJSON(`/api/opcode-gas-share?${qs}`),
-    fetchJSON(`/api/forensics/break-reason?${qs}`),
-    fetchJSON(`/api/forensics/bottleneck-kinds?${qs}`),
-    fetchJSON(`/api/gas-overhead?${qs}`),
-    fetchJSON(`/api/concentration?${qs}`),
-    fetchJSON(`/api/top-contracts?limit=10&${qs}`),
-    fetchJSON(`/api/metadata?${qs}`),
-  ]);
+  const overviewP = fetchJSON(`/api/overview?${qs}`);
+  const funnelP = fetchJSON(`/api/funnel?${qs}`);
+  const opcodesP = fetchJSON(`/api/opcode-gas-share?${qs}`);
+  const breakReasonP = fetchJSON(`/api/forensics/break-reason?${qs}`);
+  const bottleneckKindsP = fetchJSON(`/api/forensics/bottleneck-kinds?${qs}`);
+  const gasP = fetchJSON(`/api/gas-overhead?${qs}`);
+  const concP = fetchJSON(`/api/concentration?${qs}`);
+  const top10P = fetchJSON(`/api/top-contracts?limit=10&${qs}`);
+  const metaP = window.__repricingMetadata || fetchJSON(`/api/metadata?${qs}`);
 
-  document.getElementById('subtitle').textContent =
-    `Blocks ${meta.min_block.toLocaleString()}–${meta.max_block.toLocaleString()}`;
-
-  // 1. Headlines
-  // Show the wallet-fixable card with a sub-line breaking out the
-  // "deep call chain" portion when the producer's chain-walk classifier
-  // has tagged any rows. On older lakes (no tags yet) the deep-chain count
-  // is 0, so we drop the breakdown and the card looks unchanged.
-  const walletFixableSubLabel = overview.wallet_fixable_deep_chain_txs > 0
-    ? `Wallet-Fixable<br><span style="font-size:0.78em; color:var(--text-muted)">${fmtCount(overview.wallet_fixable_shallow_txs)} shallow + ${fmtCount(overview.wallet_fixable_deep_chain_txs)} deep chain</span>`
-    : 'Wallet-Fixable<br>(auto-resolved by gas estimate)';
-  renderPosterCards('headlines', [
-    { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
-    { value: fmtCount(overview.broken_txs), label: 'All Broken Txs' },
-    { value: fmtCount(overview.wallet_fixable_txs), label: walletFixableSubLabel },
-    { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
-  ]);
-
-  // 2. Funnel — Sankey: All → Unchanged/Divergent → subtypes → broken split
-  const totalAnalyzed = overview.total_analyzed;
-  const unchanged = totalAnalyzed - funnel.divergent_txs;
-  const walletFixable = overview.wallet_fixable_txs;
-  const walletShallow = overview.wallet_fixable_shallow_txs;
-  const walletDeepChain = overview.wallet_fixable_deep_chain_txs;
-  const contractBroken = overview.contract_broken_txs;
-
-  const labels = [
-    `All Analyzed\n${fmtCount(totalAnalyzed)}`,                       // 0
-    `Unchanged\n${fmtCount(unchanged)}`,                              // 1
-    `Divergent\n${fmtCount(funnel.divergent_txs)}`,                   // 2
-    `Trace-Divergent Only\n${fmtCount(funnel.trace_divergent_only)}`, // 3
-    `Gas-Only Change\n${fmtCount(funnel.gas_only_change)}`,           // 4
-    `Event Logs Changed\n${fmtCount(funnel.event_log_changed)}`,      // 5
-    `Broken\n${fmtCount(funnel.broken_txs)}`,                         // 6
-    `Wallet-Fixable\n${fmtCount(walletFixable)}`,                     // 7
-    `Contract-Broken\n${fmtCount(contractBroken)}`,                   // 8
-  ];
-  const nodeColors = [
-    COLORS.neutral,    // All Analyzed
-    '#3f3f46',         // Unchanged
-    COLORS.changed,    // Divergent
-    '#3f3f46',         // Trace-divergent only (no observable change → match Unchanged)
-    COLORS.saved,      // Gas-only change
-    COLORS.event_logs, // Event logs
-    COLORS.broken,     // Broken
-    COLORS.call_tree,  // Wallet-fixable
-    COLORS.broken,     // Contract-broken
-  ];
-
-  const sources = [0, 0, 2, 2, 2, 2, 6, 6];
-  const targets = [1, 2, 3, 4, 5, 6, 7, 8];
-  const values = [
-    unchanged,
-    funnel.divergent_txs,
-    funnel.trace_divergent_only,
-    funnel.gas_only_change,
-    funnel.event_log_changed,
-    funnel.broken_txs,
-    walletFixable,
-    contractBroken,
-  ];
-  const linkColors = [
-    'rgba(90,74,32,0.2)',        // → Unchanged
-    'rgba(255,184,48,0.12)',     // → Divergent
-    'rgba(90,74,32,0.18)',       // → Trace-divergent only
-    'rgba(255,208,112,0.12)',    // → Gas-only change
-    'rgba(138,112,48,0.12)',     // → Event logs
-    'rgba(255,184,48,0.2)',      // → Broken
-    'rgba(204,144,32,0.12)',     // → Wallet-fixable
-    'rgba(255,184,48,0.25)',     // → Contract-broken
-  ];
-
-  // When the producer's chain-walk classifier has tagged rows, push the
-  // wallet-fixable bucket through one more split: shallow vs deep call
-  // chain. Older lakes (no tags) get the original 4-bucket sankey.
-  if (walletDeepChain > 0) {
-    const shallowIdx = labels.length;
-    const deepIdx = shallowIdx + 1;
-    labels.push(`Shallow\n${fmtCount(walletShallow)}`);
-    labels.push(`Deep Call Chain\n${fmtCount(walletDeepChain)}`);
-    nodeColors.push(COLORS.call_tree, COLORS.call_tree);
-    sources.push(7, 7);
-    targets.push(shallowIdx, deepIdx);
-    values.push(walletShallow, walletDeepChain);
-    linkColors.push('rgba(204,144,32,0.10)', 'rgba(204,144,32,0.18)');
+  function sectionError(id) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '<p class="loading">Data failed to load.</p>';
   }
 
-  renderSankey('funnel', {
-    labels,
-    sources,
-    targets,
-    values,
-    link_colors: linkColors,
-  }, { height: 420 });
+  function tableError(tbodyId, colspan) {
+    const el = document.getElementById(tbodyId);
+    if (el) el.innerHTML = `<tr><td colspan="${colspan}" class="loading">Data failed to load.</td></tr>`;
+  }
 
-  // 3. Broken-cohort zoom sankey. Starts from the Broken node and
-  // pushes its substructure two levels deeper:
-  //   Broken → Wallet-Fixable / Contract-Broken (not wallet-fixable)
-  //          Wallet-Fixable → Shallow / Deep Call Chain
-  //          Contract-Broken → OOG / Non-OOG revert
-  //                            OOG → bottleneck kinds (Static Limit,
-  //                                  EIP-150 63/64, Floor Gas, ...)
-  // Subnodes are only added when the underlying cohort is non-empty,
-  // so older lakes (no chain-walk tags / no classifier output) still
-  // render a coherent — if shorter — diagram.
-  {
+  function breakdown(overview, funnel) {
+    return {
+      totalAnalyzed: overview.total_analyzed,
+      unchanged: overview.total_analyzed - funnel.divergent_txs,
+      walletFixable: overview.wallet_fixable_txs,
+      walletShallow: overview.wallet_fixable_shallow_txs,
+      walletDeepChain: overview.wallet_fixable_deep_chain_txs,
+      contractBroken: overview.contract_broken_txs,
+    };
+  }
+
+  metaP.then(meta => {
+    document.getElementById('subtitle').textContent =
+      `Blocks ${meta.min_block.toLocaleString()}-${meta.max_block.toLocaleString()}`;
+  }).catch(() => {
+    document.getElementById('subtitle').textContent = 'Block range unavailable';
+  });
+
+  overviewP.then(overview => {
+    // Show the wallet-fixable card with a sub-line breaking out the
+    // "deep call chain" portion when the producer has tagged any rows.
+    const walletFixableSubLabel = overview.wallet_fixable_deep_chain_txs > 0
+      ? `Wallet-Fixable<br><span style="font-size:0.78em; color:var(--text-muted)">${fmtCount(overview.wallet_fixable_shallow_txs)} shallow + ${fmtCount(overview.wallet_fixable_deep_chain_txs)} deep chain</span>`
+      : 'Wallet-Fixable<br>(auto-resolved by gas estimate)';
+    renderPosterCards('headlines', [
+      { value: fmtCount(overview.total_analyzed), label: 'Total Txs Analyzed' },
+      { value: fmtCount(overview.broken_txs), label: 'All Broken Txs' },
+      { value: fmtCount(overview.wallet_fixable_txs), label: walletFixableSubLabel },
+      { value: fmtCount(overview.contract_broken_txs), label: 'Contract-Broken<br>(needs code changes)', color: COLORS.broken },
+    ]);
+  }).catch(() => sectionError('headlines'));
+
+  Promise.all([overviewP, funnelP]).then(([overview, funnel]) => {
+    const b = breakdown(overview, funnel);
+    const labels = [
+      `All Analyzed\n${fmtCount(b.totalAnalyzed)}`,
+      `Unchanged\n${fmtCount(b.unchanged)}`,
+      `Divergent\n${fmtCount(funnel.divergent_txs)}`,
+      `Trace-Divergent Only\n${fmtCount(funnel.trace_divergent_only)}`,
+      `Gas-Only Change\n${fmtCount(funnel.gas_only_change)}`,
+      `Event Logs Changed\n${fmtCount(funnel.event_log_changed)}`,
+      `Broken\n${fmtCount(funnel.broken_txs)}`,
+      `Wallet-Fixable\n${fmtCount(b.walletFixable)}`,
+      `Contract-Broken\n${fmtCount(b.contractBroken)}`,
+    ];
+    const nodeColors = [
+      COLORS.neutral,
+      '#3f3f46',
+      COLORS.changed,
+      '#3f3f46',
+      COLORS.saved,
+      COLORS.event_logs,
+      COLORS.broken,
+      COLORS.call_tree,
+      COLORS.broken,
+    ];
+    const sources = [0, 0, 2, 2, 2, 2, 6, 6];
+    const targets = [1, 2, 3, 4, 5, 6, 7, 8];
+    const values = [
+      b.unchanged,
+      funnel.divergent_txs,
+      funnel.trace_divergent_only,
+      funnel.gas_only_change,
+      funnel.event_log_changed,
+      funnel.broken_txs,
+      b.walletFixable,
+      b.contractBroken,
+    ];
+    const linkColors = [
+      'rgba(90,74,32,0.2)',
+      'rgba(255,184,48,0.12)',
+      'rgba(90,74,32,0.18)',
+      'rgba(255,208,112,0.12)',
+      'rgba(138,112,48,0.12)',
+      'rgba(255,184,48,0.2)',
+      'rgba(204,144,32,0.12)',
+      'rgba(255,184,48,0.25)',
+    ];
+
+    if (b.walletDeepChain > 0) {
+      const shallowIdx = labels.length;
+      const deepIdx = shallowIdx + 1;
+      labels.push(`Shallow\n${fmtCount(b.walletShallow)}`);
+      labels.push(`Deep Call Chain\n${fmtCount(b.walletDeepChain)}`);
+      nodeColors.push(COLORS.call_tree, COLORS.call_tree);
+      sources.push(7, 7);
+      targets.push(shallowIdx, deepIdx);
+      values.push(b.walletShallow, b.walletDeepChain);
+      linkColors.push('rgba(204,144,32,0.10)', 'rgba(204,144,32,0.18)');
+    }
+
+    renderSankey('funnel', {
+      labels,
+      node_colors: nodeColors,
+      sources,
+      targets,
+      values,
+      link_colors: linkColors,
+    }, { height: 420 });
+  }).catch(() => sectionError('funnel'));
+
+  Promise.all([overviewP, funnelP, breakReasonP, bottleneckKindsP]).then(([overview, funnel, breakReason, bottleneckKinds]) => {
+    const b = breakdown(overview, funnel);
     const flowLabels = [];
     const flowColors = [];
     const flowSources = [];
@@ -223,25 +227,25 @@ slice of total gas this EIP touches.</p>
 
     const brokenIdx = addNode(`Broken\n${fmtCount(funnel.broken_txs)}`, COLORS.broken);
 
-    const wfIdx = addNode(`Wallet-Fixable\n${fmtCount(walletFixable)}`, COLORS.call_tree);
-    addLink(brokenIdx, wfIdx, walletFixable, 'rgba(204,144,32,0.18)');
+    const wfIdx = addNode(`Wallet-Fixable\n${fmtCount(b.walletFixable)}`, COLORS.call_tree);
+    addLink(brokenIdx, wfIdx, b.walletFixable, 'rgba(204,144,32,0.18)');
 
     const cbIdx = addNode(
-      `Contract-Broken\n(not wallet-fixable)\n${fmtCount(contractBroken)}`,
+      `Contract-Broken\n(not wallet-fixable)\n${fmtCount(b.contractBroken)}`,
       COLORS.broken,
     );
-    addLink(brokenIdx, cbIdx, contractBroken, 'rgba(255,184,48,0.25)');
+    addLink(brokenIdx, cbIdx, b.contractBroken, 'rgba(255,184,48,0.25)');
 
     // Wallet-fixable subsplit. When the producer's chain-walk classifier
     // hasn't tagged any rows, both sub-counts are 0 — skip the split.
-    if (walletShallow + walletDeepChain > 0) {
-      if (walletShallow > 0) {
-        const idx = addNode(`Shallow\n${fmtCount(walletShallow)}`, COLORS.call_tree);
-        addLink(wfIdx, idx, walletShallow, 'rgba(204,144,32,0.10)');
+    if (b.walletShallow + b.walletDeepChain > 0) {
+      if (b.walletShallow > 0) {
+        const idx = addNode(`Shallow\n${fmtCount(b.walletShallow)}`, COLORS.call_tree);
+        addLink(wfIdx, idx, b.walletShallow, 'rgba(204,144,32,0.10)');
       }
-      if (walletDeepChain > 0) {
-        const idx = addNode(`Deep Call Chain\n${fmtCount(walletDeepChain)}`, COLORS.call_tree);
-        addLink(wfIdx, idx, walletDeepChain, 'rgba(204,144,32,0.18)');
+      if (b.walletDeepChain > 0) {
+        const idx = addNode(`Deep Call Chain\n${fmtCount(b.walletDeepChain)}`, COLORS.call_tree);
+        addLink(wfIdx, idx, b.walletDeepChain, 'rgba(204,144,32,0.18)');
       }
     }
 
@@ -280,11 +284,12 @@ slice of total gas this EIP touches.</p>
       values: flowValues,
       link_colors: flowLinkColors,
     }, { height: 460 });
-  }
+  }).catch(() => sectionError('brokenFlow'));
 
   // 4. Opcode gas share — backend now filters to repriced opcodes only
   // (gas_schedule != gas_baseline), so every row is part of the EIP's
   // surface and the prior orange-highlight palette is redundant.
+  opcodesP.then(opcodes => {
   if (opcodes.length === 0) {
     document.getElementById('opcodeBody').innerHTML =
       '<tr><td colspan="6" class="note">This schedule does not reprice any individual opcodes.</td></tr>';
@@ -303,9 +308,11 @@ slice of total gas this EIP touches.</p>
       </tr>`;
     }).join('');
   }
+  }).catch(() => tableError('opcodeBody', 6));
 
 
   // 5. Gas overhead
+  gasP.then(gas => {
   const s = gas.stats;
   renderPosterCards('gasCards', [
     { value: fmtGas(s.median_delta), label: 'Median Extra Gas', color: COLORS.changed },
@@ -330,8 +337,13 @@ slice of total gas this EIP touches.</p>
     yaxis: { title: 'Cumulative %', range: [0, 105], ticksuffix: '%' },
     height: 400,
   }), { responsive: true });
+  }).catch(() => {
+    sectionError('gasCards');
+    sectionError('gasChart');
+  });
 
   // 6. Concentration
+  concP.then(conc => {
   const n95 = conc.find(c => c.cum_pct >= 95);
   document.getElementById('concNote').innerHTML = n95
     ? `Breakage is highly concentrated: <strong>top ${n95.rank} contracts account for 95%</strong> of all broken transactions.`
@@ -351,17 +363,20 @@ slice of total gas this EIP touches.</p>
     height: 420,
     shapes: [{ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 95, y1: 95, line: { dash: 'dash', color: COLORS.neutral } }],
   }), { responsive: true });
+  }).catch(() => sectionError('concChart'));
 
   // 7. Top 10
+  top10P.then(top10 => {
   document.getElementById('top10Body').innerHTML = top10.map((c, i) => `
     <tr>
       <td>${i + 1}</td>
-      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:var(--text-dim)">${c.recipient.slice(0, 10)}...</span></td>
+      <td><strong>${escHtml(c.name)}</strong><br><span class="mono" style="color:var(--text-dim)">${(c.recipient || '').slice(0, 10)}...</span></td>
       <td style="text-align:right">${fmtCount(c.broken_txs)}</td>
       <td style="text-align:right">${fmtGas(c.avg_delta)}</td>
       <td style="text-align:right">${fmtGas(c.total_delta)}</td>
     </tr>
   `).join('');
+  }).catch(() => tableError('top10Body', 5));
 })();
 </script>
 {% endblock %}

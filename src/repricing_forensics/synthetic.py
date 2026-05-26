@@ -519,7 +519,7 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
 
         conn.execute(
             "INSERT INTO block_coverage VALUES ("
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 SCHEDULE_NAME, SCHEDULE_CONFIG_HASH,
                 block_number, block_hash, parent_hash, timestamp,
@@ -528,8 +528,10 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                 bucket_counts[Bucket.TRACE_ONLY.value],
                 bucket_counts[Bucket.GAS_ONLY.value],
                 bucket_counts[Bucket.EVENT_LOGS_CHANGED.value],
+                bucket_counts[Bucket.SCHEDULE_RESCUED.value],
                 bucket_counts[Bucket.WALLET_FIXABLE_SHALLOW.value],
                 bucket_counts[Bucket.WALLET_FIXABLE_DEEP_CHAIN.value],
+                bucket_counts[Bucket.INCONCLUSIVE_NEEDS_HIGHER_SWEEP.value],
                 bucket_counts[Bucket.CONTRACT_BROKEN.value],
             ),
         )

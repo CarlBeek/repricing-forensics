@@ -63,15 +63,53 @@ T = TypeVar("T")
 # responsive even when the underlying query is slow.
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}
+_refreshing: set[str] = set()
+_refresh_sem = threading.BoundedSemaphore(4)
+
+
+def _refresh_cache_key(key: str, ttl_seconds: float, fn: Callable[[], T]) -> None:
+    """Refresh one stale cache key in the background."""
+    try:
+        with _refresh_sem:
+            t0 = time.monotonic()
+            value = fn()
+            expiry = time.monotonic() + ttl_seconds
+            with _cache_lock:
+                _cache[key] = (expiry, value)
+            _log.info("refreshed stale cache key %s in %.2fs", key, time.monotonic() - t0)
+    except Exception as exc:
+        _log.warning("background refresh for %s failed; keeping stale value: %s", key, exc)
+    finally:
+        with _cache_lock:
+            _refreshing.discard(key)
+
+
+def _start_refresh_once(key: str, ttl_seconds: float, fn: Callable[[], T]) -> None:
+    with _cache_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+    threading.Thread(
+        target=_refresh_cache_key,
+        args=(key, ttl_seconds, fn),
+        name="cache-refresh",
+        daemon=True,
+    ).start()
 
 
 def cached(key: str, ttl_seconds: float, fn: Callable[[], T]) -> T:
-    """Return a cached value for `key` if it's fresh; otherwise run
-    `fn()` and cache the result.
+    """Return a cached value for `key`.
 
-    On `fn()` failure, return the stale value if we have one, else
-    re-raise — this keeps the dashboard rendering during a transient
-    producer outage without hiding a persistent fault."""
+    Fresh hits return immediately. Expired hits also return immediately,
+    but trigger a single bounded background refresh. This stale-while-
+    revalidate behavior is important for the dashboard: a viewer should
+    not wait tens of seconds just because the live SQLite/DuckDB refresh
+    is fighting the producer or paying a cold attach cost.
+
+    First misses still compute synchronously because there is no value to
+    serve yet. On refresh failure, return stale if present; otherwise
+    re-raise.
+    """
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(key)
@@ -79,26 +117,26 @@ def cached(key: str, ttl_seconds: float, fn: Callable[[], T]) -> T:
         expiry, value = hit
         if expiry > now:
             return value
-    # Cache miss or stale.
+        _start_refresh_once(key, ttl_seconds, fn)
+        return value
+
     try:
         value = fn()
     except Exception as exc:
         if hit is not None:
-            _log.warning(
-                "cached(%s) refresh failed, serving stale value: %s",
-                key, exc,
-            )
+            _log.warning("cached(%s) refresh failed, serving stale value: %s", key, exc)
             return hit[1]
         raise
     with _cache_lock:
-        _cache[key] = (now + ttl_seconds, value)
+        _cache[key] = (time.monotonic() + ttl_seconds, value)
     return value
 
 
 def cache_invalidate_all() -> None:
-    """Drop every cached entry. Called on connection reset / shutdown."""
+    """Drop every cached entry. Called on shutdown."""
     with _cache_lock:
         _cache.clear()
+        _refreshing.clear()
 
 
 def cache_endpoint(ttl_seconds: float):
@@ -159,7 +197,6 @@ def get_conn() -> duckdb.DuckDBPyConnection:
                 # queries have long since drained.
                 _retired_conns.append(_conn)
                 _conn = None
-                cache_invalidate_all()
         # Close anything retired a previous cycle ago.
         while len(_retired_conns) > 1:
             old = _retired_conns.pop(0)
@@ -171,7 +208,6 @@ def get_conn() -> duckdb.DuckDBPyConnection:
             producer_path = resolve_producer_db_path()
             _conn = open_session(producer_path)
             _conn_opened_at = time.monotonic()
-            cache_invalidate_all()
         return _conn
 
 

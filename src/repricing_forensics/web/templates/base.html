@@ -71,10 +71,14 @@
       : `/api/metadata?schedule=${encodeURIComponent(SCHEDULE_7904)}`
         + `&schedule_7904=${encodeURIComponent(SCHEDULE_7904)}`
         + `&schedule_8037=${encodeURIComponent(SCHEDULE_8037)}`;
-    fetchJSON(metaUrl).then(m => {
+    window.__repricingMetadata = fetchJSON(metaUrl);
+    window.__repricingMetadata.then(m => {
       document.getElementById('activeSchedule').textContent = m.schedule_name || '';
       document.getElementById('lastUpdated').textContent =
         'Updated ' + new Date(m.last_updated).toLocaleString();
+    }).catch(() => {
+      document.getElementById('activeSchedule').textContent = '';
+      document.getElementById('lastUpdated').textContent = 'Updated time unavailable';
     });
   </script>
   {% block scripts %}{% endblock %}
