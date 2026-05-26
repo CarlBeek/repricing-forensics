@@ -125,31 +125,35 @@ function fmtBytes(n) {
   return n.toLocaleString() + ' B';
 }
 
-(async function() {
+// Each panel fetches and renders on its own promise so that one slow or
+// cold endpoint (e.g. multiplier-histogram on an expired cache) can only
+// delay its own chart — never blank the whole page, as a single
+// `await Promise.all([...])` over every endpoint used to.
+(function() {
   const qs = `schedule=${encodeURIComponent(PAGE_SCHEDULE)}`;
-  const [
-    overview, impact, cost, growth, deploy,
-    buckets, categories, contracts, examples,
-  ] = await Promise.all([
-    fetchJSON(`/api/eip8037/overview?${qs}`),
-    fetchJSON(`/api/eip8037/impact-breakdown?${qs}`),
-    fetchJSON(`/api/eip8037/cost-comparison`),
-    fetchJSON(`/api/eip8037/state-growth?${qs}`),
-    fetchJSON(`/api/eip8037/deployment-ceiling?${qs}`),
-    fetchJSON(`/api/eip8037/multiplier-histogram?${qs}`),
-    fetchJSON(`/api/eip8037/state-gas-by-category?${qs}`),
-    fetchJSON(`/api/eip8037/top-contracts?limit=20&${qs}`),
-    fetchJSON(`/api/eip8037/examples?limit=50&${qs}`),
-  ]);
+  const sectionError = (id, msg) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML =
+      `<p class="note" style="color:var(--red)">${msg || 'Failed to load.'}</p>`;
+  };
 
-  document.getElementById('subtitle').textContent =
-    `${overview.schedule_name} across blocks `
-    + `${overview.min_block.toLocaleString()}–${overview.max_block.toLocaleString()}`
-    + ` (${fmtCount(impact.total)} transactions analyzed)`;
+  const overviewP = fetchJSON(`/api/eip8037/overview?${qs}`);
+  const impactP   = fetchJSON(`/api/eip8037/impact-breakdown?${qs}`);
+
+  // Subtitle needs overview + impact; if either fails, degrade gracefully.
+  Promise.all([overviewP, impactP]).then(([overview, impact]) => {
+    document.getElementById('subtitle').textContent =
+      `${overview.schedule_name} across blocks `
+      + `${overview.min_block.toLocaleString()}–${overview.max_block.toLocaleString()}`
+      + ` (${fmtCount(impact.total)} transactions analyzed)`;
+  }).catch(() => {
+    document.getElementById('subtitle').textContent = 'Summary unavailable';
+  });
 
   // ── A3: Impact Sankey ───────────────────────────────────────────────
   // All transactions → {Unaffected, Affected}; Affected fans out into the
   // four user-facing impact categories. Same shape as the 7904 funnel.
+  impactP.then(impact => {
   const segs = impact.segments;
   const total = impact.total || 1;
   const seg = key => segs.find(s => s.key === key) || { count: 0, label: key };
@@ -216,8 +220,10 @@ function fmtBytes(n) {
     ? `Sidebar: <strong>${fmtCount(r)}</strong> transactions failed under baseline
        but <em>succeed</em> under 8037 (beneficial flips, counted separately).`
     : '';
+  }).catch(() => sectionError('impactBar'));
 
   // ── A2: Cost-per-operation ─────────────────────────────────────────
+  fetchJSON(`/api/eip8037/cost-comparison`).then(cost => {
   const ops = cost.operations;
   const opLabels = ops.map(o => o.label);
   Plotly.newPlot('costComparisonChart', [
@@ -278,8 +284,10 @@ function fmtBytes(n) {
           </tr>`).join('')}
       </tbody>
     </table>`;
+  }).catch(() => sectionError('costComparisonChart'));
 
   // ── A1: State growth ───────────────────────────────────────────────
+  fetchJSON(`/api/eip8037/state-growth?${qs}`).then(growth => {
   if (growth.summary && growth.daily.length > 0) {
     const xs = growth.daily.map(d => new Date(d.day_ts * 1000));
     const ys = growth.daily.map(d => d.state_bytes_added);
@@ -321,9 +329,10 @@ function fmtBytes(n) {
     document.getElementById('stateGrowthChart').innerHTML =
       '<p class="note">No state-growth data in window yet — populated as the producer fills <code>block_summaries.state_gas_sum</code>.</p>';
   }
+  }).catch(() => sectionError('stateGrowthChart'));
 
   // ── A4: Deployment ceiling ─────────────────────────────────────────
-  const dep = deploy;
+  fetchJSON(`/api/eip8037/deployment-ceiling?${qs}`).then(dep => {
   if (dep.samples.length > 0) {
     // Split root vs sub-call so the user can tell which dots are which
     // entry point. Root creates use a filled marker; sub-call creates
@@ -382,8 +391,10 @@ function fmtBytes(n) {
     document.getElementById('deploymentChart').innerHTML =
       '<p class="note">No successful CREATE/CREATE2 frames in cohort yet.</p>';
   }
+  }).catch(() => sectionError('deploymentChart'));
 
   // ── Mechanics: multiplier histogram ────────────────────────────────
+  fetchJSON(`/api/eip8037/multiplier-histogram?${qs}`).then(buckets => {
   Plotly.newPlot('multiplierChart', [{
     x: buckets.map(b => b.bucket),
     y: buckets.map(b => b.txs),
@@ -396,8 +407,10 @@ function fmtBytes(n) {
     yaxis: { title: 'Divergent txs', tickformat: ',' },
     height: 360,
   }), { responsive: true });
+  }).catch(() => sectionError('multiplierChart'));
 
   // ── Mechanics: state-gas categories ────────────────────────────────
+  fetchJSON(`/api/eip8037/state-gas-by-category?${qs}`).then(categories => {
   Plotly.newPlot('categoryChart', [{
     x: categories.map(c => c.category),
     y: categories.map(c => c.total_state_gas_spent),
@@ -420,7 +433,14 @@ function fmtBytes(n) {
       <td style="text-align:right">${fmtGas(c.total_runtime_state_gas)}</td>
       <td style="text-align:right">${fmtGas(c.total_runtime_state_gas_spillover)}</td>
     </tr>`).join('');
+  }).catch(() => {
+    sectionError('categoryChart');
+    document.getElementById('categoryBody').innerHTML =
+      '<tr><td colspan="5" class="note">Failed to load.</td></tr>';
+  });
 
+  // ── Mechanics: top contracts ───────────────────────────────────────
+  fetchJSON(`/api/eip8037/top-contracts?limit=20&${qs}`).then(contracts => {
   document.getElementById('contractBody').innerHTML = contracts.map(c => `
     <tr onclick="location.href='/affected/${encodeURIComponent(c.target_address)}'">
       <td><strong>${escHtml(c.name)}</strong><br>
@@ -430,7 +450,13 @@ function fmtBytes(n) {
       <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
       <td style="text-align:right">${fmtMultiplier(c.p95_min_multiplier_to_succeed)}</td>
     </tr>`).join('');
+  }).catch(() => {
+    document.getElementById('contractBody').innerHTML =
+      '<tr><td colspan="5" class="note">Failed to load.</td></tr>';
+  });
 
+  // ── Mechanics: highest-risk transactions ───────────────────────────
+  fetchJSON(`/api/eip8037/examples?limit=50&${qs}`).then(examples => {
   document.getElementById('exampleBody').innerHTML = examples.map(e => `
     <tr onclick="location.href='/tx/${encodeURIComponent(e.tx_hash)}'">
       <td><span class="mono">${e.tx_hash.slice(0, 12)}...</span><br>
@@ -441,6 +467,10 @@ function fmtBytes(n) {
       <td style="text-align:right">${fmtMultiplier(e.min_multiplier_to_succeed)}</td>
       <td style="text-align:right">${fmtGas(e.schedule_state_gas_spent)}</td>
     </tr>`).join('');
+  }).catch(() => {
+    document.getElementById('exampleBody').innerHTML =
+      '<tr><td colspan="6" class="note">Failed to load.</td></tr>';
+  });
 })();
 </script>
 {% endblock %}

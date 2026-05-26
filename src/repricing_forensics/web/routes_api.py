@@ -1025,7 +1025,11 @@ def eip8037_deployment_ceiling(schedule: str = Query(default=None)):
     """
     s = resolve_schedule(schedule)
     TX_MAX_GAS_LIMIT = 16_777_216  # 2^24, EIP-7825 cap
-    rows = query(f"""
+    # Raw SQLite: drive from divergences (idx_div_schedule) and join
+    # call_frames by the divergence_id PK, rather than the DuckDB
+    # call_frames view (which scans the whole frames table through
+    # sqlite_scanner — ~8.6s cold on the production file).
+    rows = query_sqlite("""
         SELECT
             cf.deployed_bytecode_len,
             cf.gas_used        AS frame_gas_used,
@@ -1037,14 +1041,14 @@ def eip8037_deployment_ceiling(schedule: str = Query(default=None)):
             d.tx_gas_limit,
             d.schedule_success,
             (cf.depth = 0)     AS is_root_create
-        FROM call_frames cf
-        JOIN divergences d USING (divergence_id)
-        WHERE cf.schedule_name = '{s}'
+        FROM divergences d
+        JOIN divergence_call_frames cf ON cf.divergence_id = d.divergence_id
+        WHERE d.schedule_name = ?
           AND cf.call_type IN ('CREATE', 'CREATE2')
           AND cf.success = 1
         ORDER BY cf.gas_used DESC
         LIMIT 5000
-    """)
+    """, (s,))
 
     samples = []
     over_cap = 0
@@ -1253,8 +1257,14 @@ def eip8037_overview(schedule: str = Query(default=None)):
 @router.get("/eip8037/multiplier-histogram")
 @cache_endpoint(_AGGREGATE_TTL)
 def eip8037_multiplier_histogram(schedule: str = Query(default=None)):
+    # Runs through raw SQLite (idx_div_schedule) rather than the
+    # eip8037_tx_impact DuckDB view. The columns it reads
+    # (would_fit_in_original_limit, min_multiplier_to_succeed,
+    # status_changed) are raw on `divergences`, so the view adds nothing
+    # but a full sqlite_scanner pass that fights the writer lock —
+    # ~25s cold on the production file vs sub-second through SQLite.
     s = resolve_schedule(schedule)
-    rows = query(f"""
+    rows = query_sqlite("""
         WITH bucketed AS (
             SELECT
                 CASE
@@ -1280,12 +1290,12 @@ def eip8037_multiplier_histogram(schedule: str = Query(default=None)):
                 count(*) AS txs,
                 sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs,
                 max(min_multiplier_to_succeed) AS max_multiplier
-            FROM eip8037_tx_impact
-            WHERE schedule_name = '{s}'
+            FROM divergences
+            WHERE schedule_name = ?
             GROUP BY 1, 2
         )
         SELECT * FROM bucketed ORDER BY sort_key
-    """)
+    """, (s,))
     return [
         {
             "bucket": r["bucket"],
