@@ -56,6 +56,28 @@ jobs:
             | sudo tee /etc/systemd/system/eip7904-web.service.d/producer.conf > /dev/null
           sudo systemctl daemon-reload
 
+      - name: Ensure producer query indexes
+        run: |
+          . .venv/bin/activate
+          PRODUCER_DB_PATH="$HOME/reth/divergences.sqlite" python - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          from repricing_forensics.producer_schema import initialize_schema
+
+          path = Path(os.environ["PRODUCER_DB_PATH"])
+          if not path.exists() or path.stat().st_size == 0:
+              raise SystemExit(f"producer DB is missing or empty: {path}")
+          conn = sqlite3.connect(path, timeout=300)
+          try:
+              initialize_schema(conn)
+              conn.commit()
+          finally:
+              conn.close()
+          print("producer schema/indexes ok")
+          PY
+
       - name: Restart web server
         run: sudo systemctl restart eip7904-web || echo "Web server service not configured — skipping restart"
 

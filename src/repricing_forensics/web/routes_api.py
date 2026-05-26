@@ -283,29 +283,19 @@ def opcode_gas_share(schedule: str = Query(default=None)):
       - share        — gas_schedule / total_gas_schedule_all_opcodes (percent)
     """
     s = resolve_schedule(schedule)
-    import json
-
-    summary_rows = query_sqlite("""
-        SELECT opcode_totals_7904
-        FROM block_summaries
-        WHERE opcode_totals_7904 IS NOT NULL
-          AND opcode_totals_7904 <> '[]'
-          AND schedule_name = ?
+    rows = query_sqlite("""
+        SELECT
+            CAST(json_extract(j.value, '$.opcode') AS INTEGER) AS opcode,
+            sum(CAST(json_extract(j.value, '$.count') AS INTEGER)) AS count,
+            sum(CAST(json_extract(j.value, '$.gas_baseline') AS INTEGER)) AS gas_baseline,
+            sum(CAST(json_extract(j.value, '$.gas_schedule') AS INTEGER)) AS gas_schedule
+        FROM block_summaries AS bs, json_each(bs.opcode_totals_7904) AS j
+        WHERE bs.opcode_totals_7904 IS NOT NULL
+          AND bs.opcode_totals_7904 <> '[]'
+          AND bs.schedule_name = ?
+        GROUP BY opcode
+        ORDER BY gas_schedule DESC
     """, (s,))
-    totals: dict[int, dict[str, int]] = {}
-    for row in summary_rows:
-        try:
-            entries = json.loads(row["opcode_totals_7904"] or "[]")
-        except (TypeError, json.JSONDecodeError):
-            continue
-        for entry in entries:
-            op = int(entry.get("opcode", 0))
-            acc = totals.setdefault(op, {"opcode": op, "count": 0,
-                                         "gas_baseline": 0, "gas_schedule": 0})
-            acc["count"] += _int(entry.get("count"))
-            acc["gas_baseline"] += _int(entry.get("gas_baseline"))
-            acc["gas_schedule"] += _int(entry.get("gas_schedule"))
-    rows = sorted(totals.values(), key=lambda r: r["gas_schedule"], reverse=True)
     # `total_schedule` covers every opcode (repriced or not) so the
     # returned shares stay comparable to the whole EVM cost surface.
     total_schedule = sum(_int(r["gas_schedule"]) for r in rows) or 1
@@ -342,14 +332,30 @@ def gas_overhead(schedule: str = Query(default=None)):
     unchanged — it was already plotted from the same log2 bins.
     """
     s = resolve_schedule(schedule)
-    rows = query_sqlite("""
-        SELECT bucket, tx_count, gas_delta_sum, gas_delta_min, gas_delta_max,
-               gas_delta_log2_hist
+    hist_cols = ",\n            ".join(
+        "sum(COALESCE(CAST(json_extract(gas_delta_log2_hist, '$[%d]') AS INTEGER), 0)) AS h%d"
+        % (i, i)
+        for i in range(12)
+    )
+    rows = query_sqlite(f"""
+        SELECT
+            sum(tx_count) AS tx_count,
+            sum(gas_delta_sum) AS gas_delta_sum,
+            min(gas_delta_min) AS gas_delta_min,
+            max(gas_delta_max) AS gas_delta_max,
+            {hist_cols}
         FROM block_summaries
         WHERE bucket IN ('gas_only', 'trace_only', 'event_logs_changed')
           AND schedule_name = ?
     """, (s,))
-    return _gas_delta_aggregate_response(rows)
+    row = rows[0] if rows else {}
+    return _gas_delta_aggregate_response([{
+        "tx_count": row.get("tx_count"),
+        "gas_delta_sum": row.get("gas_delta_sum"),
+        "gas_delta_min": row.get("gas_delta_min"),
+        "gas_delta_max": row.get("gas_delta_max"),
+        "gas_delta_log2_hist": [_int(row.get(f"h{i}")) for i in range(12)],
+    }])
 
 
 def _gas_delta_aggregate_response(rows: list[dict]) -> dict:
