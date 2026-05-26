@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import close_conn, get_conn, load_labels
+from .db import close_conn, load_labels
 from .routes_api import router as api_router
 from .routes_pages import router as pages_router
 from .warmup import start_warmer, stop_warmer
@@ -24,15 +24,11 @@ _log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Try to warm the producer-DB connection, but never fail startup
-    # over it — a freshly-deployed server with no producer DB yet
-    # should still come up so /healthz and static assets work. The
-    # exception handler below turns subsequent connection failures
-    # into 503s on /api/* requests.
-    try:
-        get_conn()
-    except Exception as e:
-        _log.warning("Producer DB not available at startup: %s", e)
+    # Do not open the producer DB during startup. On the live 80GB SQLite
+    # file, DuckDB's sqlite_scanner ATTACH can take minutes when the OS
+    # cache is cold; blocking here leaves uvicorn stuck at "Waiting for
+    # application startup" and Cloudflare returns 502. API requests and
+    # the background warmer open the DB lazily after /healthz is serving.
     try:
         load_labels()
     except Exception as e:

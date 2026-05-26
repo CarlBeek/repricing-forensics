@@ -52,7 +52,7 @@ jobs:
         run: |
           PRODUCER_DB_PATH="$HOME/reth/divergences.sqlite"
           sudo mkdir -p /etc/systemd/system/eip7904-web.service.d
-          printf "[Service]\nEnvironment=PRODUCER_DB_PATH=%s\n" "$PRODUCER_DB_PATH" \
+          printf "[Service]\nEnvironment=PRODUCER_DB_PATH=%s\nTimeoutStopSec=20\n" "$PRODUCER_DB_PATH" \
             | sudo tee /etc/systemd/system/eip7904-web.service.d/producer.conf > /dev/null
           sudo systemctl daemon-reload
 
@@ -73,5 +73,24 @@ jobs:
           sudo journalctl -u eip7904-web -n 80 --no-pager || true
           echo
           echo "=== local healthz probe ==="
-          curl -sS -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
-            http://127.0.0.1:8000/healthz || true
+          for i in {1..30}; do
+            if curl -fsS -o /dev/null -w "local HTTP %{http_code} in %{time_total}s\n" \
+              http://127.0.0.1:8000/healthz; then
+              local_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "${local_ok:-0}" = "1"
+
+          echo
+          echo "=== external healthz probe ==="
+          for i in {1..30}; do
+            if curl -fsS -o /dev/null -w "external HTTP %{http_code} in %{time_total}s\n" \
+              https://repricing-forensics.carlbeek.com/healthz; then
+              external_ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "${external_ok:-0}" = "1"
