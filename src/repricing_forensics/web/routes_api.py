@@ -1025,6 +1025,7 @@ def eip8037_deployment_ceiling(schedule: str = Query(default=None)):
     """
     s = resolve_schedule(schedule)
     TX_MAX_GAS_LIMIT = 16_777_216  # 2^24, EIP-7825 cap
+    CPSB = 1530                    # EIP-8037 state-gas cost per byte
     # Raw SQLite: drive from divergences (idx_div_schedule) and join
     # call_frames by the divergence_id PK, rather than the DuckDB
     # call_frames view (which scans the whole frames table through
@@ -1081,6 +1082,8 @@ def eip8037_deployment_ceiling(schedule: str = Query(default=None)):
     total = len(samples)
     return {
         "tx_max_gas_limit": TX_MAX_GAS_LIMIT,
+        "cpsb": CPSB,
+        "state_gas_cap_bytes": TX_MAX_GAS_LIMIT // CPSB,  # size where state-gas alone hits the cap
         "samples": samples,
         "summary": {
             "total_deployments_in_cohort": total,

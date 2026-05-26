@@ -345,7 +345,32 @@ function fmtBytes(n) {
       + `frame gas: ${fmtGas(s.schedule_gas)}<br>`
       + `tx state-gas total: ${fmtGas(s.tx_state_gas)}<br>`
       + (s.size_source === 'approx' ? '<em>size approximated (pre-v7 DB)</em>' : '');
-    const traces = [];
+    // Pure state-gas cost line: y = CPSB × bytes. The dots sit above it
+    // (they also pay regular gas — CODEDEPOSIT + initcode + intrinsic);
+    // where this line crosses the EIP-7825 cap is the size at which the
+    // state charge alone is unaffordable in a single tx. Sampled across
+    // x so it renders as the correct curve on the log y-axis, and
+    // extended at least to the cap-crossing point so that intersection
+    // is always visible.
+    const cpsb = dep.cpsb || 1530;
+    const capBytes = dep.state_gas_cap_bytes || Math.round(dep.tx_max_gas_limit / cpsb);
+    const dataMaxX = Math.max(1, ...dep.samples.map(s => s.bytes));
+    const lineMaxX = Math.min(24576, Math.max(dataMaxX, Math.round(capBytes * 1.08)));
+    const lineX = [], lineY = [];
+    for (let i = 1; i <= 60; i++) {
+      const x = lineMaxX * i / 60;
+      lineX.push(x);
+      lineY.push(x * cpsb);
+    }
+    const traces = [{
+      name: `State-gas cost (${cpsb.toLocaleString()}/byte)`,
+      x: lineX, y: lineY,
+      mode: 'lines', type: 'scatter',
+      line: { color: COLORS.changed, width: 1.5, dash: 'dot' },
+      hovertext: lineX.map((x, i) =>
+        `${Math.round(x).toLocaleString()} B → ${fmtGas(lineY[i])} state-gas`),
+      hoverinfo: 'text',
+    }];
     if (root.length) traces.push({
       name: 'Top-level CREATE tx',
       x: root.map(s => s.bytes), y: root.map(s => s.schedule_gas),
@@ -368,12 +393,21 @@ function fmtBytes(n) {
         y0: dep.tx_max_gas_limit, y1: dep.tx_max_gas_limit,
         line: { dash: 'dash', color: COLORS.broken, width: 1 },
       }],
-      annotations: [{
-        xref: 'paper', x: 1, xanchor: 'right',
-        y: dep.tx_max_gas_limit, yanchor: 'bottom',
-        text: `EIP-7825 cap: ${fmtGas(dep.tx_max_gas_limit)}`,
-        showarrow: false, font: { color: COLORS.broken, size: 11 },
-      }],
+      annotations: [
+        {
+          xref: 'paper', x: 1, xanchor: 'right',
+          y: dep.tx_max_gas_limit, yanchor: 'bottom',
+          text: `EIP-7825 cap: ${fmtGas(dep.tx_max_gas_limit)}`,
+          showarrow: false, font: { color: COLORS.broken, size: 11 },
+        },
+        {
+          x: capBytes, y: dep.tx_max_gas_limit, yref: 'y', xref: 'x',
+          text: `${fmtCount(capBytes)} B`,
+          showarrow: true, arrowhead: 2, arrowsize: 1, arrowcolor: COLORS.changed,
+          ax: 0, ay: 30,
+          font: { color: COLORS.changed, size: 10 },
+        },
+      ],
       height: 440,
       showlegend: true,
     }), { responsive: true });
@@ -384,9 +418,14 @@ function fmtBytes(n) {
          ${fmtCount(sm.total_deployments_in_cohort)} have exact bytecode size;
          the rest are approximated (pre-v7 DB rows).`;
     document.getElementById('deploymentSummary').innerHTML =
-      `${fmtCount(sm.total_deployments_in_cohort)} successful CREATE/CREATE2 frames
-       in cohort; <strong>${fmtCount(sm.over_eip7825_cap)}</strong>
-       (${sm.share_over_cap}%) cross the EIP-7825 cap under 8037. ${sizeNote}`;
+      `The dotted line is the pure state-gas charge, ${cpsb.toLocaleString()} gas/byte;
+       real deployments sit above it because they also pay regular gas (CODEDEPOSIT,
+       initcode, intrinsic). It meets the EIP-7825 cap at
+       <strong>${fmtCount(capBytes)} bytes</strong> — past that, the state charge alone
+       is unaffordable in one transaction (EIP-170 still allows 24 kB).
+       ${fmtCount(sm.total_deployments_in_cohort)} successful CREATE/CREATE2 frames in
+       cohort; <strong>${fmtCount(sm.over_eip7825_cap)}</strong> (${sm.share_over_cap}%)
+       cross the cap under 8037. ${sizeNote}`;
   } else {
     document.getElementById('deploymentChart').innerHTML =
       '<p class="note">No successful CREATE/CREATE2 frames in cohort yet.</p>';
