@@ -21,10 +21,19 @@ ADDRESS_PROJECT_LABELS = {
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "WETH",
     "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
     "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": "SushiSwap Router",
-    "0x00005ea00ac477b1030ce78506496e8c2de24bf5": "Uniswap Universal Router",
-    "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789": "ERC-4337 EntryPoint",
-    "0x000000000004444c5dc75cb358380d2e3de08a90": "1inch Aggregation Router",
-    "0x0000000000000068f116a894984e2db1123eb395": "Uniswap Permit2",
+    "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad": "Uniswap Universal Router",
+    "0x66a9893cc07d91d95644aedd05d03f95e1dba8af": "Uniswap V4 Universal Router",
+    "0x00005ea00ac477b1030ce78506496e8c2de24bf5": "OpenSea SeaDrop",
+    # ERC-4337 EntryPoints — versioned (they coexist on mainnet; the 7702/AA
+    # cohort under EIP-8037 spans all three).
+    "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789": "ERC-4337 EntryPoint v0.6",
+    "0x0000000071727de22e5e9d8baf0edac6f37da032": "ERC-4337 EntryPoint v0.7",
+    "0x4337084d9e255ff0702461cf8895ce9e3b5ff108": "ERC-4337 EntryPoint v0.8",
+    # Uniswap V4 PoolManager — the singleton holding all V4 pools. (Was
+    # previously mislabeled "1inch Aggregation Router"; the 0x…4444 vanity is
+    # V4's, 1inch v6 is the 0x1111… address below.)
+    "0x000000000004444c5dc75cb358380d2e3de08a90": "Uniswap V4 PoolManager",
+    "0x000000000022d473030f116ddee9f6b43ac78ba3": "Uniswap Permit2",
     "0x6b175474e89094c44da98b954eedeac495271d0f": "Maker DAI",
     "0x514910771af9ca656af840dff83e8264ecf986ca": "Chainlink LINK",
     "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce": "SHIB",
@@ -35,7 +44,6 @@ ADDRESS_PROJECT_LABELS = {
     "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb": "0x Settler / Aggregation",
     "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45": "Uniswap V3 Router 2",
     "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae": "LI.FI / Socket Bridge",
-    "0x4337084d9e255ff0702461cf8895ce9e3b5ff108": "ERC-4337 EntryPoint",
 }
 
 
