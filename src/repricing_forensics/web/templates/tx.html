@@ -214,6 +214,14 @@ function renderColumn(eip, tx) {
   const schedPct = limit ? Math.round(tx.schedule_gas_used / limit * 100) : 0;
 
   let diag = '';
+  if (tx.bucket === 'aa_gas_reestimation') diag += `
+    <div style="margin:8px 0; padding:8px 10px; background:var(--orange-bg); border:1px solid var(--orange-border); font-size:0.85em">
+      <strong>ERC-4337 gas re-estimation.</strong> This is an EntryPoint bundle: the
+      OOG below is the account exceeding its signed <code>callGasLimit</code>, not a
+      contract bug. The chain-walk sees a fixed-gas forward, but the fix is off-chain
+      — the bundler re-estimates the UserOp's gas limits and re-signs. Raising the
+      outer tx gas does <em>not</em> help (the EntryPoint forwards a fixed inner budget).
+    </div>`;
   if (tx.divergence) diag += `
     <div style="margin:8px 0; padding:8px 10px; background:var(--orange-bg); border:1px solid var(--orange-border); font-size:0.85em">
       <strong>First divergence:</strong> <code>${escHtml(tx.divergence.opcode)}</code>

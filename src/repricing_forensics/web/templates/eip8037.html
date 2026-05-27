@@ -159,17 +159,20 @@ function fmtBytes(n) {
   const seg = key => segs.find(s => s.key === key) || { count: 0, label: key };
   const unaffected = seg('unaffected').count;
   const affected = total - unaffected;
-  const fanout = ['paid_more_no_change', 'observable_change', 'wallet_fixable', 'contract_broken'];
+  const fanout = ['paid_more_no_change', 'observable_change', 'wallet_fixable',
+                  'aa_gas_reestimation', 'contract_broken'];
   const fanColors = {
     paid_more_no_change: COLORS.saved,
     observable_change:   COLORS.event_logs,
     wallet_fixable:      COLORS.call_tree,
+    aa_gas_reestimation: COLORS.call_tree,
     contract_broken:     COLORS.broken,
   };
   const fanLink = {
     paid_more_no_change: 'rgba(255,208,112,0.12)',
     observable_change:   'rgba(138,112,48,0.14)',
     wallet_fixable:      'rgba(204,144,32,0.16)',
+    aa_gas_reestimation: 'rgba(204,144,32,0.22)',
     contract_broken:     'rgba(255,184,48,0.28)',
   };
 

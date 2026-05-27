@@ -41,6 +41,8 @@ UNI_V2_ROUTER = "0x7a250d5630b4cf539739df2c5dacb4c659f2488d"
 FIAT_TOKEN_IMPL = "0x43506849d7c04f9138d1a2050bbf3a0c054402dd"
 FRESH_CONTRACT = "0x1111111111111111111111111111111111111111"
 EOA_SENDER = "0x2222222222222222222222222222222222222222"
+ENTRYPOINT_V07 = "0x0000000071727de22e5e9d8baf0edac6f37da032"
+AA_ACCOUNT_IMPL = "0xd6cedde84be40893d153be9d467cd6ad37875b28"
 
 ALL_CONTRACTS: tuple[tuple[str, str], ...] = (
     (USDC, "0xUSDC bytecode"),
@@ -332,6 +334,38 @@ def _scenario_8037_needs_higher_multiplier() -> _Tx:
     return tx
 
 
+def _scenario_8037_aa_gas_reestimation() -> _Tx:
+    # ERC-4337 EntryPoint bundle: a new-slot SSTORE inside the account OOGs
+    # under 8037 because the signed callGasLimit was sized pre-8037. The fix
+    # is off-chain re-estimation, not a code change — so it's its own bucket,
+    # not contract_broken.
+    tx = _Tx(
+        bucket=Bucket.AA_GAS_REESTIMATION.value, recipient=ENTRYPOINT_V07,
+        gas_delta=-28_212,
+        baseline_gas_used=158_049, schedule_gas_used=129_837,
+        tx_gas_limit=338_286,
+        baseline_success=True, schedule_success=False, status_changed=True,
+        schedule_state_gas_spent=0, schedule_state_gas_demanded=97_920,
+        state_gas_category="runtime_state_creation",
+        min_multiplier_to_succeed=None,
+        would_fit_in_original_limit=False,
+        divergence_contract=AA_ACCOUNT_IMPL, divergence_call_depth=3,
+        divergence_opcode=_OP_SSTORE,
+        oog_contract=AA_ACCOUNT_IMPL, oog_call_depth=3, oog_opcode=_OP_SSTORE,
+        oog_pattern="storage_heavy", oog_gas_remaining=0,
+        oog_chain_proportional=False, oog_bottleneck_depth=1,
+        oog_bottleneck_kind="FixedGas",
+    )
+    tx.frames = [
+        _frame(0, None, 0, EOA_SENDER, ENTRYPOINT_V07, "CALL", "0x765e827f",
+               gas_provided=338_286, gas_used=129_837, success=False),
+        _frame(1, 0, 1, ENTRYPOINT_V07, AA_ACCOUNT_IMPL, "CALL", "0x",
+               gas_provided=87_869, gas_used=85_511, success=False,
+               gas_requested_on_stack=87_869, parent_gas_at_call=120_000),
+    ]
+    return tx
+
+
 _SCENARIO_FACTORIES = [
     _scenario_unchanged,
     _scenario_unchanged,
@@ -347,6 +381,7 @@ _SCENARIO_FACTORIES = [
     _scenario_contract_broken_fractional,
     _scenario_8037_reservoir_exhausted,
     _scenario_8037_needs_higher_multiplier,
+    _scenario_8037_aa_gas_reestimation,
 ]
 
 
@@ -524,7 +559,8 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                     acc.tx_count_no_state += 1
 
             if tx.bucket in (Bucket.CONTRACT_BROKEN.value,
-                             Bucket.EVENT_LOGS_CHANGED.value):
+                             Bucket.EVENT_LOGS_CHANGED.value,
+                             Bucket.AA_GAS_REESTIMATION.value):
                 _insert_drill_in(
                     conn, tx,
                     block_number=block_number, tx_index=tx_idx,
@@ -533,7 +569,7 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
 
         conn.execute(
             "INSERT INTO block_coverage VALUES ("
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 SCHEDULE_NAME, SCHEDULE_CONFIG_HASH,
                 block_number, block_hash, parent_hash, timestamp,
@@ -547,6 +583,7 @@ def build_synthetic_db(out_path: Path, blocks: int = 5) -> None:
                 bucket_counts[Bucket.WALLET_FIXABLE_DEEP_CHAIN.value],
                 bucket_counts[Bucket.INCONCLUSIVE_NEEDS_HIGHER_SWEEP.value],
                 bucket_counts[Bucket.CONTRACT_BROKEN.value],
+                bucket_counts[Bucket.AA_GAS_REESTIMATION.value],
             ),
         )
 

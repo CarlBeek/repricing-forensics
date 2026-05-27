@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 8  # v8: added divergences.schedule_state_gas_demanded
+SCHEMA_VERSION = 9  # v9: added aa_gas_reestimation bucket + coverage column
 
 
 class Bucket(str, Enum):
@@ -49,12 +49,18 @@ class Bucket(str, Enum):
     # with a higher --research.gas-limit-multipliers ceiling before deciding.
     INCONCLUSIVE_NEEDS_HIGHER_SWEEP = "inconclusive_needs_higher_sweep"
     CONTRACT_BROKEN = "contract_broken"
+    # ERC-4337 EntryPoint OOG break: the EntryPoint forwards a fixed, signed
+    # UserOp gas budget, so the fix is off-chain re-estimation + re-sign, not a
+    # contract change. Split out of contract_broken (where the chain-walk's
+    # FixedGas verdict misclassified it). Drill-in.
+    AA_GAS_REESTIMATION = "aa_gas_reestimation"
 
 
 DRILL_IN_BUCKETS: tuple[str, ...] = (
     Bucket.EVENT_LOGS_CHANGED.value,
     Bucket.INCONCLUSIVE_NEEDS_HIGHER_SWEEP.value,
     Bucket.CONTRACT_BROKEN.value,
+    Bucket.AA_GAS_REESTIMATION.value,
 )
 AGGREGATE_ONLY_BUCKETS: tuple[str, ...] = (
     Bucket.TRACE_ONLY.value,
@@ -103,6 +109,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
             tx_count_wallet_fixable_deep_chain INTEGER NOT NULL,
             tx_count_inconclusive_needs_higher_sweep INTEGER NOT NULL,
             tx_count_contract_broken           INTEGER NOT NULL,
+            tx_count_aa_gas_reestimation       INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (schedule_name, block_number, block_hash)
         )
     """),

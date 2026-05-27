@@ -899,6 +899,7 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
             sum(tx_count_event_logs_changed) AS observable_change,
             sum(tx_count_wallet_fixable_shallow + tx_count_wallet_fixable_deep_chain)
                 AS wallet_fixable,
+            sum(tx_count_aa_gas_reestimation) AS aa_gas_reestimation,
             sum(tx_count_contract_broken + tx_count_inconclusive_needs_higher_sweep)
                 AS contract_broken,
             sum(tx_count_schedule_rescued) AS schedule_rescued
@@ -906,13 +907,18 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
         WHERE schedule_name = ?
     """, (s,))[0]
 
+    # `aa_gas_reestimation` sits between the wallet-fixable and contract-broken
+    # bands: like wallet-fixable it's an off-chain fix (re-estimate the UserOp's
+    # gas limits and re-sign), but it's distinct because raising the *outer* tx
+    # gas doesn't help — the ERC-4337 EntryPoint forwards a fixed inner budget.
     total = _int(row["total"]) or 1
     segments = [
-        ("unaffected",          "Unaffected",                   _int(row["unaffected"])),
-        ("paid_more_no_change", "Pays more, same outcome",      _int(row["paid_more_no_change"])),
-        ("observable_change",   "Event-log difference",         _int(row["observable_change"])),
-        ("wallet_fixable",      "Wallet must raise gas-limit",  _int(row["wallet_fixable"])),
-        ("contract_broken",     "Needs contract change",        _int(row["contract_broken"])),
+        ("unaffected",          "Unaffected",                    _int(row["unaffected"])),
+        ("paid_more_no_change", "Pays more, same outcome",       _int(row["paid_more_no_change"])),
+        ("observable_change",   "Event-log difference",          _int(row["observable_change"])),
+        ("wallet_fixable",      "Wallet must raise gas-limit",   _int(row["wallet_fixable"])),
+        ("aa_gas_reestimation", "ERC-4337: re-estimate UserOp",  _int(row["aa_gas_reestimation"])),
+        ("contract_broken",     "Needs contract change",         _int(row["contract_broken"])),
     ]
     return {
         "total": _int(row["total"]),
@@ -2356,6 +2362,7 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
         "found": True,
         "tx_hash": tx_hash_hex,
         "schedule_name": h.get("schedule_name"),
+        "bucket": h.get("bucket"),
         "block_number": int(h["block_number"]),
         "tx_index": int(h["tx_index"]),
         "sender": h["sender"],
