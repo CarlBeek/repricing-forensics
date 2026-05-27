@@ -40,7 +40,7 @@ reth-research          ──writes──▶  divergences.sqlite (SQLite WAL —
                               repricing_forensics.source_db
                                   ├─ block_coverage          (per-block coverage + per-bucket counts)
                                   ├─ block_summaries         (per-(block, bucket) aggregates; JSON arrays for histograms)
-                                  ├─ divergences             (drill-in cohort: event-changed + contract-broken)
+                                  ├─ divergences             (drill-in cohort: the 4 per-tx buckets — see below)
                                   ├─ call_frames             (per-frame metadata)
                                   ├─ opcode_counts           (per-frame, per-opcode counts)
                                   ├─ event_logs              (per-tx emitted logs)
@@ -58,12 +58,22 @@ write engine for the first; DuckDB's vectorized engine is the right
 query engine for the second. `sqlite_scanner` bridges them with no
 duplication — one file on disk, no lock conflict, live reads.
 
-The bucket assignment (`unchanged` / `trace_only` / `gas_only` /
-`event_logs_changed` / `wallet_fixable_shallow` /
-`wallet_fixable_deep_chain` / `contract_broken`) is owned by the
-producer. Aggregate-only buckets never get per-tx rows in `divergences`;
-the consumer reads their headline numbers from `block_coverage` and
-their gas-delta distributions from `block_summaries`.
+The producer owns the bucket assignment. Ten buckets, in escalating
+severity: `unchanged`, `trace_only`, `gas_only`, `event_logs_changed`,
+`schedule_rescued` (baseline failed, schedule succeeded),
+`wallet_fixable_shallow`, `wallet_fixable_deep_chain`,
+`inconclusive_needs_higher_sweep` (still OOG at the highest swept
+gas-limit multiplier — needs a higher ceiling before a verdict),
+`contract_broken`, and `aa_gas_reestimation` (ERC-4337 EntryPoint OOG —
+fixed off-chain by re-estimating + re-signing the UserOp, not a contract
+change).
+
+Four are **drill-in** (`event_logs_changed`,
+`inconclusive_needs_higher_sweep`, `contract_broken`,
+`aa_gas_reestimation`): they get full per-tx rows in `divergences` and
+the per-frame tables. The rest are **aggregate-only** — no per-tx rows;
+the consumer reads their headline counts from `block_coverage` and their
+gas-delta distributions from `block_summaries`.
 
 See [`docs/storage-redesign.md`](docs/storage-redesign.md) for the full
 design (and the companion `crates/research/docs/storage-redesign.md` in
