@@ -146,10 +146,41 @@ function verdictFor(tx) {
   return { label: 'No outcome change', cls: 'verdict-green' };
 }
 
+// Toggle the non-repriced rows in an opcode table.
+function toggleOps(btn, tableId) {
+  const rows = document.querySelectorAll(`#${tableId} tr.op-extra`);
+  if (!rows.length) return;
+  const showing = rows[0].style.display !== 'none';
+  rows.forEach(r => { r.style.display = showing ? 'none' : ''; });
+  btn.textContent = showing
+    ? `Show ${rows.length} more opcode${rows.length === 1 ? '' : 's'}`
+    : 'Show repriced only';
+}
+
+// 7904 opcode table: repriced opcodes shown by default (those are what the
+// proposal touches), the rest collapsed behind a "see more". The whole
+// table is sortable; hidden rows just have display:none so sorting the
+// visible set still reads correctly.
 function opcodeTable(tx, tableId) {
   const ob = tx.opcode_breakdown || [];
   if (!ob.length) return '<p class="note">No per-opcode data recorded for this schedule.</p>';
+  const repriced = ob.filter(o => o.repriced);
+  const rest = ob.filter(o => !o.repriced);
+  // If nothing was repriced, fall back to showing everything.
+  const visible = repriced.length ? repriced : ob;
+  const hidden = repriced.length ? rest : [];
   const deltaColor = d => d > 0 ? 'var(--red)' : d < 0 ? 'var(--green)' : 'var(--text-dim)';
+  const row = (o, isHidden) => `
+    <tr class="${isHidden ? 'op-extra' : ''}"${isHidden ? ' style="display:none"' : (o.repriced ? ' style="background:var(--orange-bg)"' : '')}>
+      <td><code>${escHtml(o.name)}</code></td>
+      <td style="text-align:right" data-sort="${o.count}">${o.count.toLocaleString()}</td>
+      <td style="text-align:right" data-sort="${o.gas_baseline}">${fmtGas(o.gas_baseline)}</td>
+      <td style="text-align:right" data-sort="${o.gas_schedule}">${fmtGas(o.gas_schedule)}</td>
+      <td style="text-align:right; color:${deltaColor(o.gas_delta)}" data-sort="${o.gas_delta}">${o.gas_delta >= 0 ? '+' : ''}${fmtGas(o.gas_delta)}</td>
+    </tr>`;
+  const seeMore = hidden.length
+    ? `<button onclick="toggleOps(this, '${tableId}')" style="margin-top:8px; background:none; border:1px solid var(--border); color:var(--text-secondary); font-family:var(--font); font-size:0.82em; padding:4px 10px; cursor:pointer">Show ${hidden.length} more opcode${hidden.length === 1 ? '' : 's'}</button>`
+    : '';
   return `
     <table id="${tableId}" style="font-size:0.92em">
       <thead><tr>
@@ -160,16 +191,11 @@ function opcodeTable(tx, tableId) {
         <th onclick="sortTable('${tableId}',4)" style="text-align:right">&Delta;</th>
       </tr></thead>
       <tbody>
-        ${ob.map(o => `
-          <tr ${o.repriced ? 'style="background:var(--orange-bg)"' : ''}>
-            <td><code>${escHtml(o.name)}</code></td>
-            <td style="text-align:right" data-sort="${o.count}">${o.count.toLocaleString()}</td>
-            <td style="text-align:right" data-sort="${o.gas_baseline}">${fmtGas(o.gas_baseline)}</td>
-            <td style="text-align:right" data-sort="${o.gas_schedule}">${fmtGas(o.gas_schedule)}</td>
-            <td style="text-align:right; color:${deltaColor(o.gas_delta)}" data-sort="${o.gas_delta}">${o.gas_delta >= 0 ? '+' : ''}${fmtGas(o.gas_delta)}</td>
-          </tr>`).join('')}
+        ${visible.map(o => row(o, false)).join('')}
+        ${hidden.map(o => row(o, true)).join('')}
       </tbody>
-    </table>`;
+    </table>
+    ${seeMore}`;
 }
 
 function renderColumn(eip, tx) {
@@ -223,6 +249,12 @@ function renderColumn(eip, tx) {
   }
 
   const opsTotal = tx.op_counts ? tx.op_counts.total : 0;
+  // Opcodes are a 7904 (repricing) concern only; 8037 is about state gas,
+  // so its column omits the opcode table entirely.
+  const opcodeSection = eip.key === '7904'
+    ? `<h4 style="margin:14px 0 4px">Repriced opcodes${opsTotal ? ` <span class="note">(${opsTotal.toLocaleString()} ops total)</span>` : ''}</h4>
+       ${opcodeTable(tx, 'opcodes' + eip.key)}`
+    : '';
   return `<div style="background:var(--bg-card); border:1px solid var(--border); padding:16px; ${highlight}">
     ${head}
     <div class="verdict-banner ${v.cls}" style="margin:0 0 10px">${v.label}</div>
@@ -233,8 +265,7 @@ function renderColumn(eip, tx) {
     </tbody></table>
     ${diag}
     ${stateHtml}
-    <h4 style="margin:14px 0 4px">Opcodes hit${opsTotal ? ` <span class="note">(${opsTotal.toLocaleString()} total)</span>` : ''}</h4>
-    ${opcodeTable(tx, 'opcodes' + eip.key)}
+    ${opcodeSection}
   </div>`;
 }
 
