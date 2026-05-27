@@ -27,7 +27,7 @@ from typing import Iterable
 # Bumped on any schema change. The producer writes this into
 # analysis_runs.schema_version; the consumer warns if the latest run was
 # written with a different version.
-SCHEMA_VERSION = 7  # v7: added divergence_call_frames.deployed_bytecode_len
+SCHEMA_VERSION = 8  # v8: added divergences.schedule_state_gas_demanded
 
 
 class Bucket(str, Enum):
@@ -192,6 +192,7 @@ _TABLES: tuple[tuple[str, str], ...] = (
 
             -- 8037 state gas
             schedule_state_gas_spent     INTEGER,
+            schedule_state_gas_demanded  INTEGER,  -- attempted incl. OOG'd charges
             schedule_initial_state_gas   INTEGER,
             schedule_initial_reservoir   INTEGER,
             runtime_state_gas            INTEGER,

@@ -238,13 +238,25 @@ function renderColumn(eip, tx) {
   let stateHtml = '';
   const s = tx.eip8037 || {};
   if (eip.key === '8037') {
+    // "Spent" only counts charges that landed. When a state op runs out of
+    // gas mid-charge, spent is 0 but "demanded" carries what it needed — that
+    // gap is usually the whole reason the tx broke, so surface it.
+    const demanded = s.schedule_state_gas_demanded || 0;
+    const spent = s.schedule_state_gas_spent || 0;
+    const unmetHint = (demanded > spent)
+      ? `<tr><td colspan="2" class="note" style="padding-top:6px">
+           Demanded &gt; charged: a state op ran out of gas before its charge
+           could apply — that ${fmtGas(demanded - spent)} shortfall is what broke it.</td></tr>`
+      : '';
     stateHtml = `
       <table style="font-size:0.9em; margin-top:8px"><tbody>
-        <tr><td>State gas</td><td style="text-align:right">${fmtGas(s.schedule_state_gas_spent)}</td></tr>
+        <tr><td>State gas demanded</td><td style="text-align:right${demanded > spent ? '; color:var(--accent)' : ''}">${fmtGas(demanded)}</td></tr>
+        <tr><td>State gas charged</td><td style="text-align:right">${fmtGas(spent)}</td></tr>
         <tr><td>Runtime state gas</td><td style="text-align:right">${fmtGas(s.runtime_state_gas)}</td></tr>
         <tr><td>Reservoir spillover</td><td style="text-align:right">${fmtGas(s.runtime_state_gas_spillover)}</td></tr>
         <tr><td>Min multiplier to pass</td><td style="text-align:right">${fmtMultiplier(s.min_multiplier_to_succeed)}</td></tr>
         <tr><td>Category</td><td style="text-align:right"><code>${escHtml(s.state_gas_category || '—')}</code></td></tr>
+        ${unmetHint}
       </tbody></table>`;
   }
 

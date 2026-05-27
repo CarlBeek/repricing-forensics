@@ -91,6 +91,7 @@ class _Tx:
 
     # 8037
     schedule_state_gas_spent: int = 0
+    schedule_state_gas_demanded: int = 0
     runtime_state_gas: int = 0
     runtime_state_gas_spillover: int = 0
     schedule_initial_reservoir: int = 0
@@ -302,8 +303,11 @@ def _scenario_8037_needs_higher_multiplier() -> _Tx:
         baseline_gas_used=85_000, schedule_gas_used=205_000,
         tx_gas_limit=100_000,
         baseline_success=True, schedule_success=False, status_changed=True,
-        schedule_state_gas_spent=120_000, runtime_state_gas=120_000,
-        runtime_state_gas_spillover=20_000,
+        # OOG'd at the SSTORE before its state charge landed: 0 spent, but the
+        # charge it tried to make is recorded as demanded.
+        schedule_state_gas_spent=0, schedule_state_gas_demanded=97_920,
+        runtime_state_gas=0,
+        runtime_state_gas_spillover=0,
         schedule_initial_reservoir=100_000,
         state_gas_category="runtime_state_creation",
         reservoir_exhausted=True,
@@ -592,11 +596,11 @@ def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
             divergence_contract, divergence_call_depth, divergence_opcode,
             oog_contract, oog_call_depth, oog_opcode, oog_pattern, oog_gas_remaining,
             oog_chain_proportional, oog_bottleneck_depth, oog_bottleneck_kind,
-            schedule_state_gas_spent, schedule_initial_reservoir,
+            schedule_state_gas_spent, schedule_state_gas_demanded, schedule_initial_reservoir,
             runtime_state_gas, runtime_state_gas_spillover,
             state_gas_category, reservoir_exhausted
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             SCHEDULE_NAME, SCHEDULE_CONFIG_HASH, block_number, tx_index,
@@ -612,7 +616,8 @@ def _insert_drill_in(conn, tx: _Tx, *, block_number: int, tx_index: int,
             tx.oog_pattern, tx.oog_gas_remaining,
             None if tx.oog_chain_proportional is None else int(tx.oog_chain_proportional),
             tx.oog_bottleneck_depth, tx.oog_bottleneck_kind,
-            tx.schedule_state_gas_spent, tx.schedule_initial_reservoir,
+            tx.schedule_state_gas_spent, tx.schedule_state_gas_demanded,
+            tx.schedule_initial_reservoir,
             tx.runtime_state_gas, tx.runtime_state_gas_spillover,
             tx.state_gas_category, int(tx.reservoir_exhausted),
         ),

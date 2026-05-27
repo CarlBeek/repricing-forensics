@@ -109,6 +109,7 @@ def create_views(conn: duckdb.DuckDBPyConnection) -> None:
             baseline_success, schedule_success, status_changed,
             baseline_gas_used, schedule_gas_used, gas_delta,
             schedule_total_gas_spent, schedule_state_gas_spent,
+            schedule_state_gas_demanded,
             schedule_initial_state_gas, schedule_initial_reservoir,
             schedule_floor_gas, schedule_gas_refunded,
             baseline_total_gas_spent, baseline_gas_refunded,
