@@ -79,5 +79,5 @@ the reth tree for the producer side).
   - `config.py`, `labels.py` — paths, address labels
 - `scripts/serve.py` — runs the web app
 - `scripts/build_synthetic_producer_db.py` — fixture CLI
+- `scripts/build_contract_labels.py` — refreshes `cache/contract_labels.csv`
 - `docs/storage-redesign.md` — consumer-side design doc
-- `notebooks/` — older exploratory notebooks (pre-redesign; not maintained)
