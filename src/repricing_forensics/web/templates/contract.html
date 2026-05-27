@@ -167,6 +167,21 @@ function txTable8037(txs) {
     <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 18px 0;">
       ${card7}
       ${card8}
+    </div>
+
+    <h2>Why these transactions change</h2>
+    <p class="note">Changed transactions to this contract, flowing into the reason
+       they diverge. Left: EIP-7904 (divergence opcode → gas-forwarding bottleneck).
+       Right: EIP-8037 (state-gas category → outcome).</p>
+    <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin: 12px 0; align-items:start;">
+      <div>
+        <h3 style="font-size:0.85em; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted)">EIP-7904 · opcode repricing</h3>
+        <div id="sankey7904"></div>
+      </div>
+      <div>
+        <h3 style="font-size:0.85em; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-muted)">EIP-8037 · state gas</h3>
+        <div id="sankey8037"></div>
+      </div>
     </div>`;
 
   if (hit7) {
@@ -232,6 +247,20 @@ function txTable8037(txs) {
   }
 
   el.innerHTML = html;
+
+  // Side-by-side "why it changed" Sankeys. Each renders only if the
+  // contract has changed txs under that schedule; otherwise a short note.
+  function renderFlow(divId, sankey, eipName) {
+    const host = document.getElementById(divId);
+    if (!host) return;
+    if (!sankey || !sankey.values || sankey.values.length === 0) {
+      host.innerHTML = `<p class="note">No changed transactions under ${eipName}.</p>`;
+      return;
+    }
+    renderSankey(divId, sankey, { height: Math.max(280, sankey.labels.length * 34 + 80) });
+  }
+  renderFlow('sankey7904', e7.sankey, 'EIP-7904');
+  renderFlow('sankey8037', e8.sankey, 'EIP-8037');
 })();
 </script>
 {% endblock %}

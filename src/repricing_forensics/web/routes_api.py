@@ -1839,6 +1839,51 @@ def _with_shares(rows: list[dict], count_key: str = "count") -> list[dict]:
     return [{**r, "share": round(r[count_key] / total * 100, 1)} for r in rows]
 
 
+def _contract_flow_sankey(root_label: str, triples: list[tuple[str, str, int]]) -> dict | None:
+    """Build a 3-column Sankey (root → level-1 → level-2) from
+    `(l1, l2, count)` rows. Level-2 nodes are shared across level-1 (one
+    node per distinct l2 label) so converging reasons read as one band.
+    Returns None when there's nothing to show.
+
+    Shape matches the `renderSankey` helper: labels + parallel
+    sources/targets/values index arrays.
+    """
+    triples = [(l1, l2, c) for (l1, l2, c) in triples if c > 0]
+    if not triples:
+        return None
+
+    labels: list[str] = [root_label]
+    node_index: dict[tuple, int] = {}
+
+    def node(key: tuple, label: str) -> int:
+        if key not in node_index:
+            node_index[key] = len(labels)
+            labels.append(label)
+        return node_index[key]
+
+    from collections import defaultdict
+    sources: list[int] = []
+    targets: list[int] = []
+    values: list[int] = []
+
+    # root → level-1 (sum the level-2 counts per level-1 bucket)
+    l1_totals: dict[str, int] = defaultdict(int)
+    for l1, _l2, c in triples:
+        l1_totals[l1] += c
+    for l1, tot in sorted(l1_totals.items(), key=lambda kv: -kv[1]):
+        sources.append(0)
+        targets.append(node(("l1", l1), l1))
+        values.append(tot)
+
+    # level-1 → level-2
+    for l1, l2, c in triples:
+        sources.append(node_index[("l1", l1)])
+        targets.append(node(("l2", l2), l2))
+        values.append(c)
+
+    return {"labels": labels, "sources": sources, "targets": targets, "values": values}
+
+
 @router.get("/affected/{address}")
 @cache_endpoint(_AGGREGATE_TTL)
 def affected_detail(
@@ -1922,6 +1967,33 @@ def affected_detail(
           AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC
     """, (s_7904, addr))
+    # Joint (opcode × why) for the contract's "why it broke" Sankey:
+    # divergence opcode → gas-forwarding reason. The reason is the
+    # chain-walk bottleneck kind, falling back to "proportional
+    # (wallet-fixable)" when every hop forwarded gas via the 63/64 rule,
+    # else "unclassified".
+    flow_7904_raw = query_sqlite("""
+        SELECT divergence_opcode AS op,
+               oog_bottleneck_kind AS kind,
+               oog_chain_proportional AS prop,
+               count(*) AS cnt
+        FROM divergences
+        WHERE bucket = 'contract_broken'
+          AND schedule_name = ?
+          AND recipient = ?
+        GROUP BY 1, 2, 3
+    """, (s_7904, addr))
+    flow_7904_triples = []
+    for r in flow_7904_raw:
+        op_label = opcode_label(r["op"]) if r["op"] is not None else "unknown op"
+        if r["kind"]:
+            reason = r["kind"]
+        elif r["prop"] == 1:
+            reason = "proportional (wallet-fixable)"
+        else:
+            reason = "unclassified"
+        flow_7904_triples.append((op_label, reason, _int(r["cnt"])))
+    eip7904_sankey = _contract_flow_sankey(f"{label_address(addr)} — 7904", flow_7904_triples)
 
     # ── EIP-8037 stats ──
     # Aggregate directly over the recipient-filtered divergences instead
@@ -1968,6 +2040,31 @@ def affected_detail(
           AND recipient = ?
         GROUP BY 1 ORDER BY cnt DESC LIMIT 6
     """, (s_8037, addr))
+    # Joint (state-gas category × outcome) for the contract's 8037 "why"
+    # Sankey: what kind of state the txs touch → what happened to them
+    # (mutually-exclusive, prioritized so each tx lands once).
+    flow_8037_raw = query_sqlite("""
+        SELECT coalesce(state_gas_category, 'uncategorized') AS cat,
+               CASE
+                   WHEN baseline_success = 1 AND schedule_success = 0
+                       THEN 'breaks (status flip)'
+                   WHEN coalesce(would_fit_in_original_limit, 1) = 0
+                        AND coalesce(schedule_state_gas_spent, 0) > 0
+                       THEN 'needs higher gas limit'
+                   WHEN reservoir_exhausted = 1
+                       THEN 'reservoir exhausted'
+                   ELSE 'pays more, still fits'
+               END AS outcome,
+               count(*) AS cnt
+        FROM divergences
+        WHERE schedule_name = ?
+          AND recipient = ?
+        GROUP BY 1, 2
+    """, (s_8037, addr))
+    eip8037_sankey = _contract_flow_sankey(
+        f"{label_address(addr)} — 8037",
+        [(r["cat"], r["outcome"], _int(r["cnt"])) for r in flow_8037_raw],
+    )
     eip8037_txs = query_sqlite("""
         SELECT tx_hash, block_number, tx_gas_limit, min_multiplier_to_succeed,
                reservoir_exhausted, state_gas_category,
@@ -2027,6 +2124,7 @@ def affected_detail(
                 {"kind": r["kind"], "count": _int(r["cnt"])}
                 for r in bottleneck_kinds_raw
             ]),
+            "sankey": eip7904_sankey,
             "transactions": [
                 {
                     "tx_hash": _hex(t["tx_hash"]),
@@ -2050,6 +2148,7 @@ def affected_detail(
                 {"category": r["cat"], "count": _int(r["cnt"])}
                 for r in categories_raw
             ]),
+            "sankey": eip8037_sankey,
             "transactions": [
                 {
                     "tx_hash": _hex(t["tx_hash"]),
