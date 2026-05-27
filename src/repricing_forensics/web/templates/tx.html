@@ -120,216 +120,193 @@ function renderCallSankey(divId, stack) {
   }), { responsive: true });
 }
 
-(async function() {
-  const tx = await fetchJSON(`/api/tx/${encodeURIComponent(TX_HASH)}`);
-  const el = document.getElementById('txDetail');
+function fmtMultiplier(n) { return n == null ? 'n/a' : `${Number(n).toFixed(3)}x`; }
 
-  if (!tx.found) {
-    el.innerHTML = '<h1>Transaction Not Found</h1><p>No divergence data available for this transaction.</p>';
+// The tx page compares the two schedules side by side. Each column is one
+// EIP's view of the same transaction; a tx may diverge under one, both, or
+// neither (a column with no divergence row reads "not affected").
+const EIPS = [
+  { key: '7904', name: 'EIP-7904', sub: 'Opcode repricing', schedule: SCHEDULE_7904 },
+  { key: '8037', name: 'EIP-8037', sub: 'State gas',        schedule: SCHEDULE_8037 },
+];
+// Which column to highlight: set when arriving from a schedule-scoped link
+// (e.g. a sample-tx row on the affected page).
+const CAME_FROM = new URLSearchParams(location.search).get('schedule');
+
+function verdictFor(tx) {
+  if (tx.baseline_success && !tx.schedule_success)
+    return { label: 'Breaks · success → revert', cls: 'verdict-red' };
+  if (!tx.baseline_success && tx.schedule_success)
+    return { label: 'Rescued · revert → success', cls: 'verdict-green' };
+  if (tx.gas_delta !== 0)
+    return {
+      label: `Still ${tx.schedule_success ? 'succeeds' : 'reverts'} · gas ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}`,
+      cls: tx.gas_delta > 0 ? 'verdict-orange' : 'verdict-green',
+    };
+  return { label: 'No outcome change', cls: 'verdict-green' };
+}
+
+function opcodeTable(tx, tableId) {
+  const ob = tx.opcode_breakdown || [];
+  if (!ob.length) return '<p class="note">No per-opcode data recorded for this schedule.</p>';
+  const deltaColor = d => d > 0 ? 'var(--red)' : d < 0 ? 'var(--green)' : 'var(--text-dim)';
+  return `
+    <table id="${tableId}" style="font-size:0.92em">
+      <thead><tr>
+        <th onclick="sortTable('${tableId}',0)">Opcode</th>
+        <th onclick="sortTable('${tableId}',1)" style="text-align:right">Hits</th>
+        <th onclick="sortTable('${tableId}',2)" style="text-align:right">Baseline</th>
+        <th onclick="sortTable('${tableId}',3)" style="text-align:right">Schedule</th>
+        <th onclick="sortTable('${tableId}',4)" style="text-align:right">&Delta;</th>
+      </tr></thead>
+      <tbody>
+        ${ob.map(o => `
+          <tr ${o.repriced ? 'style="background:var(--orange-bg)"' : ''}>
+            <td><code>${escHtml(o.name)}</code></td>
+            <td style="text-align:right" data-sort="${o.count}">${o.count.toLocaleString()}</td>
+            <td style="text-align:right" data-sort="${o.gas_baseline}">${fmtGas(o.gas_baseline)}</td>
+            <td style="text-align:right" data-sort="${o.gas_schedule}">${fmtGas(o.gas_schedule)}</td>
+            <td style="text-align:right; color:${deltaColor(o.gas_delta)}" data-sort="${o.gas_delta}">${o.gas_delta >= 0 ? '+' : ''}${fmtGas(o.gas_delta)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function renderColumn(eip, tx) {
+  const highlight = (CAME_FROM && CAME_FROM === eip.schedule)
+    ? 'box-shadow:0 0 0 2px var(--accent);' : '';
+  const head = `<div style="font-size:0.72em; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-muted); margin-bottom:8px"><strong style="color:var(--text)">${eip.name}</strong> · ${eip.sub}</div>`;
+  if (!tx || !tx.found) {
+    return `<div style="background:var(--bg-card); border:1px solid var(--border); padding:16px; ${highlight}">
+      ${head}
+      <p class="note">Not affected — no divergence recorded under ${eip.name}.</p>
+    </div>`;
+  }
+  const v = verdictFor(tx);
+  const limit = tx.gas_limit || 0;
+  const basePct = limit ? Math.round(tx.baseline_gas_used / limit * 100) : 0;
+  const schedPct = limit ? Math.round(tx.schedule_gas_used / limit * 100) : 0;
+
+  let diag = '';
+  if (tx.divergence) diag += `
+    <div style="margin:8px 0; padding:8px 10px; background:var(--orange-bg); border:1px solid var(--orange-border); font-size:0.85em">
+      <strong>First divergence:</strong> <code>${escHtml(tx.divergence.opcode)}</code>
+      at depth ${tx.divergence.call_depth ?? '?'} in ${escHtml(tx.divergence.contract)}
+    </div>`;
+  if (tx.oog) {
+    let chainTag = '';
+    if (tx.oog.chain_proportional === true) {
+      chainTag = ` <span class="oog-chip oog-chip-fix" title="Every CALL from root to OOG forwarded gas via EIP-150 63/64 — raising the wallet's gas clears it.">wallet-fixable</span>`;
+    } else if (tx.oog.chain_proportional === false) {
+      const kind = tx.oog.bottleneck_kind || 'bottleneck';
+      chainTag = ` <span class="oog-chip oog-chip-broken">${escHtml(kind)}</span>`;
+    }
+    diag += `
+    <div style="margin:8px 0; padding:8px 10px; background:var(--red-bg); border:1px solid var(--red-border); font-size:0.85em">
+      <strong>Out of gas:</strong> <code>${escHtml(tx.oog.opcode)}</code>
+      at depth ${tx.oog.call_depth ?? '?'} in ${escHtml(tx.oog.contract)}${chainTag}
+    </div>`;
+  }
+
+  // State-gas block — only meaningful for 8037.
+  let stateHtml = '';
+  const s = tx.eip8037 || {};
+  if (eip.key === '8037') {
+    stateHtml = `
+      <table style="font-size:0.9em; margin-top:8px"><tbody>
+        <tr><td>State gas</td><td style="text-align:right">${fmtGas(s.schedule_state_gas_spent)}</td></tr>
+        <tr><td>Runtime state gas</td><td style="text-align:right">${fmtGas(s.runtime_state_gas)}</td></tr>
+        <tr><td>Reservoir spillover</td><td style="text-align:right">${fmtGas(s.runtime_state_gas_spillover)}</td></tr>
+        <tr><td>Min multiplier to pass</td><td style="text-align:right">${fmtMultiplier(s.min_multiplier_to_succeed)}</td></tr>
+        <tr><td>Category</td><td style="text-align:right"><code>${escHtml(s.state_gas_category || '—')}</code></td></tr>
+      </tbody></table>`;
+  }
+
+  const opsTotal = tx.op_counts ? tx.op_counts.total : 0;
+  return `<div style="background:var(--bg-card); border:1px solid var(--border); padding:16px; ${highlight}">
+    ${head}
+    <div class="verdict-banner ${v.cls}" style="margin:0 0 10px">${v.label}</div>
+    <table style="font-size:0.9em"><tbody>
+      <tr><td>Baseline</td><td style="text-align:right">${fmtGas(tx.baseline_gas_used)} (${basePct}%) <span style="color:${tx.baseline_success ? 'var(--green)' : 'var(--red)'}">${tx.baseline_success ? 'OK' : 'FAIL'}</span></td></tr>
+      <tr><td>Schedule</td><td style="text-align:right">${fmtGas(tx.schedule_gas_used)} (${schedPct}%) <span style="color:${tx.schedule_success ? 'var(--green)' : 'var(--red)'}">${tx.schedule_success ? 'OK' : 'FAIL'}</span></td></tr>
+      <tr><td>Gas &Delta;</td><td style="text-align:right">${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}</td></tr>
+    </tbody></table>
+    ${diag}
+    ${stateHtml}
+    <h4 style="margin:14px 0 4px">Opcodes hit${opsTotal ? ` <span class="note">(${opsTotal.toLocaleString()} total)</span>` : ''}</h4>
+    ${opcodeTable(tx, 'opcodes' + eip.key)}
+  </div>`;
+}
+
+(async function() {
+  const el = document.getElementById('txDetail');
+  const [tx7904, tx8037] = await Promise.all([
+    fetchJSON(`/api/tx/${encodeURIComponent(TX_HASH)}?schedule=${encodeURIComponent(SCHEDULE_7904)}`).catch(() => ({ found: false })),
+    fetchJSON(`/api/tx/${encodeURIComponent(TX_HASH)}?schedule=${encodeURIComponent(SCHEDULE_8037)}`).catch(() => ({ found: false })),
+  ]);
+  const byEip = { '7904': tx7904, '8037': tx8037 };
+  const present = (tx7904 && tx7904.found) ? tx7904 : ((tx8037 && tx8037.found) ? tx8037 : null);
+
+  if (!present) {
+    el.innerHTML = '<h1>Transaction Not Found</h1><p>No divergence data for this transaction under either schedule.</p>';
     return;
   }
 
-  // Update back link to point to the contract page
-  if (tx.recipient) {
-    document.getElementById('backLink').href = `/affected/${tx.recipient}`;
-    document.getElementById('backLink').textContent = `\u2190 ${escHtml(tx.recipient_name)}`;
-  }
-
-  const gasUsedPct = tx.gas_limit > 0 ? Math.round(tx.baseline_gas_used / tx.gas_limit * 100) : 0;
-  const schedUsedPct = tx.gas_limit > 0 ? Math.round(tx.schedule_gas_used / tx.gas_limit * 100) : 0;
-
-  // Gas breakdown
-  let breakdownHtml = '';
-  if (tx.gas_breakdown && tx.gas_breakdown.length) {
-    const repricingCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
-    const postRefundHeadroom = tx.gas_limit - tx.baseline_gas_used;
-    const statusChanged = tx.baseline_success && !tx.schedule_success;
-    const refundInduced = statusChanged && repricingCost < postRefundHeadroom;
-    const overBy = repricingCost - postRefundHeadroom;
-
-    breakdownHtml = `
-      <h2>Repriced Opcode Breakdown</h2>
-      <table style="max-width:450px;">
-        <thead><tr><th>Opcode</th><th style="text-align:right">Count</th><th style="text-align:right">Extra Gas</th></tr></thead>
-        <tbody>
-          ${tx.gas_breakdown.filter(b => b.gas_delta !== 0).map(b => `<tr>
-            <td><code>${b.opcode}</code></td>
-            <td style="text-align:right">${b.count.toLocaleString()}</td>
-            <td style="text-align:right">${b.gas_delta >= 0 ? '+' : ''}${fmtGas(b.gas_delta)}</td>
-          </tr>`).join('')}
-          <tr style="font-weight:bold; border-top:2px solid var(--text-dim)">
-            <td>Repricing Cost</td>
-            <td style="text-align:right">${tx.gas_breakdown.reduce((s, b) => s + b.count, 0).toLocaleString()}</td>
-            <td style="text-align:right; color:var(--red)">+${fmtGas(repricingCost)}</td>
-          </tr>
-          ${refundInduced ? `
-          <tr style="color:var(--text-muted)">
-            <td>Headroom (post-refund)</td><td></td>
-            <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-          </tr>
-          <tr style="color:var(--orange)">
-            <td colspan="2">Pre-refund headroom</td>
-            <td style="text-align:right">&lt; ${fmtGas(repricingCost)}</td>
-          </tr>` : `
-          <tr style="color:var(--text-muted)">
-            <td>Headroom</td><td></td>
-            <td style="text-align:right">${fmtGas(postRefundHeadroom)}</td>
-          </tr>`}
-          ${overBy > 0 ? `<tr style="font-weight:bold; color:var(--red)">
-            <td>Over Limit By</td><td></td>
-            <td style="text-align:right">+${fmtGas(overBy)}</td>
-          </tr>` : ''}
-        </tbody>
-      </table>
-      ${refundInduced ? `
-      <div style="margin:12px 0; padding:10px 12px; background:var(--orange-bg); border:1px solid var(--orange-border); border-radius:var(--radius-sm); font-size:0.88em; color:var(--text-secondary);">
-        SSTORE gas refunds (${tx.op_counts ? tx.op_counts.sstore : '?'} SSTOREs) are only applied after successful execution.
-        The baseline barely fit within the gas limit before refunds were applied.
-        Adding +${fmtGas(repricingCost)} from repricing tipped it over, causing OOG and consuming all ${fmtGas(tx.gas_limit)} gas.
-      </div>` : ''}`;
-  }
-
-  // Build verdict banner
-  let verdictHtml = '';
-  if (tx.gas_breakdown && tx.gas_breakdown.length) {
-    const repCost = tx.gas_breakdown.reduce((s, b) => s + b.gas_delta, 0);
-    const headroom = tx.gas_limit - tx.baseline_gas_used;
-    const statusFlipped = tx.baseline_success && !tx.schedule_success;
-    const refundCase = statusFlipped && repCost < headroom;
-
-    if (tx.oog && refundCase) {
-      verdictHtml = `<div class="verdict-banner verdict-red">
-        <strong>Verdict:</strong> This transaction fails because SSTORE refunds mask the true gas headroom.
-        The repricing cost of +${fmtGas(repCost)} is small, but the pre-refund headroom was even smaller.
-      </div>`;
-    } else if (tx.oog) {
-      verdictHtml = `<div class="verdict-banner verdict-red">
-        <strong>Verdict:</strong> This transaction fails because repriced opcodes add +${fmtGas(repCost)} gas,
-        exceeding the available headroom of ${fmtGas(headroom)}.
-      </div>`;
-    } else if (statusFlipped) {
-      verdictHtml = `<div class="verdict-banner verdict-orange">
-        <strong>Verdict:</strong> This transaction's status changed from success to failure under the new gas schedule.
-      </div>`;
-    } else {
-      verdictHtml = `<div class="verdict-banner verdict-green">
-        <strong>Verdict:</strong> This transaction's gas usage increased but it still succeeds.
-      </div>`;
-    }
-  }
-
-  let eip8037Html = '';
-  if (tx.eip8037 && (tx.eip8037.schedule_state_gas_spent > 0 || tx.eip8037.min_multiplier_to_succeed != null || tx.eip8037.reservoir_exhausted)) {
-    const s = tx.eip8037;
-    const multiplier = s.min_multiplier_to_succeed == null ? 'n/a' : `${Number(s.min_multiplier_to_succeed).toFixed(3)}x`;
-    eip8037Html = `
-      <h2>EIP-8037 State Gas</h2>
-      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:16px;">
-        <div class="poster-card"><div class="number">${fmtGas(s.schedule_state_gas_spent)}</div><div class="label">State Gas</div></div>
-        <div class="poster-card"><div class="number">${fmtGas(s.runtime_state_gas)}</div><div class="label">Runtime State Gas</div></div>
-        <div class="poster-card"><div class="number">${fmtGas(s.runtime_state_gas_spillover)}</div><div class="label">Reservoir Spillover</div></div>
-        <div class="poster-card"><div class="number">${multiplier}</div><div class="label">Min Multiplier</div></div>
-      </div>
-      <table style="max-width:620px">
-        <tbody>
-          <tr><td>Category</td><td style="text-align:right"><code>${escHtml(s.state_gas_category || '')}</code></td></tr>
-          <tr><td>Initial state gas</td><td style="text-align:right">${fmtGas(s.schedule_initial_state_gas)}</td></tr>
-          <tr><td>Initial reservoir</td><td style="text-align:right">${fmtGas(s.schedule_initial_reservoir)}</td></tr>
-          <tr><td>Estimated min gas limit</td><td style="text-align:right">${s.estimated_min_gas_limit ? fmtGas(s.estimated_min_gas_limit) : 'n/a'}</td></tr>
-          <tr><td>Extra gas needed above original limit</td><td style="text-align:right">${s.extra_gas_needed ? fmtGas(s.extra_gas_needed) : 'n/a'}</td></tr>
-          <tr><td>Schedule refund</td><td style="text-align:right">${fmtGas(s.schedule_gas_refunded)}</td></tr>
-        </tbody>
-      </table>`;
+  if (present.recipient) {
+    document.getElementById('backLink').href = `/affected/${present.recipient}`;
+    document.getElementById('backLink').textContent = `← ${escHtml(present.recipient_name)}`;
   }
 
   el.innerHTML = `
     <h1>Transaction Detail</h1>
-    ${verdictHtml}
-    <p class="mono" style="color:var(--text-dim); word-break:break-all; margin-bottom:20px">
-      ${tx.tx_hash}
-      <a href="https://etherscan.io/tx/${tx.tx_hash}" target="_blank" style="font-size:0.85em; margin-left:8px">etherscan</a>
-      <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${tx.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.85em; margin-left:8px">gas profiler</a>
+    <p class="mono" style="color:var(--text-dim); word-break:break-all; margin-bottom:14px">
+      ${present.tx_hash}
+      <a href="https://etherscan.io/tx/${present.tx_hash}" target="_blank" style="font-size:0.85em; margin-left:8px">etherscan</a>
+      <a href="https://lab.ethpandaops.io/ethereum/execution/gas-profiler/tx/${present.tx_hash}?opcodeView=chart&opcodeSort=gas" target="_blank" style="font-size:0.85em; margin-left:8px">gas profiler</a>
     </p>
 
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:24px;">
-      <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
-        <h5 style="margin-top:0">Transaction Info</h5>
-        <strong>Block:</strong> ${tx.block_number.toLocaleString()} (index ${tx.tx_index})<br>
-        <strong>From:</strong> <span class="mono">${tx.sender}</span><br>
-        <strong>To:</strong> <a href="/affected/${tx.recipient}">${escHtml(tx.recipient_name)}</a>
-        <span class="mono" style="color:var(--text-dim)">${(tx.recipient || '').slice(0, 12)}...</span>
-      </div>
-      <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
-        <h5 style="margin-top:0">Gas Comparison</h5>
-        <strong>Gas Limit:</strong> ${fmtGas(tx.gas_limit)}<br>
-        <strong>Baseline:</strong> ${fmtGas(tx.baseline_gas_used)} (${gasUsedPct}%) —
-          <span style="color:var(--green); font-weight:600">${tx.baseline_success ? 'SUCCESS' : 'FAIL'}</span><br>
-        <strong>Schedule:</strong> ${fmtGas(tx.schedule_gas_used)} (${schedUsedPct}%) —
-          <span style="color:var(--red); font-weight:600">${tx.schedule_success ? 'SUCCESS' : 'FAIL'}</span><br>
-        <strong>Delta:</strong> ${tx.gas_delta >= 0 ? '+' : ''}${fmtGas(tx.gas_delta)}${
-          tx.baseline_success && !tx.schedule_success
-            ? ' <span style="color:var(--orange); font-size:0.85em">(all gas consumed on OOG)</span>' : ''}
-      </div>
+    <div style="background:var(--bg-card); border:1px solid var(--border); padding:14px 16px; margin-bottom:18px; font-size:0.9em">
+      <strong>Block:</strong> ${present.block_number.toLocaleString()} (index ${present.tx_index})
+      <span style="margin:0 10px; opacity:0.3">·</span>
+      <strong>Gas limit:</strong> ${fmtGas(present.gas_limit)}
+      <span style="margin:0 10px; opacity:0.3">·</span>
+      <strong>From:</strong> <span class="mono">${(present.sender || '').slice(0, 12)}…</span>
+      <span style="margin:0 10px; opacity:0.3">·</span>
+      <strong>To:</strong> <a href="/affected/${present.recipient}">${escHtml(present.recipient_name)}</a>
+      <span class="mono" style="color:var(--text-dim)">${(present.recipient || '').slice(0, 12)}…</span>
     </div>
 
-    ${eip8037Html}
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; margin-bottom:24px">
+      ${renderColumn(EIPS[0], tx7904)}
+      ${renderColumn(EIPS[1], tx8037)}
+    </div>
 
-    ${tx.divergence ? `
-    <div style="margin-bottom:12px; padding:10px 12px; background:var(--orange-bg); border:1px solid var(--orange-border); border-radius:var(--radius-sm); font-size:0.88em;">
-      <strong>Divergence:</strong>
-      <code>${escHtml(tx.divergence.opcode)}</code> at depth ${tx.divergence.call_depth ?? '?'}
-      in ${escHtml(tx.divergence.contract)}
-    </div>` : ''}
-
-    ${tx.oog ? (() => {
-      // Producer's chain-walk classifier (NULL on rows analyzed before the
-      // classifier shipped — show nothing rather than a misleading default).
-      let chainTag = '';
-      if (tx.oog.chain_proportional === true) {
-        chainTag = `<span class="oog-chip oog-chip-fix" title="Every CALL from root to OOG forwarded gas via EIP-150 63/64 — raising the wallet's gas clears it.">wallet-fixable (deep chain)</span>`;
-      } else if (tx.oog.chain_proportional === false) {
-        const kind = tx.oog.bottleneck_kind || 'unknown bottleneck';
-        const at = tx.oog.bottleneck_depth != null ? ` at depth ${tx.oog.bottleneck_depth}` : '';
-        const tip = ({
-          'Stipend2300': 'Solidity .transfer()/.send() forwarded the 2300-gas stipend; the callee can never get more — needs a code change.',
-          'FixedGas': 'Caller hardcoded a small constant gas amount on the CALL — needs a code change to forward more.',
-          'FractionalGas': 'Caller passed a fraction of available gas (e.g. gas()/2). May be tunable; usually still requires a code change.',
-        })[kind] || 'Some hop in the call chain throttled gas forwarding — contract-broken.';
-        chainTag = `<span class="oog-chip oog-chip-broken" title="${escHtml(tip)}">${escHtml(kind)}${at}</span>`;
-      }
-      return `
-      <div style="margin-bottom:12px; padding:10px 12px; background:var(--red-bg); border:1px solid var(--red-border); border-radius:var(--radius-sm); font-size:0.88em;">
-        <strong>Out of Gas:</strong>
-        <code>${escHtml(tx.oog.opcode)}</code> at depth ${tx.oog.call_depth ?? '?'}
-        in ${escHtml(tx.oog.contract)}
-        — <code>${escHtml(tx.oog.pattern)}</code>,
-        gas remaining: ${tx.oog.gas_remaining != null ? fmtGas(tx.oog.gas_remaining) : '?'}
-        ${chainTag}
-      </div>`;
-    })() : ''}
-
-    ${breakdownHtml}
-
-    ${tx.op_counts ? `
-    <p style="margin:16px 0 0; font-size:0.88em; color:var(--text-muted)">
-      ${tx.op_counts.total.toLocaleString()} total ops,
-      ${tx.op_counts.sload} SLOADs, ${tx.op_counts.sstore} SSTOREs,
-      ${tx.op_counts.call} CALLs, ${tx.op_counts.log} LOGs
-    </p>` : ''}
-
-    <h2>Gas Flow</h2>
-    <div id="txSankey"></div>
-
-    <h2>Call Stack</h2>
-    <div id="callStackContainer"></div>
+    <div id="stacksArea"></div>
   `;
 
-  // Resolve function signatures, then render call stack + Sankey
-  if (tx.call_stack && tx.call_stack.length > 0) {
-    const selectors = [...new Set(tx.call_stack.map(f => f.selector).filter(Boolean))];
-    await resolveSelectors(selectors);
-    document.getElementById('callStackContainer').innerHTML = renderCallStack(tx.call_stack);
-    renderCallSankey('txSankey', tx.call_stack);
+  // Call stacks differ per schedule. Resolve selectors across both, then
+  // render each diverging schedule's stack + gas flow full-width below.
+  const allFrames = [...(tx7904.call_stack || []), ...(tx8037.call_stack || [])];
+  const selectors = [...new Set(allFrames.map(f => f.selector).filter(Boolean))];
+  await resolveSelectors(selectors);
+
+  let stacksHtml = '';
+  for (const eip of EIPS) {
+    const tx = byEip[eip.key];
+    if (tx && tx.found && tx.call_stack && tx.call_stack.length) {
+      stacksHtml += `<h2>${eip.name} — call stack &amp; gas flow</h2>
+        <div id="sankey${eip.key}"></div>
+        <div id="stack${eip.key}"></div>`;
+    }
+  }
+  document.getElementById('stacksArea').innerHTML = stacksHtml || '<p class="note">No call-stack frames captured for this transaction.</p>';
+
+  for (const eip of EIPS) {
+    const tx = byEip[eip.key];
+    if (tx && tx.found && tx.call_stack && tx.call_stack.length) {
+      document.getElementById('stack' + eip.key).innerHTML = renderCallStack(tx.call_stack);
+      renderCallSankey('sankey' + eip.key, tx.call_stack);
+    }
   }
 })();
 </script>

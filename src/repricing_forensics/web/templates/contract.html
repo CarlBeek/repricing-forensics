@@ -67,7 +67,7 @@ function txTable7904(txs) {
     <table>
       <thead><tr><th>#</th><th>Transaction</th><th>Block</th><th>Gas Δ</th></tr></thead>
       <tbody>${txs.map((t, i) =>
-        `<tr onclick="location.href='/tx/${t.tx_hash}'">
+        `<tr onclick="location.href='/tx/${t.tx_hash}?schedule=${encodeURIComponent(SCHEDULE_7904)}'">
           <td>${i + 1}</td>
           <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
           <td style="text-align:right">${t.block_number.toLocaleString()}</td>
@@ -85,7 +85,7 @@ function txTable8037(txs) {
         <th>Multiplier</th><th>Spillover</th><th>Category</th>
       </tr></thead>
       <tbody>${txs.map((t, i) =>
-        `<tr onclick="location.href='/tx/${t.tx_hash}'">
+        `<tr onclick="location.href='/tx/${t.tx_hash}?schedule=${encodeURIComponent(SCHEDULE_8037)}'">
           <td>${i + 1}</td>
           <td class="mono" style="font-size:0.85em">${t.tx_hash.slice(0, 22)}...</td>
           <td style="text-align:right">${t.block_number.toLocaleString()}</td>

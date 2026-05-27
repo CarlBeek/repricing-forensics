@@ -497,7 +497,7 @@ function fmtBytes(n) {
   // ── Mechanics: highest-risk transactions ───────────────────────────
   fetchJSON(`/api/eip8037/examples?limit=50&${qs}`).then(examples => {
   document.getElementById('exampleBody').innerHTML = examples.map(e => `
-    <tr onclick="location.href='/tx/${encodeURIComponent(e.tx_hash)}'">
+    <tr onclick="location.href='/tx/${encodeURIComponent(e.tx_hash)}?schedule=${encodeURIComponent(PAGE_SCHEDULE)}'">
       <td><span class="mono">${e.tx_hash.slice(0, 12)}...</span><br>
         <span class="note">block ${e.block_number.toLocaleString()}</span></td>
       <td><strong>${escHtml(e.target_name)}</strong></td>

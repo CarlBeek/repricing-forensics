@@ -2199,6 +2199,35 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
                 "gas_delta": delta,
             })
 
+    # Full per-opcode breakdown: every opcode that executed in the tx,
+    # summed across all frames, with the gas it cost under baseline vs the
+    # schedule. This is the per-schedule answer to "how many times was
+    # each opcode hit and what did the repricing do to it". `repriced` is
+    # a convenience flag so the UI can highlight the schedule-affected ops.
+    opcode_breakdown = []
+    for r in query_sqlite("""
+        SELECT opcode,
+               sum(count)        AS count,
+               sum(gas_baseline) AS gas_baseline,
+               sum(gas_schedule) AS gas_schedule
+        FROM divergence_opcode_counts
+        WHERE divergence_id = ?
+        GROUP BY opcode
+    """, (div_id,)):
+        op = int(r["opcode"])
+        gb = _int(r["gas_baseline"])
+        gs = _int(r["gas_schedule"])
+        opcode_breakdown.append({
+            "opcode":       f"0x{op:02x}",
+            "name":         opcode_label(op),
+            "count":        _int(r["count"]),
+            "gas_baseline": gb,
+            "gas_schedule": gs,
+            "gas_delta":    gs - gb,
+            "repriced":     gs != gb,
+        })
+    opcode_breakdown.sort(key=lambda d: (-d["gas_delta"], -d["count"]))
+
     # Cross-frame opcode totals for SLOAD/SSTORE/CALL/LOG/total — used by
     # the op_counts panel on the tx page.
     counts_by_op = {r["opcode"]: _int(r["count"]) for r in query_sqlite("""
@@ -2280,6 +2309,7 @@ def tx_detail(tx_hash: str, schedule: str = Query(default=None)):
         },
         "call_stack": call_stack,
         "gas_breakdown": gas_breakdown,
+        "opcode_breakdown": opcode_breakdown,
     }
 
 
