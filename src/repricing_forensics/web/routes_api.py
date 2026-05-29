@@ -193,6 +193,7 @@ def overview(schedule: str = Query(default=None)):
             sum(tx_count - tx_count_unchanged) AS divergent_txs,
             sum(tx_count_contract_broken) AS contract_broken,
             sum(tx_count_inconclusive_needs_higher_sweep) AS inconclusive,
+            sum(tx_count_aa_gas_reestimation) AS aa_gas_reestimation,
             sum(tx_count_schedule_rescued) AS schedule_rescued,
             sum(tx_count_wallet_fixable_shallow) AS wallet_fixable_shallow,
             sum(tx_count_wallet_fixable_deep_chain) AS wallet_fixable_deep_chain
@@ -202,6 +203,7 @@ def overview(schedule: str = Query(default=None)):
     total_analyzed = _int(row["total_analyzed"])
     contract_broken = _int(row["contract_broken"])
     inconclusive = _int(row["inconclusive"])
+    aa_gas_reestimation = _int(row["aa_gas_reestimation"])
     schedule_rescued = _int(row["schedule_rescued"])
     wallet_fixable_shallow = _int(row["wallet_fixable_shallow"])
     wallet_fixable_deep_chain = _int(row["wallet_fixable_deep_chain"])
@@ -216,10 +218,12 @@ def overview(schedule: str = Query(default=None)):
         "wallet_fixable_deep_chain_txs": wallet_fixable_deep_chain,
         "contract_broken_txs": contract_broken,
         "inconclusive_needs_higher_sweep_txs": inconclusive,
+        "aa_gas_reestimation_txs": aa_gas_reestimation,
         "schedule_rescued_txs": schedule_rescued,
         "breakage_rate": round(broken / total_analyzed * 100, 2) if total_analyzed else 0,
         "contract_breakage_rate": round(contract_broken / total_analyzed * 100, 2) if total_analyzed else 0,
         "inconclusive_rate": round(inconclusive / total_analyzed * 100, 2) if total_analyzed else 0,
+        "aa_gas_reestimation_rate": round(aa_gas_reestimation / total_analyzed * 100, 2) if total_analyzed else 0,
         "rescue_rate": round(schedule_rescued / total_analyzed * 100, 2) if total_analyzed else 0,
     }
 
@@ -241,6 +245,7 @@ def funnel(schedule: str = Query(default=None)):
                 + tx_count_wallet_fixable_shallow
                 + tx_count_wallet_fixable_deep_chain) AS broken,
             sum(tx_count_inconclusive_needs_higher_sweep) AS inconclusive,
+            sum(tx_count_aa_gas_reestimation) AS aa_gas_reestimation,
             sum(tx_count_schedule_rescued)   AS schedule_rescued,
             sum(tx_count_event_logs_changed) AS event_log_changed,
             sum(tx_count_gas_only)           AS gas_only_change,
@@ -252,6 +257,7 @@ def funnel(schedule: str = Query(default=None)):
         "divergent_txs": _int(row["total"]),
         "broken_txs": _int(row["broken"]),
         "inconclusive_needs_higher_sweep": _int(row["inconclusive"]),
+        "aa_gas_reestimation": _int(row["aa_gas_reestimation"]),
         "schedule_rescued": _int(row["schedule_rescued"]),
         "event_log_changed": _int(row["event_log_changed"]),
         "gas_only_change": _int(row["gas_only_change"]),
@@ -870,9 +876,9 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
     bucketed by the user-facing impact of EIP-8037.
 
     Sourced from `block_coverage`'s per-bucket counts (the producer's
-    classifier owns the bucketing). We collapse the producer's nine
-    buckets into five user-visible categories, in order from "no
-    user-visible impact" → "needs code change":
+    classifier owns the bucketing). We collapse the producer's ten
+    buckets into user-visible categories, in order from "no user-visible
+    impact" → "needs code change":
 
       unaffected               — tx didn't diverge under 8037
       paid_more_no_change      — gas_only + trace_only (more expensive,
@@ -881,10 +887,12 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
                                  emitted; observable to integrators)
       wallet_fixable           — bumping the wallet's gas-limit estimate
                                  resolves it
-      contract_broken          — needs a code change (incl. the
-                                 inconclusive_needs_higher_sweep cohort,
-                                 which is a more-investigation flag, not
-                                 a fixability finding)
+      aa_gas_reestimation      — ERC-4337 UserOp gas limits must be
+                                 re-estimated and re-signed off-chain
+      inconclusive             — needs a higher multiplier sweep before
+                                 fixability can be decided
+      contract_broken          — confirmed structural failures that need
+                                 code changes
 
     `schedule_rescued` is reported separately as a positive sidebar (8037
     fixed these baseline failures) rather than mixed into the failure
@@ -900,8 +908,8 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
             sum(tx_count_wallet_fixable_shallow + tx_count_wallet_fixable_deep_chain)
                 AS wallet_fixable,
             sum(tx_count_aa_gas_reestimation) AS aa_gas_reestimation,
-            sum(tx_count_contract_broken + tx_count_inconclusive_needs_higher_sweep)
-                AS contract_broken,
+            sum(tx_count_inconclusive_needs_higher_sweep) AS inconclusive,
+            sum(tx_count_contract_broken) AS contract_broken,
             sum(tx_count_schedule_rescued) AS schedule_rescued
         FROM block_coverage
         WHERE schedule_name = ?
@@ -918,6 +926,7 @@ def eip8037_impact_breakdown(schedule: str = Query(default=None)):
         ("observable_change",   "Event-log difference",          _int(row["observable_change"])),
         ("wallet_fixable",      "Wallet must raise gas-limit",   _int(row["wallet_fixable"])),
         ("aa_gas_reestimation", "ERC-4337: re-estimate UserOp",  _int(row["aa_gas_reestimation"])),
+        ("inconclusive",        "Needs higher sweep",            _int(row["inconclusive"])),
         ("contract_broken",     "Needs contract change",         _int(row["contract_broken"])),
     ]
     return {
@@ -1211,10 +1220,23 @@ def eip8037_overview(schedule: str = Query(default=None)):
             sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END)
                 AS reservoir_exhausted_txs,
             sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(coalesce(schedule_state_gas_demanded, 0)) AS total_state_gas_demanded,
+            sum(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS total_state_gas_attempted,
             sum(runtime_state_gas) AS total_runtime_state_gas,
             sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
             avg(schedule_state_gas_spent) AS avg_state_gas_spent,
+            avg(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS avg_state_gas_attempted,
             max(schedule_state_gas_spent) AS max_state_gas_spent,
+            max(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS max_state_gas_attempted,
             percentile_cont(0.50) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
                 AS p50_min_multiplier_to_succeed,
             percentile_cont(0.95) WITHIN GROUP (ORDER BY min_multiplier_to_succeed)
@@ -1250,10 +1272,14 @@ def eip8037_overview(schedule: str = Query(default=None)):
         "unresolved_replay_failures": _int(stats["unresolved_replay_failures"]),
         "reservoir_exhausted_txs": _int(stats["reservoir_exhausted_txs"]),
         "total_state_gas_spent": _int(stats["total_state_gas_spent"]),
+        "total_state_gas_demanded": _int(stats["total_state_gas_demanded"]),
+        "total_state_gas_attempted": _int(stats["total_state_gas_attempted"]),
         "total_runtime_state_gas": _int(stats["total_runtime_state_gas"]),
         "total_runtime_state_gas_spillover": _int(stats["total_runtime_state_gas_spillover"]),
         "avg_state_gas_spent": _float(stats["avg_state_gas_spent"]),
+        "avg_state_gas_attempted": _float(stats["avg_state_gas_attempted"]),
         "max_state_gas_spent": _int(stats["max_state_gas_spent"]),
+        "max_state_gas_attempted": _int(stats["max_state_gas_attempted"]),
         "p50_min_multiplier_to_succeed": _float_or_none(stats["p50_min_multiplier_to_succeed"]),
         "p95_min_multiplier_to_succeed": _float_or_none(stats["p95_min_multiplier_to_succeed"]),
         "p99_min_multiplier_to_succeed": _float_or_none(stats["p99_min_multiplier_to_succeed"]),
@@ -1448,12 +1474,12 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
     This breakdown surfaces what they ARE diverging on, in priority
     order (mutually exclusive):
 
-    1. `pre_execution_rejection` — EVM rejected the tx before
-       running (e.g. adjusted gas_limit < baseline intrinsic). Producer
-       records these with `schedule_total_gas_spent = 0`.
-    2. `runtime_state_gas` — EVM charged state-gas during execution
-       (SSTORE 0→non-zero, account creation via CALL). 8037's canonical
-       mechanism actually firing.
+    1. `runtime_state_gas` — EVM charged or attempted to charge state-gas
+       during execution (SSTORE 0→non-zero, account creation via CALL).
+       8037's canonical mechanism actually firing.
+    2. `pre_execution_rejection` — EVM rejected the tx before running
+       (e.g. adjusted gas_limit < baseline intrinsic). Producer records
+       these with `schedule_total_gas_spent = 0` and no demanded state gas.
     3. `intrinsic_state_gas_only` — intrinsic state-gas charged at tx
        start (CREATE / 7702 auth) but no runtime state-gas. The
        schedule's intrinsic surcharge drove the divergence.
@@ -1471,11 +1497,12 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
         WITH categorized AS (
             SELECT
                 CASE
+                    WHEN coalesce(schedule_state_gas_demanded, 0) > 0
+                      OR coalesce(schedule_state_gas_spent, 0)
+                         - coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'runtime_state_gas'
                     WHEN coalesce(schedule_total_gas_spent, 0) = 0
                         THEN 'pre_execution_rejection'
-                    WHEN coalesce(schedule_state_gas_spent, 0)
-                       - coalesce(schedule_initial_state_gas, 0) > 0
-                        THEN 'runtime_state_gas'
                     WHEN coalesce(schedule_initial_state_gas, 0) > 0
                         THEN 'intrinsic_state_gas_only'
                     WHEN event_logs_changed
@@ -1483,7 +1510,11 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
                     ELSE 'other_gas_accounting'
                 END AS category,
                 status_changed, baseline_success, schedule_success,
-                coalesce(schedule_state_gas_spent, 0) AS sg_spent
+                coalesce(schedule_state_gas_spent, 0) AS sg_spent,
+                greatest(
+                    coalesce(schedule_state_gas_spent, 0),
+                    coalesce(schedule_state_gas_demanded, 0)
+                ) AS sg_attempted
             FROM divergences
             WHERE schedule_name = '{s}'
         )
@@ -1493,7 +1524,8 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
             sum(CASE WHEN status_changed THEN 1 ELSE 0 END) AS status_changed_txs,
             sum(CASE WHEN baseline_success AND NOT schedule_success
                           THEN 1 ELSE 0 END)              AS newly_broken_txs,
-            sum(sg_spent)                                  AS total_state_gas_spent
+            sum(sg_spent)                                  AS total_state_gas_spent,
+            sum(sg_attempted)                              AS total_state_gas_attempted
         FROM categorized
         GROUP BY category
         ORDER BY txs DESC
@@ -1505,6 +1537,7 @@ def eip8037_divergence_reasons(schedule: str = Query(default=None)):
             "status_changed_txs": _int(r["status_changed_txs"]),
             "newly_broken_txs": _int(r["newly_broken_txs"]),
             "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+            "total_state_gas_attempted": _int(r["total_state_gas_attempted"]),
         }
         for r in rows
     ]
@@ -1537,11 +1570,12 @@ def eip8037_unresolved_breakdown(schedule: str = Query(default=None)):
         WITH categorized AS (
             SELECT
                 CASE
+                    WHEN coalesce(schedule_state_gas_demanded, 0) > 0
+                      OR coalesce(schedule_state_gas_spent, 0)
+                         - coalesce(schedule_initial_state_gas, 0) > 0
+                        THEN 'runtime_state_gas'
                     WHEN coalesce(schedule_total_gas_spent, 0) = 0
                         THEN 'pre_execution_rejection'
-                    WHEN coalesce(schedule_state_gas_spent, 0)
-                       - coalesce(schedule_initial_state_gas, 0) > 0
-                        THEN 'runtime_state_gas'
                     WHEN coalesce(schedule_initial_state_gas, 0) > 0
                         THEN 'intrinsic_state_gas_only'
                     WHEN event_logs_changed
@@ -1585,10 +1619,19 @@ def eip8037_state_gas_by_category(schedule: str = Query(default=None)):
     s = resolve_schedule(schedule)
     rows = query(f"""
         SELECT
-            state_gas_category,
+            coalesce(state_gas_category, 'uncategorized') AS state_gas_category,
             count(*) AS txs,
             sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(coalesce(schedule_state_gas_demanded, 0)) AS total_state_gas_demanded,
+            sum(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS total_state_gas_attempted,
             avg(schedule_state_gas_spent) AS avg_state_gas_spent,
+            avg(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS avg_state_gas_attempted,
             sum(runtime_state_gas) AS total_runtime_state_gas,
             sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
             sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
@@ -1596,14 +1639,17 @@ def eip8037_state_gas_by_category(schedule: str = Query(default=None)):
         FROM eip8037_tx_impact
         WHERE schedule_name = '{s}'
         GROUP BY 1
-        ORDER BY total_state_gas_spent DESC, txs DESC
+        ORDER BY total_state_gas_attempted DESC, txs DESC
     """)
     return [
         {
             "category": r["state_gas_category"],
             "txs": _int(r["txs"]),
             "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+            "total_state_gas_demanded": _int(r["total_state_gas_demanded"]),
+            "total_state_gas_attempted": _int(r["total_state_gas_attempted"]),
             "avg_state_gas_spent": _float(r["avg_state_gas_spent"]),
+            "avg_state_gas_attempted": _float(r["avg_state_gas_attempted"]),
             "total_runtime_state_gas": _int(r["total_runtime_state_gas"]),
             "total_runtime_state_gas_spillover": _int(r["total_runtime_state_gas_spillover"]),
             "reservoir_exhausted_txs": _int(r["reservoir_exhausted_txs"]),
@@ -1626,9 +1672,9 @@ def eip8037_top_contracts(
         WHERE schedule_name = '{s}'
           AND (original_limit_failures > 0
                OR status_changed_txs > 0
-               OR total_state_gas_spent > 0)
+               OR total_state_gas_attempted > 0)
         ORDER BY original_limit_failures DESC,
-                 total_state_gas_spent DESC,
+                 total_state_gas_attempted DESC,
                  status_changed_txs DESC,
                  divergent_txs DESC
         LIMIT {int(limit)}
@@ -1643,6 +1689,8 @@ def eip8037_top_contracts(
             "fixable_with_more_outer_gas": _int(r["fixable_with_more_outer_gas"]),
             "unresolved_replay_failures": _int(r["unresolved_replay_failures"]),
             "total_state_gas_spent": _int(r["total_state_gas_spent"]),
+            "total_state_gas_demanded": _int(r["total_state_gas_demanded"]),
+            "total_state_gas_attempted": _int(r["total_state_gas_attempted"]),
             "total_runtime_state_gas_spillover": _int(r["total_runtime_state_gas_spillover"]),
             "reservoir_exhausted_txs": _int(r["reservoir_exhausted_txs"]),
             "p95_min_multiplier_to_succeed": _float_or_none(r["p95_min_multiplier_to_succeed"]),
@@ -1669,7 +1717,8 @@ def eip8037_examples(
             baseline_gas_used, schedule_gas_used, gas_delta,
             would_fit_in_original_limit, min_multiplier_to_succeed,
             extra_gas_needed, estimated_min_gas_limit, state_gas_category,
-            schedule_state_gas_spent, runtime_state_gas,
+            schedule_state_gas_spent, schedule_state_gas_demanded,
+            schedule_state_gas_attempted, runtime_state_gas,
             schedule_initial_reservoir, runtime_state_gas_spillover,
             reservoir_exhausted
         FROM eip8037_tx_impact
@@ -1685,7 +1734,7 @@ def eip8037_examples(
                 ELSE 3
             END,
             coalesce(min_multiplier_to_succeed, 999999) DESC,
-            schedule_state_gas_spent DESC
+            schedule_state_gas_attempted DESC
         LIMIT {int(limit)}
     """)
     return [
@@ -1708,6 +1757,8 @@ def eip8037_examples(
             "estimated_min_gas_limit": _int(r["estimated_min_gas_limit"]),
             "state_gas_category": r["state_gas_category"],
             "schedule_state_gas_spent": _int(r["schedule_state_gas_spent"]),
+            "schedule_state_gas_demanded": _int(r["schedule_state_gas_demanded"]),
+            "schedule_state_gas_attempted": _int(r["schedule_state_gas_attempted"]),
             "runtime_state_gas": _int(r["runtime_state_gas"]),
             "schedule_initial_reservoir": _int(r["schedule_initial_reservoir"]),
             "runtime_state_gas_spillover": _int(r["runtime_state_gas_spillover"]),
@@ -2006,19 +2057,25 @@ def affected_detail(
     # of the eip8037_contract_impact view (which aggregates the whole
     # table). The derived `original_limit_failure` predicate is inlined
     # to match the view: NOT would_fit (NULL→treated as fits) AND state
-    # gas was actually charged.
+    # gas was actually charged or demanded by an OOG-before-charge state op.
     eip8037_agg = query_sqlite("""
         SELECT
             count(*) AS divergent_txs,
             sum(CASE WHEN status_changed = 1 THEN 1 ELSE 0 END) AS status_changed_txs,
             sum(CASE WHEN coalesce(would_fit_in_original_limit, 1) = 0
-                      AND coalesce(schedule_state_gas_spent, 0) > 0
+                      AND (coalesce(schedule_state_gas_spent, 0) > 0
+                           OR coalesce(schedule_state_gas_demanded, 0) > 0)
                      THEN 1 ELSE 0 END) AS original_limit_failures,
             sum(CASE WHEN schedule_success = 1
                       AND would_fit_in_original_limit = 0
                      THEN 1 ELSE 0 END) AS fixable_with_more_outer_gas,
             sum(CASE WHEN reservoir_exhausted = 1 THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
             sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(coalesce(schedule_state_gas_demanded, 0)) AS total_state_gas_demanded,
+            sum(max(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS total_state_gas_attempted,
             max(min_multiplier_to_succeed) AS max_min_multiplier_to_succeed,
             max(CASE WHEN schedule_success = 1
                       AND coalesce(would_fit_in_original_limit, 1) = 0
@@ -2055,7 +2112,8 @@ def affected_detail(
                    WHEN baseline_success = 1 AND schedule_success = 0
                        THEN 'breaks (status flip)'
                    WHEN coalesce(would_fit_in_original_limit, 1) = 0
-                        AND coalesce(schedule_state_gas_spent, 0) > 0
+                        AND (coalesce(schedule_state_gas_spent, 0) > 0
+                             OR coalesce(schedule_state_gas_demanded, 0) > 0)
                        THEN 'needs higher gas limit'
                    WHEN reservoir_exhausted = 1
                        THEN 'reservoir exhausted'
@@ -2074,20 +2132,26 @@ def affected_detail(
     eip8037_txs = query_sqlite("""
         SELECT tx_hash, block_number, tx_gas_limit, min_multiplier_to_succeed,
                reservoir_exhausted, state_gas_category,
-               runtime_state_gas_spillover, schedule_state_gas_spent
+               runtime_state_gas_spillover, schedule_state_gas_spent,
+               schedule_state_gas_demanded,
+               max(coalesce(schedule_state_gas_spent, 0),
+                   coalesce(schedule_state_gas_demanded, 0)) AS schedule_state_gas_attempted
         FROM divergences
         WHERE schedule_name = ?
           AND recipient = ?
           AND ((coalesce(would_fit_in_original_limit, 1) = 0
-                  AND coalesce(schedule_state_gas_spent, 0) > 0)
+                  AND (coalesce(schedule_state_gas_spent, 0) > 0
+                       OR coalesce(schedule_state_gas_demanded, 0) > 0))
                OR status_changed = 1
                OR reservoir_exhausted = 1)
         ORDER BY
             CASE WHEN baseline_success = 1 AND schedule_success = 0 THEN 0
                  WHEN coalesce(would_fit_in_original_limit, 1) = 0
-                      AND coalesce(schedule_state_gas_spent, 0) > 0 THEN 1
+                      AND (coalesce(schedule_state_gas_spent, 0) > 0
+                           OR coalesce(schedule_state_gas_demanded, 0) > 0) THEN 1
                  WHEN reservoir_exhausted = 1 THEN 2 ELSE 3 END,
-            coalesce(min_multiplier_to_succeed, 999999) DESC
+            coalesce(min_multiplier_to_succeed, 999999) DESC,
+            schedule_state_gas_attempted DESC
         LIMIT 20
     """, (s_8037, addr))
 
@@ -2147,6 +2211,8 @@ def affected_detail(
             "fixable_with_more_outer_gas": _int(eip8037_row["fixable_with_more_outer_gas"]) if eip8037_row else 0,
             "reservoir_exhausted_txs": _int(eip8037_row["reservoir_exhausted_txs"]) if eip8037_row else 0,
             "total_state_gas_spent": _int(eip8037_row["total_state_gas_spent"]) if eip8037_row else 0,
+            "total_state_gas_demanded": _int(eip8037_row["total_state_gas_demanded"]) if eip8037_row else 0,
+            "total_state_gas_attempted": _int(eip8037_row["total_state_gas_attempted"]) if eip8037_row else 0,
             "p95_min_multiplier_to_succeed": eip8037_p95_multiplier if eip8037_row else None,
             "max_min_multiplier_to_succeed": _float_or_none(eip8037_row["max_min_multiplier_to_succeed"]) if eip8037_row else None,
             "max_extra_gas_needed": _int(eip8037_row["max_extra_gas_needed"]) if eip8037_row else 0,
@@ -2165,6 +2231,8 @@ def affected_detail(
                     "state_gas_category": t["state_gas_category"],
                     "runtime_state_gas_spillover": _int(t["runtime_state_gas_spillover"]),
                     "schedule_state_gas_spent": _int(t["schedule_state_gas_spent"]),
+                    "schedule_state_gas_demanded": _int(t["schedule_state_gas_demanded"]),
+                    "schedule_state_gas_attempted": _int(t["schedule_state_gas_attempted"]),
                 }
                 for t in eip8037_txs
             ],

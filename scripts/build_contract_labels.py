@@ -78,7 +78,7 @@ MANUAL_LABELS_EXTRA: dict[str, str] = {
     "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC",
     "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "Uniswap UNI",
     "0x0000000071727de22e5e9d8baf0edac6f37da032": "ERC-4337 EntryPoint v0.7",
-    "0x4337084d9e255ff0702461cf8895ce9e3b5ff108": "ERC-4337 EntryPoint v0.6",
+    "0x4337084d9e255ff0702461cf8895ce9e3b5ff108": "ERC-4337 EntryPoint v0.8",
     "0x000000000022d473030f116ddee9f6b43ac78ba3": "Uniswap Permit2",
     "0x43506849d7c04f9138d1a2050bbf3a0c054402dd": "Circle USDC (impl)",
     "0x11b815efb8f581194ae79006d24e0d814b7697f6": "Uniswap V3 Pool",

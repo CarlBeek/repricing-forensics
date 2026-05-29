@@ -75,12 +75,12 @@
    bucket distribution of the multiplier required.</p>
 <div id="multiplierChart"><p class="loading">Loading chart...</p></div>
 
-<h3 style="margin-top:18px">State-gas spent by category</h3>
+<h3 style="margin-top:18px">State-gas attempted by category</h3>
 <p>Which kinds of state-touching transactions dominate the new gas surface.</p>
 <div id="categoryChart"><p class="loading">Loading chart...</p></div>
 <table>
-  <thead><tr><th>Category</th><th>Txs</th><th>Total State Gas</th><th>Runtime State Gas</th><th>Spillover</th></tr></thead>
-  <tbody id="categoryBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
+  <thead><tr><th>Category</th><th>Txs</th><th>Attempted State Gas</th><th>Charged</th><th>Demanded</th><th>Spillover</th></tr></thead>
+  <tbody id="categoryBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 
 <h3 style="margin-top:18px">Reservoir activation (dormant today)</h3>
@@ -100,13 +100,13 @@
   false-positives until the producer-side fixes land. Read it as
   "contracts to investigate," not "contracts confirmed broken."</p>
 <table>
-  <thead><tr><th>Contract</th><th>Limit failures</th><th>Status flips</th><th>State gas</th><th>p95 multiplier</th></tr></thead>
+  <thead><tr><th>Contract</th><th>Limit failures</th><th>Status flips</th><th>State gas attempted</th><th>p95 multiplier</th></tr></thead>
   <tbody id="contractBody"><tr><td colspan="5" class="loading">Loading...</td></tr></tbody>
 </table>
 
 <h3 style="margin-top:18px">Highest-risk individual transactions</h3>
 <table>
-  <thead><tr><th>Tx</th><th>Target</th><th>Gas limit</th><th>Gas used (8037)</th><th>Multiplier</th><th>State gas</th></tr></thead>
+  <thead><tr><th>Tx</th><th>Target</th><th>Gas limit</th><th>Gas used (8037)</th><th>Multiplier</th><th>State gas attempted</th></tr></thead>
   <tbody id="exampleBody"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
 </table>
 {% endblock %}
@@ -160,12 +160,13 @@ function fmtBytes(n) {
   const unaffected = seg('unaffected').count;
   const affected = total - unaffected;
   const fanout = ['paid_more_no_change', 'observable_change', 'wallet_fixable',
-                  'aa_gas_reestimation', 'contract_broken'];
+                  'aa_gas_reestimation', 'inconclusive', 'contract_broken'];
   const fanColors = {
     paid_more_no_change: COLORS.saved,
     observable_change:   COLORS.event_logs,
     wallet_fixable:      COLORS.call_tree,
     aa_gas_reestimation: COLORS.call_tree,
+    inconclusive:        COLORS.changed,
     contract_broken:     COLORS.broken,
   };
   const fanLink = {
@@ -173,6 +174,7 @@ function fmtBytes(n) {
     observable_change:   'rgba(138,112,48,0.14)',
     wallet_fixable:      'rgba(204,144,32,0.16)',
     aa_gas_reestimation: 'rgba(204,144,32,0.22)',
+    inconclusive:        'rgba(255,208,112,0.16)',
     contract_broken:     'rgba(255,184,48,0.28)',
   };
 
@@ -455,15 +457,17 @@ function fmtBytes(n) {
   fetchJSON(`/api/eip8037/state-gas-by-category?${qs}`).then(categories => {
   Plotly.newPlot('categoryChart', [{
     x: categories.map(c => c.category),
-    y: categories.map(c => c.total_state_gas_spent),
+    y: categories.map(c => c.total_state_gas_attempted),
     type: 'bar',
     marker: { color: COLORS.changed },
     hovertext: categories.map(c =>
-      `${c.category}<br>${fmtCount(c.txs)} txs<br>${fmtGas(c.total_state_gas_spent)} state gas`),
+      `${c.category}<br>${fmtCount(c.txs)} txs<br>`
+      + `${fmtGas(c.total_state_gas_attempted)} state gas attempted<br>`
+      + `${fmtGas(c.total_state_gas_spent)} charged`),
     hoverinfo: 'text',
   }], layout({
     xaxis: { title: 'state_gas_category' },
-    yaxis: { title: 'Total state gas', tickformat: ',' },
+    yaxis: { title: 'Attempted state gas', tickformat: ',' },
     height: 360,
   }), { responsive: true });
 
@@ -471,14 +475,15 @@ function fmtBytes(n) {
     <tr>
       <td><strong>${escHtml(c.category)}</strong></td>
       <td style="text-align:right">${fmtCount(c.txs)}</td>
+      <td style="text-align:right">${fmtGas(c.total_state_gas_attempted)}</td>
       <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
-      <td style="text-align:right">${fmtGas(c.total_runtime_state_gas)}</td>
+      <td style="text-align:right">${fmtGas(c.total_state_gas_demanded)}</td>
       <td style="text-align:right">${fmtGas(c.total_runtime_state_gas_spillover)}</td>
     </tr>`).join('');
   }).catch(() => {
     sectionError('categoryChart');
     document.getElementById('categoryBody').innerHTML =
-      '<tr><td colspan="5" class="note">Failed to load.</td></tr>';
+      '<tr><td colspan="6" class="note">Failed to load.</td></tr>';
   });
 
   // ── Mechanics: top contracts ───────────────────────────────────────
@@ -489,7 +494,7 @@ function fmtBytes(n) {
         <span class="mono" style="color:var(--text-dim)">${(c.target_address || '').slice(0, 12)}...</span></td>
       <td style="text-align:right">${fmtCount(c.original_limit_failures)}</td>
       <td style="text-align:right">${fmtCount(c.status_changed_txs)}</td>
-      <td style="text-align:right">${fmtGas(c.total_state_gas_spent)}</td>
+      <td style="text-align:right">${fmtGas(c.total_state_gas_attempted)}</td>
       <td style="text-align:right">${fmtMultiplier(c.p95_min_multiplier_to_succeed)}</td>
     </tr>`).join('');
   }).catch(() => {
@@ -507,7 +512,7 @@ function fmtBytes(n) {
       <td style="text-align:right">${fmtGas(e.tx_gas_limit)}</td>
       <td style="text-align:right">${fmtGas(e.schedule_gas_used)}</td>
       <td style="text-align:right">${fmtMultiplier(e.min_multiplier_to_succeed)}</td>
-      <td style="text-align:right">${fmtGas(e.schedule_state_gas_spent)}</td>
+      <td style="text-align:right">${fmtGas(e.schedule_state_gas_attempted)}</td>
     </tr>`).join('');
   }).catch(() => {
     document.getElementById('exampleBody').innerHTML =

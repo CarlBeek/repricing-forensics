@@ -115,8 +115,14 @@ def create_views(conn: duckdb.DuckDBPyConnection) -> None:
             baseline_total_gas_spent, baseline_gas_refunded,
             runtime_state_gas, runtime_state_gas_spillover,
             would_fit_in_original_limit,
+            greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            ) AS schedule_state_gas_attempted,
             (NOT coalesce(would_fit_in_original_limit, TRUE)
-              AND coalesce(schedule_state_gas_spent, 0) > 0) AS original_limit_failure,
+              AND (coalesce(schedule_state_gas_spent, 0) > 0
+                   OR coalesce(schedule_state_gas_demanded, 0) > 0))
+                AS original_limit_failure,
             min_multiplier_to_succeed,
             CASE
                 WHEN schedule_success AND min_multiplier_to_succeed IS NOT NULL
@@ -143,14 +149,21 @@ def create_views(conn: duckdb.DuckDBPyConnection) -> None:
             lower(recipient) AS target_address,
             count(*)                                          AS divergent_txs,
             sum(CASE WHEN status_changed THEN 1 ELSE 0 END)   AS status_changed_txs,
-            sum(CASE WHEN NOT would_fit_in_original_limit
-                          AND schedule_state_gas_spent > 0 THEN 1 ELSE 0 END)
+            sum(CASE WHEN coalesce(would_fit_in_original_limit, TRUE) = FALSE
+                          AND (coalesce(schedule_state_gas_spent, 0) > 0
+                               OR coalesce(schedule_state_gas_demanded, 0) > 0)
+                     THEN 1 ELSE 0 END)
                                                               AS original_limit_failures,
             sum(CASE WHEN schedule_success
                           AND NOT would_fit_in_original_limit THEN 1 ELSE 0 END)
                                                               AS fixable_with_more_outer_gas,
             sum(CASE WHEN reservoir_exhausted THEN 1 ELSE 0 END) AS reservoir_exhausted_txs,
             sum(schedule_state_gas_spent) AS total_state_gas_spent,
+            sum(coalesce(schedule_state_gas_demanded, 0)) AS total_state_gas_demanded,
+            sum(greatest(
+                coalesce(schedule_state_gas_spent, 0),
+                coalesce(schedule_state_gas_demanded, 0)
+            )) AS total_state_gas_attempted,
             sum(runtime_state_gas_spillover) AS total_runtime_state_gas_spillover,
             avg(gas_delta) AS avg_gas_delta,
             sum(gas_delta) AS total_gas_delta,

@@ -8,7 +8,7 @@
   <h2>What is EIP-8037?</h2>
   <p>
     EIP-8037 introduces native state creation gas: new state is charged by a static
-    cost per state byte (CPSB), currently 1174 gas per byte in the research branch.
+    cost per state byte (CPSB), currently 1530 gas per byte in the research branch.
     The replay uses revm's native Amsterdam/EIP-8037 accounting path, including
     state gas, the per-transaction reservoir, EIP-7702 authorization effects, and
     EIP-7623 floor gas.
@@ -39,11 +39,12 @@
   <h2>How we measure impact</h2>
   <p>
     We forked <a href="https://github.com/paradigmxyz/reth" target="_blank" rel="noopener">reth</a>
-    and modified its EVM gas table to reflect the proposed schedule. The fork re-executes
+    and modified its EVM gas table to reflect each proposed schedule. The fork re-executes
     historical mainnet blocks exactly as they originally ran -- same state, same transaction
-    ordering, same block headers -- but charges the new gas prices. After each transaction,
-    we compare the baseline execution result (status, gas used, logs) against the repriced
-    result and record every difference.
+    ordering, same block headers -- but charges the new gas prices. For each transaction,
+    the producer runs the baseline execution, then replays the schedule against the same
+    pre-transaction state. The dashboard treats that producer classification as the source
+    of truth.
   </p>
   <p>
     Re-execution happens at the EVM level, not via tracing. The modified node processes each
@@ -52,7 +53,12 @@
   </p>
 
   <h2>What the data captures</h2>
-  <p>For every transaction in the sample, the analysis records:</p>
+  <p>
+    Every replayed transaction is assigned exactly one impact bucket. All bucket counts are
+    stored in <code>block_coverage</code>; only the drill-in buckets keep full per-transaction
+    rows in <code>divergences</code>.
+  </p>
+  <p>For drill-in rows, the analysis records:</p>
   <ul>
     <li><strong>Baseline gas used</strong> -- gas consumed under the current schedule.</li>
     <li><strong>Schedule gas used</strong> -- gas consumed under the active repricing schedule.</li>
@@ -62,24 +68,79 @@
     <li><strong>Per-opcode deltas</strong> -- how many additional gas units each repriced opcode contributes in the affected transaction.</li>
   </ul>
 
+  <h2 id="divergence-classification">How transaction divergences are classified</h2>
+  <p>
+    A transaction is counted as divergent when its bucket is anything other than
+    <code>unchanged</code>. The classifier compares the baseline and schedule replay along
+    these signals: final success status, gas used, emitted event logs, call-tree structure,
+    return output, created contract address, and log bloom. The classifier then applies a
+    fixed priority order so the most actionable signal wins.
+  </p>
+  <ol>
+    <li>
+      <strong>Schedule broke a successful transaction.</strong> If baseline succeeded and the
+      schedule fails, the transaction enters the failure branch. This branch decides between
+      <code>wallet_fixable_shallow</code>, <code>wallet_fixable_deep_chain</code>,
+      <code>aa_gas_reestimation</code>, <code>inconclusive_needs_higher_sweep</code>, and
+      <code>contract_broken</code>.
+    </li>
+    <li>
+      <strong>Schedule rescued a failed transaction.</strong> If baseline failed and the
+      schedule succeeds, the transaction is <code>schedule_rescued</code>. It is a finding,
+      not a breakage count.
+    </li>
+    <li>
+      <strong>Event logs changed.</strong> With no status flip, different logs classify as
+      <code>event_logs_changed</code>, even if gas also changed.
+    </li>
+    <li>
+      <strong>Gas changed.</strong> With the same status and same logs, any nonzero
+      <code>schedule_gas_used - baseline_gas_used</code> classifies as <code>gas_only</code>.
+    </li>
+    <li>
+      <strong>Only trace-level observables changed.</strong> If gas, status, and logs match,
+      but the call tree, output, created address, or log bloom differs, the bucket is
+      <code>trace_only</code>.
+    </li>
+    <li>
+      <strong>Nothing changed.</strong> If none of those signals differ, the bucket is
+      <code>unchanged</code>.
+    </li>
+  </ol>
+
+  <h2>Bucket criteria</h2>
+  <ul>
+    <li><strong><code>unchanged</code></strong> -- status, gas, logs, and trace-level observables all match baseline.</li>
+    <li><strong><code>trace_only</code></strong> -- status, event logs, and gas match, but the call tree, output, created address, or log bloom differs.</li>
+    <li><strong><code>gas_only</code></strong> -- status and event logs match, but schedule gas used differs from baseline gas used.</li>
+    <li><strong><code>event_logs_changed</code></strong> -- status matches, but emitted logs differ. This keeps a full drill-in row.</li>
+    <li><strong><code>schedule_rescued</code></strong> -- baseline failed and the schedule succeeds.</li>
+    <li><strong><code>wallet_fixable_shallow</code></strong> -- baseline succeeded, the schedule fails under the original gas limit, and either a higher outer gas limit proves the original limit was the only issue or the OOG is attributed to the root frame.</li>
+    <li><strong><code>wallet_fixable_deep_chain</code></strong> -- baseline succeeded, the schedule fails, the OOG is deeper than the root frame, and every parent-to-child hop on the OOG path forwarded proportional EIP-150 gas.</li>
+    <li><strong><code>inconclusive_needs_higher_sweep</code></strong> -- baseline succeeded, the schedule still halts OOG at the highest configured gas-limit multiplier, and no fixed-gas bottleneck was proven. This keeps a drill-in row so the run can be repeated with a higher sweep ceiling.</li>
+    <li><strong><code>contract_broken</code></strong> -- baseline succeeded, the schedule fails, and the failure is not wallet-fixable, not account-abstraction gas re-estimation, and not merely sweep-limited. This keeps a full drill-in row.</li>
+    <li><strong><code>aa_gas_reestimation</code></strong> -- baseline succeeded, the schedule fails on a known ERC-4337 EntryPoint transaction, and the failure is OOG-class. The fix is re-estimating and re-signing the UserOp gas limits off-chain, not changing contract code.</li>
+  </ul>
+
   <h2>Wallet-fixable vs contract-broken</h2>
   <p>
-    Not all failing transactions represent real breakage. If a transaction runs out of gas
-    only because the user-supplied gas limit was too low, a wallet can fix the problem by
-    raising the limit. We call these <strong>wallet-fixable</strong> transactions. They fail
-    under the new schedule but would succeed if re-submitted with a higher gas limit.
+    Not all schedule-induced failures represent real contract breakage. If a transaction
+    runs out of gas only because the outer transaction gas limit was too low, a wallet can
+    fix it by raising the estimate and resubmitting. These transactions are
+    <strong>wallet-fixable</strong>.
   </p>
   <p>
-    <strong>Contract-broken</strong> transactions are different. These fail because a smart
-    contract hardcodes a gas value in an internal call -- for example, passing a fixed
-    <code>gas</code> parameter to <code>CALL</code>. No wallet adjustment can help because
-    the contract itself constrains the gas available to the sub-call. Fixing these requires
-    a contract upgrade or migration.
+    The producer checks this by walking the path from the root call to the out-of-gas frame.
+    If every parent-to-child hop forwarded gas through the EIP-150 63/64 cap, raising the
+    outer gas limit can propagate down the whole path, so the transaction is wallet-fixable
+    even when the OOG is deep in the call tree.
   </p>
   <p>
-    The classifier uses a depth heuristic: if the out-of-gas event occurs at call depth
-    greater than 1 and the parent call forwarded a fixed (non-63/64) amount of gas, the
-    transaction is marked contract-broken. Otherwise it is marked wallet-fixable.
+    <strong>Contract-broken</strong> transactions have a structural bottleneck. The chain
+    walk found a caller that throttled the callee with the <code>2300</code> stipend, a small
+    fixed gas value, or a fractional gas pattern below the 63/64 cap. A wallet cannot fix
+    that by increasing the outer gas limit because the contract itself limits the sub-call.
+    Fixing these usually requires a contract upgrade or migration.
   </p>
 
   <h2 id="sstore-refunds">The SSTORE refund complication</h2>
@@ -125,8 +186,9 @@
     </li>
     <li>
       <strong>Heuristic classification.</strong> The wallet-fixable vs contract-broken
-      distinction relies on a depth-and-gas heuristic. Edge cases (e.g., a contract that
-      forwards <code>gasleft() - 100</code>) may be misclassified.
+      distinction relies on classifying gas forwarding as proportional, fixed, stipend, or
+      fractional. Edge cases (for example, a contract that forwards
+      <code>gasleft() - 100</code>) may be misclassified.
     </li>
     <li>
       <strong>Labeling coverage.</strong> Contract and project labels come from public
